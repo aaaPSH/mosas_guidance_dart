@@ -115,7 +115,7 @@ void VisionRecognizer::reset() {
 }
 
 VisionResult VisionRecognizer::process(const Rgb888Frame& frame) {
-    VisionResult result{false, {0, 0, 0, 0, 0}, current_roi_};
+    VisionResult result{false, {0, 0, 0, 0, 0, 0.0, 0.0}, current_roi_};
     if (!is_valid_frame(frame)) {
         return result;
     }
@@ -132,7 +132,7 @@ VisionResult VisionRecognizer::process(const Rgb888Frame& frame) {
     std::vector<uint8_t> visited(pixel_count, 0);
     std::queue<std::pair<int, int>> pending;
 
-    VisionBlob best_blob{0, 0, 0, 0, 0};
+    VisionBlob best_blob{0, 0, 0, 0, 0, 0.0, 0.0};
     for (int y = roi.y; y < roi.y + roi.height; ++y) {
         for (int x = roi.x; x < roi.x + roi.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(y) *
@@ -146,6 +146,8 @@ VisionResult VisionRecognizer::process(const Rgb888Frame& frame) {
             visited[index] = 1;
             pending.push({x, y});
             int area = 0;
+            double moment_x = 0.0;
+            double moment_y = 0.0;
             int min_x = x;
             int max_x = x;
             int min_y = y;
@@ -155,6 +157,8 @@ VisionResult VisionRecognizer::process(const Rgb888Frame& frame) {
                 const auto [pixel_x, pixel_y] = pending.front();
                 pending.pop();
                 ++area;
+                moment_x += pixel_x;
+                moment_y += pixel_y;
                 min_x = std::min(min_x, pixel_x);
                 max_x = std::max(max_x, pixel_x);
                 min_y = std::min(min_y, pixel_y);
@@ -195,6 +199,8 @@ VisionResult VisionRecognizer::process(const Rgb888Frame& frame) {
                 max_x - min_x + 1,
                 max_y - min_y + 1,
                 area,
+                moment_x / static_cast<double>(area),
+                moment_y / static_cast<double>(area),
             };
             if (is_candidate(candidate, config_) &&
                 candidate.area > best_blob.area) {
