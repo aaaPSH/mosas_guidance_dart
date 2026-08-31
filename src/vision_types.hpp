@@ -24,6 +24,8 @@ struct VisionBlob {
     int width;
     int height;
     int area;
+    double center_x;
+    double center_y;
 };
 
 // 使用 OpenCV 风格的离散 HSV 范围：H 为 0..179，S/V 为 0..255。

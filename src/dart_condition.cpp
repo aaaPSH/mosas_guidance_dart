@@ -7,17 +7,17 @@ namespace {
 
 constexpr double kEpsilon = 1e-12;
 constexpr double kGravityVectorEpsilon = 1e-9;
+constexpr double kGravityAcceleration = 9.80665;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
 
-bool is_finite(const Vector3& value) {
+bool is_finite_vector(const Vector3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
            std::isfinite(value.z);
 }
 
 double vector_norm(const Vector3& value) {
-    return std::sqrt(value.x * value.x + value.y * value.y +
-                     value.z * value.z);
+    return std::hypot(std::hypot(value.x, value.y), value.z);
 }
 
 double normalize_angle(double angle) {
@@ -50,13 +50,30 @@ struct QuaternionMath {
     }
 
     static Quaternion normalized(const Quaternion& value) {
-        const double norm = std::sqrt(value.w * value.w + value.x * value.x +
-                                      value.y * value.y + value.z * value.z);
+        const double norm = std::hypot(
+            std::hypot(value.w, value.x), std::hypot(value.y, value.z));
         if (!std::isfinite(norm) || norm < kEpsilon) {
             return {1.0, 0.0, 0.0, 0.0};
         }
         return {value.w / norm, value.x / norm, value.y / norm,
                 value.z / norm};
+    }
+
+    static Quaternion conjugate(const Quaternion& value) {
+        return {value.w, -value.x, -value.y, -value.z};
+    }
+
+    static Vector3 rotate_vector(const Quaternion& orientation,
+                                 const Vector3& vector) {
+        const Quaternion vector_quaternion{0.0, vector.x, vector.y, vector.z};
+        const Quaternion rotated = multiply(
+            multiply(orientation, vector_quaternion), conjugate(orientation));
+        return {rotated.x, rotated.y, rotated.z};
+    }
+
+    static bool is_finite(const Quaternion& value) {
+        return std::isfinite(value.w) && std::isfinite(value.x) &&
+               std::isfinite(value.y) && std::isfinite(value.z);
     }
 
     static Quaternion from_euler(const EulerAngles& angles) {
@@ -78,23 +95,31 @@ struct QuaternionMath {
         };
     }
 
-    static Quaternion from_angular_velocity(const Vector3& angular_velocity,
-                                             double dt) {
+    static bool from_angular_velocity(const Vector3& angular_velocity,
+                                      double dt, Quaternion* result) {
         const Vector3 delta{
             angular_velocity.x * dt,
             angular_velocity.y * dt,
             angular_velocity.z * dt,
         };
+        if (!is_finite_vector(delta)) {
+            return false;
+        }
         const double angle = vector_norm(delta);
+        if (!std::isfinite(angle)) {
+            return false;
+        }
         if (angle < kEpsilon) {
-            return normalized({1.0, delta.x * 0.5, delta.y * 0.5,
-                               delta.z * 0.5});
+            *result = normalized({1.0, delta.x * 0.5, delta.y * 0.5,
+                                  delta.z * 0.5});
+            return true;
         }
 
         const double half_angle = angle * 0.5;
         const double scale = std::sin(half_angle) / angle;
-        return {std::cos(half_angle), delta.x * scale, delta.y * scale,
-                delta.z * scale};
+        *result = {std::cos(half_angle), delta.x * scale,
+                   delta.y * scale, delta.z * scale};
+        return is_finite(*result);
     }
 
     static EulerAngles to_euler(const Quaternion& value) {
@@ -112,8 +137,13 @@ struct QuaternionMath {
 
 }  // namespace
 
+DartCondition::DartCondition(double launch_speed)
+    : launch_speed_(std::isfinite(launch_speed) && launch_speed >= 0.0
+                        ? launch_speed
+                        : 0.0) {}
+
 bool DartCondition::initialize(const Vector3& acceleration) {
-    if (state_ == State::Flying || !is_finite(acceleration) ||
+    if (state_ == State::Flying || !is_finite_vector(acceleration) ||
         vector_norm(acceleration) < kGravityVectorEpsilon) {
         return false;
     }
@@ -121,8 +151,7 @@ bool DartCondition::initialize(const Vector3& acceleration) {
     const EulerAngles initial_angles{
         std::atan2(acceleration.y, acceleration.z),
         std::atan2(-acceleration.x,
-                   std::sqrt(acceleration.y * acceleration.y +
-                             acceleration.z * acceleration.z)),
+                   std::hypot(acceleration.y, acceleration.z)),
         0.0,
     };
     const Quaternion initial_orientation = QuaternionMath::normalized(
@@ -133,12 +162,22 @@ bool DartCondition::initialize(const Vector3& acceleration) {
     orientation_z_ = initial_orientation.z;
     angles_ = QuaternionMath::to_euler(
         {orientation_w_, orientation_x_, orientation_y_, orientation_z_});
+    velocity_ = {0.0, 0.0, 0.0};
     state_ = State::Ready;
     return true;
 }
 
 void DartCondition::launch() {
     if (state_ == State::Ready) {
+        const Quaternion orientation{
+            orientation_w_, orientation_x_, orientation_y_, orientation_z_};
+        // 当前姿态角的 pitch 正方向与发射仰角正方向相反，使用共轭变换
+        // 将机体 +x 轴转换为世界坐标系的发射方向。
+        velocity_ = QuaternionMath::rotate_vector(
+            QuaternionMath::conjugate(orientation), {1.0, 0.0, 0.0});
+        velocity_.x *= launch_speed_;
+        velocity_.y *= launch_speed_;
+        velocity_.z *= launch_speed_;
         state_ = State::Flying;
     }
 }
@@ -149,28 +188,53 @@ void DartCondition::reset() {
     orientation_y_ = 0.0;
     orientation_z_ = 0.0;
     angles_ = {0.0, 0.0, 0.0};
+    velocity_ = {0.0, 0.0, 0.0};
     state_ = State::Uninitialized;
 }
 
 EulerAngles DartCondition::update(const Vector3& acceleration,
                                   const Vector3& angular_velocity, double dt) {
-    // 飞行过程中处于失重状态，加速度计不用于姿态校正。
-    (void)acceleration;
-    if (state_ != State::Flying || !is_finite(angular_velocity) ||
+    if (state_ != State::Flying || !is_finite_vector(acceleration) ||
+        !is_finite_vector(angular_velocity) ||
         !std::isfinite(dt) || dt <= 0.0) {
         return angles_;
     }
 
-    const Quaternion delta =
-        QuaternionMath::from_angular_velocity(angular_velocity, dt);
+    // 将机体坐标系加速度转换到世界坐标系，并扣除世界坐标系重力。
     const Quaternion current{
         orientation_w_, orientation_x_, orientation_y_, orientation_z_};
-    const Quaternion updated =
-        QuaternionMath::normalized(QuaternionMath::multiply(current, delta));
-    orientation_w_ = updated.w;
-    orientation_x_ = updated.x;
-    orientation_y_ = updated.y;
-    orientation_z_ = updated.z;
+    Vector3 world_acceleration =
+        QuaternionMath::rotate_vector(current, acceleration);
+    if (!is_finite_vector(world_acceleration)) {
+        return angles_;
+    }
+    world_acceleration.z -= kGravityAcceleration;
+    const Vector3 updated_velocity{
+        velocity_.x + world_acceleration.x * dt,
+        velocity_.y + world_acceleration.y * dt,
+        velocity_.z + world_acceleration.z * dt,
+    };
+    if (!is_finite_vector(updated_velocity)) {
+        return angles_;
+    }
+
+    Quaternion delta{};
+    if (!QuaternionMath::from_angular_velocity(angular_velocity, dt, &delta)) {
+        return angles_;
+    }
+    const Quaternion updated = QuaternionMath::multiply(current, delta);
+    if (!QuaternionMath::is_finite(updated)) {
+        return angles_;
+    }
+    const Quaternion normalized_updated = QuaternionMath::normalized(updated);
+    if (!QuaternionMath::is_finite(normalized_updated)) {
+        return angles_;
+    }
+    velocity_ = updated_velocity;
+    orientation_w_ = normalized_updated.w;
+    orientation_x_ = normalized_updated.x;
+    orientation_y_ = normalized_updated.y;
+    orientation_z_ = normalized_updated.z;
     angles_ = QuaternionMath::to_euler(
         {orientation_w_, orientation_x_, orientation_y_, orientation_z_});
     return angles_;
@@ -178,6 +242,10 @@ EulerAngles DartCondition::update(const Vector3& acceleration,
 
 EulerAngles DartCondition::attitude() const {
     return angles_;
+}
+
+Vector3 DartCondition::velocity() const {
+    return velocity_;
 }
 
 bool DartCondition::initialized() const {
