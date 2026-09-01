@@ -10,6 +10,7 @@ constexpr double kGravityVectorEpsilon = 1e-9;
 constexpr double kGravityAcceleration = 9.80665;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
+constexpr double kEulerSingularityTolerance = 1e-12;
 
 bool is_finite_vector(const Vector3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
@@ -80,19 +81,15 @@ struct QuaternionMath {
         const double half_roll = angles.roll * 0.5;
         const double half_pitch = angles.pitch * 0.5;
         const double half_yaw = angles.yaw * 0.5;
-        const double cr = std::cos(half_roll);
-        const double sr = std::sin(half_roll);
-        const double cp = std::cos(half_pitch);
-        const double sp = std::sin(half_pitch);
-        const double cy = std::cos(half_yaw);
-        const double sy = std::sin(half_yaw);
+        const Quaternion roll_rotation{
+            std::cos(half_roll), std::sin(half_roll), 0.0, 0.0};
+        const Quaternion pitch_rotation{
+            std::cos(half_pitch), 0.0, 0.0, std::sin(half_pitch)};
+        const Quaternion yaw_rotation{
+            std::cos(half_yaw), 0.0, std::sin(half_yaw), 0.0};
 
-        return {
-            cr * cp * cy + sr * sp * sy,
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-        };
+        return normalized(multiply(
+            multiply(yaw_rotation, pitch_rotation), roll_rotation));
     }
 
     static bool from_angular_velocity(const Vector3& angular_velocity,
@@ -123,15 +120,35 @@ struct QuaternionMath {
     }
 
     static EulerAngles to_euler(const Quaternion& value) {
-        const double roll = std::atan2(
-            2.0 * (value.w * value.x + value.y * value.z),
-            1.0 - 2.0 * (value.x * value.x + value.y * value.y));
-        const double pitch = std::asin(clamp_unit(
-            2.0 * (value.w * value.y - value.z * value.x)));
+        const double matrix_r00 =
+            1.0 - 2.0 * (value.y * value.y + value.z * value.z);
+        const double matrix_r10 =
+            2.0 * (value.x * value.y + value.w * value.z);
+        const double matrix_r11 =
+            1.0 - 2.0 * (value.x * value.x + value.z * value.z);
+        const double matrix_r12 =
+            2.0 * (value.y * value.z - value.w * value.x);
+        const double matrix_r02 =
+            2.0 * (value.x * value.z + value.w * value.y);
+        const double matrix_r22 =
+            1.0 - 2.0 * (value.x * value.x + value.y * value.y);
+        const double matrix_r20 =
+            2.0 * (value.x * value.z - value.w * value.y);
+        const double pitch = std::asin(clamp_unit(matrix_r10));
+        if (std::abs(std::abs(matrix_r10) - 1.0) <=
+            kEulerSingularityTolerance) {
+            // pitch 为 ±90 度时 yaw 和 roll 不可分别观测，固定 yaw 为零，
+            // 使用两者的可观测组合角保持旋转姿态连续。
+            const double singular_roll =
+                matrix_r10 > 0.0
+                    ? std::atan2(matrix_r02, matrix_r22)
+                    : std::atan2(-matrix_r02, matrix_r22);
+            return {pitch, 0.0, normalize_angle(singular_roll)};
+        }
+        const double roll = std::atan2(-matrix_r12, matrix_r11);
         const double yaw = std::atan2(
-            2.0 * (value.w * value.z + value.x * value.y),
-            1.0 - 2.0 * (value.y * value.y + value.z * value.z));
-        return {normalize_angle(roll), pitch, normalize_angle(yaw)};
+            -matrix_r20, matrix_r00);
+        return {pitch, normalize_angle(yaw), normalize_angle(roll)};
     }
 };
 
@@ -149,10 +166,10 @@ bool DartCondition::initialize(const Vector3& acceleration) {
     }
 
     const EulerAngles initial_angles{
-        std::atan2(acceleration.y, acceleration.z),
-        std::atan2(-acceleration.x,
+        std::atan2(acceleration.x,
                    std::hypot(acceleration.y, acceleration.z)),
         0.0,
+        std::atan2(-acceleration.z, acceleration.y),
     };
     const Quaternion initial_orientation = QuaternionMath::normalized(
         QuaternionMath::from_euler(initial_angles));
@@ -171,10 +188,9 @@ void DartCondition::launch() {
     if (state_ == State::Ready) {
         const Quaternion orientation{
             orientation_w_, orientation_x_, orientation_y_, orientation_z_};
-        // 当前姿态角的 pitch 正方向与发射仰角正方向相反，使用共轭变换
-        // 将机体 +x 轴转换为世界坐标系的发射方向。
+        // 将机体 +x 轴转换为地面坐标系的发射方向。
         velocity_ = QuaternionMath::rotate_vector(
-            QuaternionMath::conjugate(orientation), {1.0, 0.0, 0.0});
+            orientation, {1.0, 0.0, 0.0});
         velocity_.x *= launch_speed_;
         velocity_.y *= launch_speed_;
         velocity_.z *= launch_speed_;
@@ -208,7 +224,7 @@ EulerAngles DartCondition::update(const Vector3& acceleration,
     if (!is_finite_vector(world_acceleration)) {
         return angles_;
     }
-    world_acceleration.z -= kGravityAcceleration;
+    world_acceleration.y -= kGravityAcceleration;
     const Vector3 updated_velocity{
         velocity_.x + world_acceleration.x * dt,
         velocity_.y + world_acceleration.y * dt,
