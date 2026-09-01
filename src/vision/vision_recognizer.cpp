@@ -1,4 +1,4 @@
-#include "vision_recognizer.hpp"
+#include <mosas/vision/vision_recognizer.hpp>
 
 #include <algorithm>
 #include <cmath>
