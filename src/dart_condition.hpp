@@ -8,9 +8,9 @@ struct Vector3 {
 };
 
 struct EulerAngles {
-    double roll;
-    double pitch;
-    double yaw;
+    double pitch;  // 绕弹体 +z 轴的俯仰角。
+    double yaw;    // 绕弹体 +y 轴的偏航角。
+    double roll;   // 绕弹体 +x 轴的滚转角。
 };
 
 class DartCondition {
@@ -18,7 +18,7 @@ public:
     // launch_speed 为固定的初始发射速度，单位为 m/s。
     explicit DartCondition(double launch_speed = 0.0);
 
-    // 使用发射前的重力方向初始化 roll 和 pitch，yaw 从零开始。
+    // 使用发射前的重力方向初始化 pitch 和 roll，yaw 从零开始。
     bool initialize(const Vector3& acceleration);
 
     // 进入飞行状态，并使用初始姿态推导机体 +x 轴的发射方向。
