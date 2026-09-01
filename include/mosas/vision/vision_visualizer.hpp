@@ -1,7 +1,7 @@
 #ifndef VISION_VISUALIZER_HPP
 #define VISION_VISUALIZER_HPP
 
-#include "vision_types.hpp"
+#include <mosas/vision/vision_types.hpp>
 
 class VisionVisualizer {
 public:

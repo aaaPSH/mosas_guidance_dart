@@ -1,8 +1,8 @@
 #ifndef GUIDANCE_ESTIMATOR_HPP
 #define GUIDANCE_ESTIMATOR_HPP
 
-#include "dart/dart_condition.hpp"
-#include "vision/vision_types.hpp"
+#include <mosas/dart/dart_condition.hpp>
+#include <mosas/vision/vision_types.hpp>
 
 struct CameraIntrinsics {
     double fx;

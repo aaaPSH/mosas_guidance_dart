@@ -1,7 +1,7 @@
 #ifndef VISION_RECOGNIZER_HPP
 #define VISION_RECOGNIZER_HPP
 
-#include "vision_types.hpp"
+#include <mosas/vision/vision_types.hpp>
 
 class VisionRecognizer {
 public:

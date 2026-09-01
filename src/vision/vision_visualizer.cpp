@@ -1,4 +1,4 @@
-#include "vision_visualizer.hpp"
+#include <mosas/vision/vision_visualizer.hpp>
 
 #include <algorithm>
 #include <cstddef>
