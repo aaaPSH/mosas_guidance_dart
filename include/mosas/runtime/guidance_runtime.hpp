@@ -17,6 +17,7 @@ namespace mosas::runtime {
 
 struct GuidanceRuntimeConfig {
     FlightPhaseDetectorConfig phase_detector{};
+    double launch_speed_mps = 100.0;
     std::size_t history_capacity = 256;
     TimestampNs max_imu_age_ns = 50000000;
     VisionConfig vision_config{
