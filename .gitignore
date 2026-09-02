@@ -1,5 +1,6 @@
 # 构建产物
 /build/
+/.worktrees/
 
 # 本地测试和设计资料不提交到 Git
 /tests/
