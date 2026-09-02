@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 project(mosas_guidance LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CTest)
+
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -29,6 +32,11 @@ add_library(mosas_vision STATIC
     src/vision/vision_visualizer.cpp
 )
 configure_mosas_target(mosas_vision)
+target_include_directories(mosas_vision
+    PUBLIC
+        ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(mosas_vision PUBLIC ${OpenCV_LIBS})
 
 add_library(mosas_guidance STATIC
     src/guidance/guidance_estimator.cpp
@@ -39,6 +47,22 @@ target_link_libraries(mosas_guidance
         mosas_dart
         mosas_vision
 )
+
+if(BUILD_TESTING)
+    add_executable(vision_opencv_test
+        tests/vision_opencv_test.cpp
+    )
+    configure_mosas_target(vision_opencv_test)
+    target_link_libraries(vision_opencv_test PRIVATE mosas_vision)
+    add_test(NAME vision_opencv_test COMMAND vision_opencv_test)
+
+    add_executable(png_guidance_test
+        tests/png_guidance_test.cpp
+    )
+    configure_mosas_target(png_guidance_test)
+    target_link_libraries(png_guidance_test PRIVATE mosas_guidance)
+    add_test(NAME png_guidance_test COMMAND png_guidance_test)
+endif()
 
 find_package(Threads REQUIRED)
 add_library(serial_package STATIC
