@@ -1,4 +1,5 @@
 #include <mosas/runtime/guidance_runtime.hpp>
+#include <mosas/vision/vision_recognizer.hpp>
 
 #include <cmath>
 #include <exception>
@@ -67,7 +68,8 @@ GuidanceRuntime::GuidanceRuntime(
       frame_sink_(std::move(frame_sink)),
       config_(config),
       phase_detector_(config_.phase_detector),
-      state_history_(config_.history_capacity) {}
+      state_history_(config_.history_capacity),
+      dart_condition_(config_.launch_speed_mps) {}
 
 GuidanceRuntime::~GuidanceRuntime() {
     stop();
@@ -76,6 +78,7 @@ GuidanceRuntime::~GuidanceRuntime() {
 bool GuidanceRuntime::validate_config() const {
     return imu_source_ != nullptr && camera_source_ != nullptr &&
            command_sink_ != nullptr && valid_detector_config(config_.phase_detector) &&
+           is_finite(config_.launch_speed_mps) && config_.launch_speed_mps >= 0.0 &&
            config_.history_capacity > 0 && config_.max_imu_age_ns > 0 &&
            is_finite(config_.camera_intrinsics) &&
            config_.camera_intrinsics.fx > 0.0 &&
@@ -183,6 +186,7 @@ void GuidanceRuntime::cancel_sources() noexcept {
 }
 
 void GuidanceRuntime::imu_worker() {
+    try {
     bool initialized = false;
     bool launched = false;
     bool has_update_timestamp = false;
@@ -251,17 +255,108 @@ void GuidanceRuntime::imu_worker() {
             latest_state_ = snapshot;
         }
     }
+    } catch (const std::exception& exception) {
+        set_fault(exception.what());
+    } catch (...) {
+        set_fault("unknown exception in imu worker");
+    }
 }
 
 void GuidanceRuntime::vision_worker() {
-    while (!stop_requested_.load()) {
-        CameraFrame frame{};
-        if (!camera_source_->capture(&frame)) {
-            if (!stop_requested_.load()) {
-                std::this_thread::yield();
+    try {
+        VisionRecognizer recognizer(config_.vision_config);
+        LineOfSightRateEstimator rate_estimator(config_.los_rate_filter);
+        bool has_frame_timestamp = false;
+        TimestampNs previous_frame_timestamp_ns = 0;
+
+        while (!stop_requested_.load()) {
+            CameraFrame frame{};
+            if (!camera_source_->capture(&frame)) {
+                if (!stop_requested_.load()) {
+                    std::this_thread::yield();
+                }
+                continue;
             }
-            continue;
+
+            if (frame.timestamp_ns < 0 || frame.image.empty() ||
+                frame.image.type() != CV_8UC3 ||
+                (has_frame_timestamp &&
+                 frame.timestamp_ns <= previous_frame_timestamp_ns)) {
+                rate_estimator.reset();
+                has_frame_timestamp = false;
+                continue;
+            }
+
+            const auto state =
+                state_history_.find_at_or_before(frame.timestamp_ns);
+            if (!state.has_value() ||
+                frame.timestamp_ns - state->timestamp_ns >
+                    config_.max_imu_age_ns ||
+                state->phase != FlightPhase::free_flight) {
+                continue;
+            }
+
+            const VisionResult vision_result = recognizer.process(frame.image);
+            if (!vision_result.found) {
+                rate_estimator.reset();
+                has_frame_timestamp = false;
+                continue;
+            }
+
+            const LineOfSight line_of_sight =
+                GuidanceEstimator::calculate_compensated(
+                    vision_result, config_.camera_intrinsics, state->attitude,
+                    config_.camera_to_body);
+            if (!line_of_sight.valid) {
+                rate_estimator.reset();
+                has_frame_timestamp = false;
+                continue;
+            }
+
+            if (!has_frame_timestamp) {
+                rate_estimator.reset();
+                rate_estimator.update(line_of_sight, 1.0);
+                previous_frame_timestamp_ns = frame.timestamp_ns;
+                has_frame_timestamp = true;
+                continue;
+            }
+
+            const double dt_seconds = static_cast<double>(
+                                          frame.timestamp_ns -
+                                          previous_frame_timestamp_ns) *
+                                      1e-9;
+            previous_frame_timestamp_ns = frame.timestamp_ns;
+            if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
+                rate_estimator.reset();
+                has_frame_timestamp = false;
+                continue;
+            }
+
+            const LineOfSightAngularVelocity angular_velocity =
+                rate_estimator.update(line_of_sight, dt_seconds);
+            if (!angular_velocity.valid) {
+                continue;
+            }
+
+            const PngGuidanceOutput guidance = PngGuidance::calculate(
+                line_of_sight, angular_velocity, state->velocity,
+                state->attitude, config_.png_guidance);
+            if (!guidance.valid || faulted_.load()) {
+                continue;
+            }
+
+            if (!command_sink_->send({frame.timestamp_ns, guidance})) {
+                set_fault("guidance command send failed");
+                return;
+            }
+            if (frame_sink_ != nullptr) {
+                frame_sink_->publish(frame, vision_result, *state, guidance);
+            }
         }
+    } catch (const std::exception& exception) {
+        set_fault(exception.what());
+    } catch (...) {
+        set_fault("unknown exception in vision worker");
     }
 }
 

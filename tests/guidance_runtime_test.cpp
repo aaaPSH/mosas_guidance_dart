@@ -135,6 +135,86 @@ private:
     bool cancelled_ = false;
 };
 
+class ScriptedCameraSource final : public mosas::runtime::CameraSource {
+public:
+    explicit ScriptedCameraSource(std::vector<mosas::runtime::CameraFrame> frames)
+        : frames_(std::move(frames)) {}
+
+    bool configure(const mosas::runtime::CameraCaptureConfig& config) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        config_ = config;
+        configured_ = true;
+        return true;
+    }
+
+    bool capture(mosas::runtime::CameraFrame* frame) override {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock, [this] {
+            return released_ || cancelled_;
+        });
+        if (cancelled_ || next_frame_ >= frames_.size()) {
+            return false;
+        }
+        *frame = frames_[next_frame_++];
+        return true;
+    }
+
+    void release() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        released_ = true;
+        condition_.notify_all();
+    }
+
+    void cancel() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_ = true;
+        condition_.notify_all();
+    }
+
+    bool configured() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return configured_;
+    }
+
+    mosas::runtime::CameraCaptureMode mode() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return config_.mode;
+    }
+
+private:
+    std::vector<mosas::runtime::CameraFrame> frames_;
+    std::size_t next_frame_ = 0;
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    mosas::runtime::CameraCaptureConfig config_{};
+    bool configured_ = false;
+    bool released_ = false;
+    bool cancelled_ = false;
+};
+
+class RecordingCommandSink final : public mosas::runtime::CommandSink {
+public:
+    bool send(const mosas::runtime::GuidanceCommand& command) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        commands_.push_back(command);
+        return true;
+    }
+
+    std::size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return commands_.size();
+    }
+
+    mosas::runtime::GuidanceCommand command_at(std::size_t index) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return commands_.at(index);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<mosas::runtime::GuidanceCommand> commands_;
+};
+
 bool wait_until(const std::function<bool()>& predicate,
                 std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -145,6 +225,35 @@ bool wait_until(const std::function<bool()>& predicate,
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return predicate();
+}
+
+cv::Mat make_guidance_frame() {
+    cv::Mat frame(48, 64, CV_8UC3, cv::Scalar(0, 0, 0));
+    frame(cv::Rect(28, 20, 8, 8)).setTo(cv::Scalar(0, 255, 0));
+    return frame;
+}
+
+mosas::runtime::FlightPhaseDetectorConfig free_flight_detector_config() {
+    mosas::runtime::FlightPhaseDetectorConfig config;
+    config.min_static_samples = 2;
+    config.min_static_duration_ns = 1000000;
+    config.max_static_axis_variation = 0.2;
+    config.ejection_start_threshold = 20.0;
+    config.ejection_confirm_duration_ns = 2000000;
+    config.free_flight_release_threshold = 3.0;
+    config.free_flight_confirm_duration_ns = 2000000;
+    return config;
+}
+
+std::vector<mosas::runtime::ImuSample> free_flight_samples() {
+    return {
+        {0, {0.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+        {1000000, {0.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+        {2000000, {21.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+        {4000000, {21.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+        {5000000, {1.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+        {7000000, {1.0, 9.8, 0.0}, {0.0, 0.0, 0.0}},
+    };
 }
 
 void test_runtime_types_are_constructible() {
@@ -324,6 +433,136 @@ void test_runtime_stop_cancels_blocking_sources() {
     assert(camera_source_view->cancelled());
 }
 
+void test_vision_worker_sends_command_only_for_fresh_free_flight_state() {
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{
+            {1000000, make_guidance_frame()},
+            {8000000, make_guidance_frame()},
+            {9000000, make_guidance_frame()},
+        });
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<RecordingCommandSink>();
+    RecordingCommandSink* command_sink_view = command_sink.get();
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        free_flight_samples());
+
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.phase_detector = free_flight_detector_config();
+    config.launch_speed_mps = 100.0;
+    config.history_capacity = 32;
+    config.max_imu_age_ns = 3000000;
+    config.camera_intrinsics = {100.0, 100.0, 32.0, 24.0};
+    config.vision_config.initial_roi = {0, 0, 64, 48};
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(wait_until(
+        [&runtime] {
+            const auto state = runtime.latest_state();
+            return state.has_value() &&
+                   state->phase == mosas::runtime::FlightPhase::free_flight;
+        },
+        std::chrono::milliseconds(500)));
+    camera_source_view->release();
+    assert(wait_until(
+        [command_sink_view] { return command_sink_view->size() >= 1; },
+        std::chrono::milliseconds(500)));
+    runtime.stop();
+
+    assert(command_sink_view->size() == 1);
+    const auto command = command_sink_view->command_at(0);
+    assert(command.timestamp_ns == 9000000);
+    assert(command.output.valid);
+}
+
+void test_stale_imu_state_does_not_send_command() {
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{{100000000,
+                                                  make_guidance_frame()}});
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<RecordingCommandSink>();
+    RecordingCommandSink* command_sink_view = command_sink.get();
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        free_flight_samples());
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.phase_detector = free_flight_detector_config();
+    config.launch_speed_mps = 100.0;
+    config.history_capacity = 32;
+    config.max_imu_age_ns = 1000000;
+    config.camera_intrinsics = {100.0, 100.0, 32.0, 24.0};
+    config.vision_config.initial_roi = {0, 0, 64, 48};
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(wait_until(
+        [&runtime] { return runtime.latest_state().has_value(); },
+        std::chrono::milliseconds(500)));
+    camera_source_view->release();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    runtime.stop();
+    assert(command_sink_view->size() == 0);
+}
+
+void test_non_monotonic_frame_timestamp_resets_los_rate_and_skips_frame() {
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{
+            {8000000, make_guidance_frame()},
+            {7000000, make_guidance_frame()},
+        });
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<RecordingCommandSink>();
+    RecordingCommandSink* command_sink_view = command_sink.get();
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        free_flight_samples());
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.phase_detector = free_flight_detector_config();
+    config.launch_speed_mps = 100.0;
+    config.history_capacity = 32;
+    config.max_imu_age_ns = 3000000;
+    config.camera_intrinsics = {100.0, 100.0, 32.0, 24.0};
+    config.vision_config.initial_roi = {0, 0, 64, 48};
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(wait_until(
+        [&runtime] {
+            const auto state = runtime.latest_state();
+            return state.has_value() &&
+                   state->phase == mosas::runtime::FlightPhase::free_flight;
+        },
+        std::chrono::milliseconds(500)));
+    camera_source_view->release();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    runtime.stop();
+    assert(command_sink_view->size() == 0);
+}
+
+void test_hardware_trigger_mode_is_forwarded_to_camera_source() {
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{});
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto imu_source = std::make_unique<EmptyImuSource>();
+    auto command_sink = std::make_unique<EmptyCommandSink>();
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.camera_capture.mode =
+        mosas::runtime::CameraCaptureMode::hardware_trigger;
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(camera_source_view->configured());
+    assert(camera_source_view->mode() ==
+           mosas::runtime::CameraCaptureMode::hardware_trigger);
+    runtime.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -336,6 +575,10 @@ int main() {
     test_runtime_imu_worker_initializes_and_publishes_free_flight_state();
     test_runtime_rejects_invalid_config_without_starting_workers();
     test_runtime_stop_cancels_blocking_sources();
+    test_vision_worker_sends_command_only_for_fresh_free_flight_state();
+    test_stale_imu_state_does_not_send_command();
+    test_non_monotonic_frame_timestamp_resets_los_rate_and_skips_frame();
+    test_hardware_trigger_mode_is_forwarded_to_camera_source();
     EmptyImuSource imu_source;
     EmptyCameraSource camera_source;
     EmptyCommandSink command_sink;
