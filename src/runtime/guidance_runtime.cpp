@@ -34,11 +34,26 @@ bool valid_rotation(const RotationMatrix3& value) {
     if (!is_finite(value)) {
         return false;
     }
+    const Vector3 column_0{value.m00, value.m10, value.m20};
+    const Vector3 column_1{value.m01, value.m11, value.m21};
+    const Vector3 column_2{value.m02, value.m12, value.m22};
+    const auto norm = [](const Vector3& vector) {
+        return std::hypot(std::hypot(vector.x, vector.y), vector.z);
+    };
+    const auto dot = [](const Vector3& lhs, const Vector3& rhs) {
+        return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+    };
     const double determinant =
         value.m00 * (value.m11 * value.m22 - value.m12 * value.m21) -
         value.m01 * (value.m10 * value.m22 - value.m12 * value.m20) +
         value.m02 * (value.m10 * value.m21 - value.m11 * value.m20);
-    return std::abs(determinant - 1.0) <= 1e-6;
+    return std::abs(norm(column_0) - 1.0) <= 1e-6 &&
+           std::abs(norm(column_1) - 1.0) <= 1e-6 &&
+           std::abs(norm(column_2) - 1.0) <= 1e-6 &&
+           std::abs(dot(column_0, column_1)) <= 1e-6 &&
+           std::abs(dot(column_0, column_2)) <= 1e-6 &&
+           std::abs(dot(column_1, column_2)) <= 1e-6 &&
+           std::abs(determinant - 1.0) <= 1e-6;
 }
 
 bool valid_detector_config(const FlightPhaseDetectorConfig& config) {
@@ -53,6 +68,30 @@ bool valid_detector_config(const FlightPhaseDetectorConfig& config) {
            is_finite(config.free_flight_release_threshold) &&
            config.free_flight_release_threshold >= 0.0 &&
            config.free_flight_confirm_duration_ns >= 0;
+}
+
+bool valid_vision_config(const VisionConfig& config) {
+    return config.initial_roi.width > 0 && config.initial_roi.height > 0 &&
+           config.threshold.h_min <= config.threshold.h_max &&
+           config.threshold.s_min <= config.threshold.s_max &&
+           config.threshold.v_min <= config.threshold.v_max &&
+           config.found_range_x >= 0 && config.found_range_y >= 0 &&
+           config.min_blob_area >= 0 && is_finite(config.min_aspect_ratio) &&
+           config.min_aspect_ratio >= 0.0 && is_finite(config.min_fill_ratio) &&
+           config.min_fill_ratio >= 0.0;
+}
+
+bool valid_los_filter_config(const LineOfSightRateFilterConfig& config) {
+    return is_finite(config.process_noise) &&
+           is_finite(config.measurement_noise) &&
+           is_finite(config.initial_covariance) && config.process_noise >= 0.0 &&
+           config.measurement_noise > 0.0 && config.initial_covariance >= 0.0;
+}
+
+bool valid_png_config(const PngGuidanceConfig& config) {
+    return is_finite(config.navigation_constant) &&
+           is_finite(config.gravity) && config.navigation_constant > 0.0 &&
+           config.gravity > 0.0;
 }
 
 }  // namespace
@@ -80,10 +119,13 @@ bool GuidanceRuntime::validate_config() const {
            command_sink_ != nullptr && valid_detector_config(config_.phase_detector) &&
            is_finite(config_.launch_speed_mps) && config_.launch_speed_mps >= 0.0 &&
            config_.history_capacity > 0 && config_.max_imu_age_ns > 0 &&
+           valid_vision_config(config_.vision_config) &&
            is_finite(config_.camera_intrinsics) &&
            config_.camera_intrinsics.fx > 0.0 &&
            config_.camera_intrinsics.fy > 0.0 &&
-           valid_rotation(config_.camera_to_body);
+           valid_rotation(config_.camera_to_body) &&
+           valid_los_filter_config(config_.los_rate_filter) &&
+           valid_png_config(config_.png_guidance);
 }
 
 bool GuidanceRuntime::start() {
@@ -167,8 +209,9 @@ void GuidanceRuntime::set_error(const std::string& message) {
 }
 
 void GuidanceRuntime::set_fault(const std::string& message) {
-    faulted_.store(true);
-    set_error(message);
+    if (!faulted_.exchange(true)) {
+        set_error(message);
+    }
     stop_requested_.store(true);
     cancel_sources();
 }

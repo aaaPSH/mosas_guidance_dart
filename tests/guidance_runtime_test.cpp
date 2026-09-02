@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -213,6 +214,33 @@ public:
 private:
     mutable std::mutex mutex_;
     std::vector<mosas::runtime::GuidanceCommand> commands_;
+};
+
+class FailingCommandSink final : public mosas::runtime::CommandSink {
+public:
+    bool send(const mosas::runtime::GuidanceCommand&) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++send_count_;
+        return false;
+    }
+
+    std::size_t send_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return send_count_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::size_t send_count_ = 0;
+};
+
+class ThrowingImuSource final : public mosas::runtime::ImuSource {
+public:
+    bool read(mosas::runtime::ImuSample*) override {
+        throw std::runtime_error("imu read failed");
+    }
+
+    void cancel() noexcept override {}
 };
 
 bool wait_until(const std::function<bool()>& predicate,
@@ -563,6 +591,85 @@ void test_hardware_trigger_mode_is_forwarded_to_camera_source() {
     runtime.stop();
 }
 
+void test_command_sink_failure_enters_fault_and_stops_future_sends() {
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{
+            {8000000, make_guidance_frame()},
+            {9000000, make_guidance_frame()},
+            {10000000, make_guidance_frame()},
+        });
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<FailingCommandSink>();
+    FailingCommandSink* command_sink_view = command_sink.get();
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        free_flight_samples());
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.phase_detector = free_flight_detector_config();
+    config.launch_speed_mps = 100.0;
+    config.history_capacity = 32;
+    config.max_imu_age_ns = 3000000;
+    config.camera_intrinsics = {100.0, 100.0, 32.0, 24.0};
+    config.vision_config.initial_roi = {0, 0, 64, 48};
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(wait_until(
+        [&runtime] {
+            const auto state = runtime.latest_state();
+            return state.has_value() &&
+                   state->phase == mosas::runtime::FlightPhase::free_flight;
+        },
+        std::chrono::milliseconds(500)));
+    camera_source_view->release();
+    assert(wait_until(
+        [&runtime] { return runtime.faulted(); },
+        std::chrono::milliseconds(500)));
+    const std::size_t sends_at_fault = command_sink_view->send_count();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    runtime.stop();
+    assert(sends_at_fault == 1);
+    assert(command_sink_view->send_count() == sends_at_fault);
+    assert(!runtime.last_error().empty());
+}
+
+void test_worker_exception_enters_fault_and_cancels_other_source() {
+    auto imu_source = std::make_unique<ThrowingImuSource>();
+    auto camera_source = std::make_unique<BlockingCameraSource>();
+    BlockingCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<EmptyCommandSink>();
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.history_capacity = 4;
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    assert(wait_until(
+        [&runtime] { return runtime.faulted(); },
+        std::chrono::milliseconds(500)));
+    assert(camera_source_view->cancelled());
+    runtime.stop();
+}
+
+void test_source_timeout_is_not_a_runtime_fault() {
+    auto imu_source = std::make_unique<EmptyImuSource>();
+    auto camera_source = std::make_unique<BlockingCameraSource>();
+    auto command_sink = std::make_unique<EmptyCommandSink>();
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.history_capacity = 4;
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+    assert(runtime.start());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(runtime.running());
+    assert(!runtime.faulted());
+    runtime.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -579,6 +686,9 @@ int main() {
     test_stale_imu_state_does_not_send_command();
     test_non_monotonic_frame_timestamp_resets_los_rate_and_skips_frame();
     test_hardware_trigger_mode_is_forwarded_to_camera_source();
+    test_command_sink_failure_enters_fault_and_stops_future_sends();
+    test_worker_exception_enters_fault_and_cancels_other_source();
+    test_source_timeout_is_not_a_runtime_fault();
     EmptyImuSource imu_source;
     EmptyCameraSource camera_source;
     EmptyCommandSink command_sink;
