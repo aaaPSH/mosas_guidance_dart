@@ -7,6 +7,19 @@
 /docs/
 /README.md
 
+# 无线图传的测试和使用文档需要随功能提交。
+!/tests/
+/tests/*
+!/tests/wireless_streamer_test.cpp
+!/tests/wireless_test_frame_generator_fallback_test.sh
+!/docs/
+/docs/*
+!/docs/wireless_stream.md
+
+# 无线图传验收图片仅保留在本地，不提交到 Git。
+/assets/wireless_test_frames/*.png
+/assets/wireless_test_frames/**/*.png
+
 # IDE 配置
 /.vscode/
 /.idea/

@@ -72,6 +72,8 @@ fi
 is_allowed_file() {
   local relative_path="$1"
   case "${relative_path}" in
+    assets/*)
+      return 0 ;;
     *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx|*.inl|*.dart|*.py|*.js|*.ts|*.java|*.go|*.rs|*.cs|*.swift|*.kt|*.m|*.mm)
       return 0 ;;
     *.cmake|CMakeLists.txt|Makefile|GNUmakefile|makefile|*.mk|*.gradle|*.gradle.kts)
@@ -105,6 +107,16 @@ is_text_file() {
   return 2
 }
 
+# assets 目录允许同步二进制资源，例如 PNG、JPEG 和视频文件。
+is_asset_file() {
+  case "$1" in
+    assets/*)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
 if ! WORK_DIR="$(mktemp -d)"; then
   echo "错误：无法创建临时目录。" >&2
   exit 1
@@ -133,7 +145,7 @@ SOURCE_FILES=()
 while IFS= read -r -d '' candidate; do
   relative_path="${candidate#"${SOURCE_DIR}/"}"
   if is_allowed_file "${relative_path}"; then
-    if is_text_file "${candidate}"; then
+    if is_asset_file "${relative_path}" || is_text_file "${candidate}"; then
       SOURCE_FILES+=("${relative_path}")
     else
       text_status=$?
