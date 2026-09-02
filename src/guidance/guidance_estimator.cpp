@@ -34,6 +34,12 @@ bool is_valid_rate_filter_config(const LineOfSightRateFilterConfig& config) {
            config.measurement_noise > 0.0 && config.initial_covariance >= 0.0;
 }
 
+bool is_valid_png_config(const PngGuidanceConfig& config) {
+    return is_finite(config.navigation_constant) &&
+           is_finite(config.gravity) && config.navigation_constant > 0.0 &&
+           config.gravity > 0.0;
+}
+
 double normalize_angle(double angle) {
     angle = std::fmod(angle + kPi, kTwoPi);
     if (angle < 0.0) {
@@ -371,4 +377,95 @@ LineOfSightAngularVelocity LineOfSightRateEstimator::angular_velocity() const {
 
 LineOfSightRateSample LineOfSightRateEstimator::sample() const {
     return sample_;
+}
+
+PngGuidanceOutput PngGuidance::calculate(
+    const LineOfSight& line_of_sight,
+    const LineOfSightAngularVelocity& angular_velocity,
+    const Vector3& dart_velocity, const EulerAngles& attitude,
+    const PngGuidanceConfig& config) {
+    const PngGuidanceOutput invalid_output{
+        false,
+        {0.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0},
+        0.0,
+        0.0,
+    };
+    if (!is_valid_line_of_sight(line_of_sight) ||
+        !angular_velocity.valid || !is_finite(angular_velocity.q_y) ||
+        !is_finite(angular_velocity.q_z) || !is_valid_vector(dart_velocity) ||
+        !is_finite(attitude) || !is_valid_png_config(config)) {
+        return invalid_output;
+    }
+
+    const double speed = vector_norm(dart_velocity);
+    if (!is_finite(speed) || speed < kEpsilon) {
+        return invalid_output;
+    }
+
+    // theta 为飞镖速度矢量的弹道俯仰角，v 为速度模长。
+    const double cos_theta =
+        std::hypot(dart_velocity.x, dart_velocity.z) / speed;
+    const double speed_over_gravity = speed / config.gravity;
+    const double vertical_overload =
+        config.navigation_constant * angular_velocity.q_y *
+            speed_over_gravity +
+        cos_theta;
+    const double lateral_overload =
+        -config.navigation_constant * angular_velocity.q_z *
+        speed_over_gravity * cos_theta;
+    if (!is_finite(cos_theta) || !is_finite(vertical_overload) ||
+        !is_finite(lateral_overload)) {
+        return invalid_output;
+    }
+
+    const double command_overload =
+        std::hypot(vertical_overload, lateral_overload);
+    const double command_phase =
+        std::atan2(lateral_overload, vertical_overload);
+    if (!is_finite(command_overload) || !is_finite(command_phase)) {
+        return invalid_output;
+    }
+
+    // 二维解耦：纵向和横向通道分别生成导航系 y/z 过载，x 轴不产生指令。
+    const Vector3 navigation_acceleration{
+        0.0,
+        config.gravity * vertical_overload,
+        config.gravity * lateral_overload,
+    };
+    if (!is_valid_vector(navigation_acceleration)) {
+        return invalid_output;
+    }
+
+    const RotationMatrix3 body_to_navigation = rotation_from_euler(attitude);
+    const Vector3 body_acceleration{
+        body_to_navigation.m00 * navigation_acceleration.x +
+            body_to_navigation.m10 * navigation_acceleration.y +
+            body_to_navigation.m20 * navigation_acceleration.z,
+        body_to_navigation.m01 * navigation_acceleration.x +
+            body_to_navigation.m11 * navigation_acceleration.y +
+            body_to_navigation.m21 * navigation_acceleration.z,
+        body_to_navigation.m02 * navigation_acceleration.x +
+            body_to_navigation.m12 * navigation_acceleration.y +
+            body_to_navigation.m22 * navigation_acceleration.z,
+    };
+    if (!is_valid_vector(body_acceleration)) {
+        return invalid_output;
+    }
+
+    const Vector3 body_overload{
+        body_acceleration.x / config.gravity,
+        body_acceleration.y / config.gravity,
+        body_acceleration.z / config.gravity,
+    };
+    if (!is_valid_vector(body_overload)) {
+        return invalid_output;
+    }
+    return {true,
+            navigation_acceleration,
+            body_acceleration,
+            body_overload,
+            command_overload,
+            command_phase};
 }

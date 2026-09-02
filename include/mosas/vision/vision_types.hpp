@@ -3,14 +3,6 @@
 
 #include <cstdint>
 
-// 非拥有式 RGB888 图像帧，由调用方负责管理 data 的生命周期。
-struct Rgb888Frame {
-    uint8_t* data;
-    int width;
-    int height;
-    int stride;
-};
-
 struct VisionRoi {
     int x;
     int y;
