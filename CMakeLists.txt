@@ -5,6 +5,7 @@ include(GNUInstallDirs)
 include(CTest)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -48,6 +49,22 @@ target_link_libraries(mosas_guidance
         mosas_vision
 )
 
+add_library(mosas_runtime STATIC
+    src/runtime/flight_phase_detector.cpp
+    src/runtime/imu_state_history.cpp
+    src/runtime/guidance_runtime.cpp
+)
+configure_mosas_target(mosas_runtime)
+target_include_directories(mosas_runtime
+    PUBLIC
+        ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(mosas_runtime
+    PUBLIC
+        mosas_guidance
+        Threads::Threads
+)
+
 if(BUILD_TESTING)
     add_executable(vision_opencv_test
         tests/vision_opencv_test.cpp
@@ -62,9 +79,15 @@ if(BUILD_TESTING)
     configure_mosas_target(png_guidance_test)
     target_link_libraries(png_guidance_test PRIVATE mosas_guidance)
     add_test(NAME png_guidance_test COMMAND png_guidance_test)
+
+    add_executable(guidance_runtime_test
+        tests/guidance_runtime_test.cpp
+    )
+    configure_mosas_target(guidance_runtime_test)
+    target_link_libraries(guidance_runtime_test PRIVATE mosas_runtime)
+    add_test(NAME guidance_runtime_test COMMAND guidance_runtime_test)
 endif()
 
-find_package(Threads REQUIRED)
 add_library(serial_package STATIC
     src/serial_package/serial_port.cpp
 )
@@ -81,6 +104,7 @@ install(TARGETS
     mosas_dart
     mosas_vision
     mosas_guidance
+    mosas_runtime
     serial_package
     serial_port_probe
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
