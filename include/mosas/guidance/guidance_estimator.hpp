@@ -36,9 +36,10 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。导航系数无量纲，重力加速度单位为 m/s²。
+// PNG 律参数。Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²。
 struct PngGuidanceConfig {
-    double navigation_constant = 3.0;
+    double navigation_constant_y = 3.0;
+    double navigation_constant_z = 3.0;
     double gravity = 9.80665;
 };
 

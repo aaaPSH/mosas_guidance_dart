@@ -6,11 +6,11 @@ include(CTest)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 
+set(MOSAS_OPENCV_COMPONENTS core imgproc videoio calib3d)
 if(MOSAS_BUILD_WIRELESS)
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
-else()
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    list(APPEND MOSAS_OPENCV_COMPONENTS imgcodecs)
 endif()
+find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
 find_package(Threads REQUIRED)
 
 if(MOSAS_BUILD_WIRELESS)
@@ -99,6 +99,33 @@ if(MOSAS_BUILD_WIRELESS)
     )
 endif()
 
+add_library(mosas_app STATIC
+    src/app/app_config.cpp
+    src/app/host_adapters.cpp
+)
+configure_mosas_target(mosas_app)
+target_include_directories(mosas_app
+    PUBLIC
+        ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(mosas_app
+    PUBLIC
+        mosas_runtime
+        ${OpenCV_LIBS}
+)
+if(MOSAS_BUILD_WIRELESS)
+    target_link_libraries(mosas_app PUBLIC mosas_wireless)
+endif()
+
+add_executable(mosas_guidance_app
+    examples/mosas_guidance_app.cpp
+)
+configure_mosas_target(mosas_guidance_app)
+target_link_libraries(mosas_guidance_app PRIVATE mosas_app)
+if(MOSAS_BUILD_WIRELESS)
+    target_compile_definitions(mosas_guidance_app PRIVATE MOSAS_APP_HAS_WIRELESS=1)
+endif()
+
 if(BUILD_TESTING)
     add_executable(vision_opencv_test
         tests/vision_opencv_test.cpp
@@ -120,6 +147,39 @@ if(BUILD_TESTING)
     configure_mosas_target(guidance_runtime_test)
     target_link_libraries(guidance_runtime_test PRIVATE mosas_runtime)
     add_test(NAME guidance_runtime_test COMMAND guidance_runtime_test)
+
+    add_executable(app_config_test
+        tests/app_config_test.cpp
+    )
+    configure_mosas_target(app_config_test)
+    target_include_directories(app_config_test
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(app_config_test PRIVATE mosas_app)
+    add_test(NAME app_config_test COMMAND app_config_test)
+
+    add_executable(host_adapters_test
+        tests/host_adapters_test.cpp
+    )
+    configure_mosas_target(host_adapters_test)
+    target_link_libraries(host_adapters_test PRIVATE mosas_app)
+    add_test(NAME host_adapters_test COMMAND host_adapters_test)
+
+    add_test(
+        NAME mosas_guidance_app_cli_test
+        COMMAND bash
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mosas_guidance_app_cli_test.sh
+            $<TARGET_FILE:mosas_guidance_app>
+    )
+
+    add_test(
+        NAME run_guidance_script_test
+        COMMAND bash
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_guidance_script_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_guidance.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 
     if(MOSAS_BUILD_WIRELESS)
         add_executable(wireless_streamer_test
@@ -179,6 +239,8 @@ set(MOSAS_INSTALL_TARGETS
     mosas_vision
     mosas_guidance
     mosas_runtime
+    mosas_app
+    mosas_guidance_app
     serial_package
     serial_port_probe
     guidance_timing_probe
@@ -196,3 +258,9 @@ install(TARGETS ${MOSAS_INSTALL_TARGETS}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES config/mosas_guidance.conf
+    DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/mosas
+)
+install(PROGRAMS scripts/run_guidance.sh
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+)

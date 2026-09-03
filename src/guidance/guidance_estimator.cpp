@@ -35,9 +35,10 @@ bool is_valid_rate_filter_config(const LineOfSightRateFilterConfig& config) {
 }
 
 bool is_valid_png_config(const PngGuidanceConfig& config) {
-    return is_finite(config.navigation_constant) &&
-           is_finite(config.gravity) && config.navigation_constant > 0.0 &&
-           config.gravity > 0.0;
+    return is_finite(config.navigation_constant_y) &&
+           is_finite(config.navigation_constant_z) &&
+           is_finite(config.gravity) && config.navigation_constant_y > 0.0 &&
+           config.navigation_constant_z > 0.0 && config.gravity > 0.0;
 }
 
 double normalize_angle(double angle) {
@@ -409,11 +410,11 @@ PngGuidanceOutput PngGuidance::calculate(
         std::hypot(dart_velocity.x, dart_velocity.z) / speed;
     const double speed_over_gravity = speed / config.gravity;
     const double vertical_overload =
-        config.navigation_constant * angular_velocity.q_y *
+        config.navigation_constant_y * angular_velocity.q_y *
             speed_over_gravity +
         cos_theta;
     const double lateral_overload =
-        -config.navigation_constant * angular_velocity.q_z *
+        -config.navigation_constant_z * angular_velocity.q_z *
         speed_over_gravity * cos_theta;
     if (!is_finite(cos_theta) || !is_finite(vertical_overload) ||
         !is_finite(lateral_overload)) {
