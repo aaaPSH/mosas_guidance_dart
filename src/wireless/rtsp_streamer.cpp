@@ -1,6 +1,7 @@
 #include <mosas/wireless/rtsp_streamer.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -45,6 +46,9 @@ public:
         if (!validate_config(error)) {
             return false;
         }
+        if (cancel_requested_.load()) {
+            return set_error(error, "streamer start cancelled");
+        }
 
         if (avformat_network_init() < 0) {
             return set_error(error, "initialize FFmpeg network support failed");
@@ -75,6 +79,8 @@ public:
         if (stream_ == nullptr) {
             return fail(error, "create RTSP video stream failed");
         }
+        format_context_->interrupt_callback.callback = &Impl::interrupt_callback;
+        format_context_->interrupt_callback.opaque = this;
 
         codec_context_ = avcodec_alloc_context3(codec);
         if (codec_context_ == nullptr) {
@@ -147,6 +153,10 @@ public:
         if (scaler_ == nullptr) {
             return fail(error, "create BGR to YUV420P converter failed");
         }
+        packet_ = av_packet_alloc();
+        if (packet_ == nullptr) {
+            return fail(error, "allocate encoded packet failed");
+        }
 
         next_pts_ = 0;
         first_capture_timestamp_ns_ = AV_NOPTS_VALUE;
@@ -192,6 +202,7 @@ public:
     }
 
     void stop() noexcept {
+        cancel_requested_.store(true);
         if (stopping_) {
             return;
         }
@@ -211,6 +222,9 @@ public:
         if (frame_ != nullptr) {
             av_frame_free(&frame_);
         }
+        if (packet_ != nullptr) {
+            av_packet_free(&packet_);
+        }
         if (codec_context_ != nullptr) {
             avcodec_free_context(&codec_context_);
         }
@@ -229,10 +243,19 @@ public:
 
     bool running() const noexcept {
         return format_context_ != nullptr && codec_context_ != nullptr &&
-               frame_ != nullptr && scaler_ != nullptr;
+               frame_ != nullptr && scaler_ != nullptr && packet_ != nullptr;
     }
 
+    void cancel() noexcept { cancel_requested_.store(true); }
+
+    void reset() noexcept { cancel_requested_.store(false); }
+
 private:
+    static int interrupt_callback(void* opaque) {
+        const auto* instance = static_cast<const Impl*>(opaque);
+        return instance != nullptr && instance->cancel_requested_.load() ? 1 : 0;
+    }
+
     bool validate_config(std::string* error) const {
         if (config_.rtsp_url.rfind("rtsp://", 0) != 0) {
             return set_error(error, "RTSP URL must start with rtsp://");
@@ -257,36 +280,36 @@ private:
     }
 
     bool write_encoded_packets(std::string* error) {
-        AVPacket* packet = av_packet_alloc();
-        if (packet == nullptr) {
+        if (packet_ == nullptr) {
             return fail(error, "allocate encoded packet failed");
         }
 
-        bool success = true;
+        std::string failure;
         while (true) {
-            const int result = avcodec_receive_packet(codec_context_, packet);
+            av_packet_unref(packet_);
+            const int result = avcodec_receive_packet(codec_context_, packet_);
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) {
                 break;
             }
             if (result < 0) {
-                success = fail(error,
-                               ffmpeg_error("receive H.264 packet", result));
+                failure = ffmpeg_error("receive H.264 packet", result);
                 break;
             }
-            av_packet_rescale_ts(packet, codec_context_->time_base,
+            av_packet_rescale_ts(packet_, codec_context_->time_base,
                                  stream_->time_base);
-            packet->stream_index = stream_->index;
+            packet_->stream_index = stream_->index;
             const int write_result =
-                av_interleaved_write_frame(format_context_, packet);
-            av_packet_unref(packet);
+                av_interleaved_write_frame(format_context_, packet_);
             if (write_result < 0) {
-                success = fail(error,
-                               ffmpeg_error("write RTSP packet", write_result));
+                failure = ffmpeg_error("write RTSP packet", write_result);
                 break;
             }
         }
-        av_packet_free(&packet);
-        return success;
+        av_packet_unref(packet_);
+        if (!failure.empty()) {
+            return fail(error, failure);
+        }
+        return true;
     }
 
     RtspStreamConfig config_;
@@ -295,6 +318,8 @@ private:
     AVCodecContext* codec_context_ = nullptr;
     AVFrame* frame_ = nullptr;
     SwsContext* scaler_ = nullptr;
+    AVPacket* packet_ = nullptr;
+    std::atomic<bool> cancel_requested_{false};
     std::int64_t next_pts_ = 0;
     std::int64_t first_capture_timestamp_ns_ = AV_NOPTS_VALUE;
     bool header_written_ = false;
@@ -316,6 +341,10 @@ bool RtspStreamer::send_bgr(const cv::Mat& frame,
 }
 
 void RtspStreamer::stop() noexcept { impl_->stop(); }
+
+void RtspStreamer::cancel() noexcept { impl_->cancel(); }
+
+void RtspStreamer::reset() noexcept { impl_->reset(); }
 
 bool RtspStreamer::running() const noexcept { return impl_->running(); }
 

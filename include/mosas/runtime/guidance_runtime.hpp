@@ -4,6 +4,7 @@
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/flight_phase_detector.hpp>
 #include <mosas/runtime/imu_state_history.hpp>
+#include <mosas/runtime/latest_frame_queue.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 
 #include <atomic>
@@ -31,6 +32,8 @@ struct GuidanceRuntimeConfig {
     LineOfSightRateFilterConfig los_rate_filter{};
     PngGuidanceConfig png_guidance{};
     CameraCaptureConfig camera_capture{};
+    std::size_t capture_queue_capacity = 1;
+    std::size_t output_queue_capacity = 1;
 };
 
 class GuidanceRuntime {
@@ -54,9 +57,19 @@ public:
     std::optional<ImuStateSnapshot> latest_state() const;
 
 private:
+    struct ProcessedFrame {
+        CameraFrame frame;
+        VisionResult vision_result{};
+        ImuStateSnapshot imu_state{};
+        PngGuidanceOutput guidance{};
+        VisionOverlayData overlay{};
+    };
+
     bool validate_config() const;
     void imu_worker();
-    void vision_worker();
+    void capture_worker();
+    void processing_worker();
+    void output_worker();
     void set_error(const std::string& message);
     void set_fault(const std::string& message);
     void cancel_sources() noexcept;
@@ -66,6 +79,8 @@ private:
     std::unique_ptr<CommandSink> command_sink_;
     std::unique_ptr<FrameSink> frame_sink_;
     GuidanceRuntimeConfig config_;
+    LatestFrameQueue<CameraFrame> capture_queue_;
+    LatestFrameQueue<ProcessedFrame> output_queue_;
     FlightPhaseDetector phase_detector_;
     ImuStateHistory state_history_;
     DartCondition dart_condition_;
@@ -75,7 +90,9 @@ private:
     std::atomic<bool> faulted_{false};
     std::atomic<bool> sources_cancelled_{false};
     std::thread imu_thread_;
-    std::thread vision_thread_;
+    std::thread capture_thread_;
+    std::thread processing_thread_;
+    std::thread output_thread_;
 
     mutable std::mutex state_mutex_;
     std::optional<ImuStateSnapshot> latest_state_;
