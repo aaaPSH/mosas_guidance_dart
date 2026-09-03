@@ -83,6 +83,7 @@ target_link_libraries(mosas_runtime
 
 if(MOSAS_BUILD_WIRELESS)
     add_library(mosas_wireless STATIC
+        src/wireless/rtsp_frame_sink.cpp
         src/wireless/rtsp_streamer.cpp
     )
     configure_mosas_target(mosas_wireless)
@@ -92,6 +93,7 @@ if(MOSAS_BUILD_WIRELESS)
     )
     target_link_libraries(mosas_wireless
         PUBLIC
+            mosas_vision
             ${OpenCV_LIBS}
             PkgConfig::FFMPEG
     )
