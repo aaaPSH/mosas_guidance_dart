@@ -47,6 +47,16 @@ public:
                          const VisionResult& vision_result,
                          const ImuStateSnapshot& imu_state,
                          const PngGuidanceOutput& guidance) = 0;
+
+    // 携带视线角和视线角速度，供可视化接收；旧接口保持兼容。
+    virtual bool publish(const CameraFrame& frame,
+                         const VisionResult& vision_result,
+                         const ImuStateSnapshot& imu_state,
+                         const PngGuidanceOutput& guidance,
+                         const VisionOverlayData& overlay) {
+        (void)overlay;
+        return publish(frame, vision_result, imu_state, guidance);
+    }
 };
 
 }  // namespace mosas::runtime

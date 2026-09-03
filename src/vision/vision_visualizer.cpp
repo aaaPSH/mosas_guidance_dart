@@ -1,10 +1,19 @@
 #include <mosas/vision/vision_visualizer.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include <opencv2/imgproc.hpp>
 
 namespace {
+
+constexpr double kRadiansToDegrees = 57.29577951308232;
+const cv::Scalar kOverlayColor{0, 255, 0};
+const cv::Scalar kOverlayPanelColor{16, 16, 16};
 
 bool is_valid_frame(const cv::Mat& frame) {
     return !frame.empty() && frame.rows > 0 && frame.cols > 0 &&
@@ -29,16 +38,31 @@ void draw_rectangle(cv::Mat& frame, const VisionRoi& raw_roi,
                   1);
 }
 
-}  // namespace
+void draw_cross(cv::Mat& frame, const cv::Point2d& raw_center,
+                const cv::Scalar& color) {
+    if (!std::isfinite(raw_center.x) || !std::isfinite(raw_center.y)) {
+        return;
+    }
 
-void VisionVisualizer::draw_result(cv::Mat& frame, const VisionResult& result) {
+    const cv::Point center(cvRound(raw_center.x), cvRound(raw_center.y));
+    cv::line(frame, {center.x - 2, center.y}, {center.x + 2, center.y}, color,
+             1);
+    cv::line(frame, {center.x, center.y - 2}, {center.x, center.y + 2}, color,
+             1);
+}
+
+void draw_result_impl(cv::Mat& frame, const VisionResult& result,
+                      const cv::Point2d* line_of_sight_reference_point) {
     if (!is_valid_frame(frame)) {
         return;
     }
 
     try {
-        // RGB 存储下的颜色顺序与图像通道顺序一致。
+        // RGB 存储下沿用项目现有的颜色通道约定。
         draw_rectangle(frame, result.next_roi, {0, 0, 255});
+        if (line_of_sight_reference_point != nullptr) {
+            draw_cross(frame, *line_of_sight_reference_point, {0, 255, 255});
+        }
         if (!result.found) {
             return;
         }
@@ -47,13 +71,124 @@ void VisionVisualizer::draw_result(cv::Mat& frame, const VisionResult& result) {
                        {result.blob.x, result.blob.y, result.blob.width,
                         result.blob.height},
                        {255, 0, 0});
-        const cv::Point center(result.blob.x + result.blob.width / 2,
-                               result.blob.y + result.blob.height / 2);
-        cv::line(frame, {center.x - 2, center.y},
-                 {center.x + 2, center.y}, {0, 255, 0}, 1);
-        cv::line(frame, {center.x, center.y - 2},
-                 {center.x, center.y + 2}, {0, 255, 0}, 1);
+        draw_cross(frame,
+                   {result.blob.center_x, result.blob.center_y},
+                   {0, 0, 255});
     } catch (const cv::Exception&) {
         return;
     }
+}
+
+std::string format_value(bool valid, double value, double scale,
+                         const char* unit) {
+    if (!valid || !std::isfinite(value)) {
+        return "N/A";
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(1) << value * scale << unit;
+    return stream.str();
+}
+
+void draw_guidance_overlay_impl(cv::Mat& frame,
+                                const VisionOverlayData& data) {
+    if (!is_valid_frame(frame)) {
+        return;
+    }
+
+    const double speed = std::hypot(
+        data.velocity_x_mps,
+        std::hypot(data.velocity_y_mps, data.velocity_z_mps));
+    const std::vector<std::string> lines{
+        "LOS(deg): qy " +
+            format_value(data.line_of_sight_valid,
+                         data.line_of_sight_q_y_rad, kRadiansToDegrees, "") +
+            " qz " +
+            format_value(data.line_of_sight_valid,
+                         data.line_of_sight_q_z_rad, kRadiansToDegrees, ""),
+        "LOS rate(deg/s): qy " +
+            format_value(data.line_of_sight_rate_valid,
+                         data.line_of_sight_rate_q_y_rad_s,
+                         kRadiansToDegrees, "") +
+            " qz " +
+            format_value(data.line_of_sight_rate_valid,
+                         data.line_of_sight_rate_q_z_rad_s,
+                         kRadiansToDegrees, ""),
+        "Body overload(g): x " +
+            format_value(data.body_overload_valid, data.body_overload_x_g,
+                         1.0, "") +
+            " y " +
+            format_value(data.body_overload_valid, data.body_overload_y_g,
+                         1.0, "") +
+            " z " +
+            format_value(data.body_overload_valid, data.body_overload_z_g,
+                         1.0, ""),
+        "Attitude(deg): P " +
+            format_value(data.attitude_valid, data.attitude_pitch_rad,
+                         kRadiansToDegrees, "") +
+            " Y " +
+            format_value(data.attitude_valid, data.attitude_yaw_rad,
+                         kRadiansToDegrees, "") +
+            " R " +
+            format_value(data.attitude_valid, data.attitude_roll_rad,
+                         kRadiansToDegrees, ""),
+        "Velocity(m/s): x " +
+            format_value(data.velocity_valid, data.velocity_x_mps, 1.0, "") +
+            " y " +
+            format_value(data.velocity_valid, data.velocity_y_mps, 1.0, "") +
+            " z " +
+            format_value(data.velocity_valid, data.velocity_z_mps, 1.0, ""),
+        "Speed(m/s): " +
+            format_value(data.velocity_valid, speed, 1.0, ""),
+    };
+
+    constexpr int kPanel_x = 4;
+    constexpr int kPanel_y = 4;
+    constexpr int kPanel_width = 310;
+    constexpr int kPanel_padding = 7;
+    constexpr int kLine_height = 17;
+    const int panel_width = std::min(kPanel_width, frame.cols - kPanel_x - 1);
+    const int panel_height =
+        std::min(kPanel_padding * 2 +
+                     static_cast<int>(lines.size()) * kLine_height,
+                 frame.rows - kPanel_y - 1);
+    if (panel_width <= 0 || panel_height <= 0) {
+        return;
+    }
+
+    try {
+        cv::rectangle(frame, cv::Rect(kPanel_x, kPanel_y, panel_width,
+                                      panel_height),
+                      kOverlayPanelColor, cv::FILLED);
+        for (std::size_t index = 0; index < lines.size(); ++index) {
+            const int baseline = kPanel_y + kPanel_padding + 12 +
+                                 static_cast<int>(index) * kLine_height;
+            if (baseline >= frame.rows) {
+                break;
+            }
+            cv::putText(frame, lines[index], {kPanel_x + kPanel_padding,
+                                              baseline},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.38, kOverlayColor, 1,
+                        cv::LINE_AA);
+        }
+    } catch (const cv::Exception&) {
+        return;
+    }
+}
+
+}  // namespace
+
+void VisionVisualizer::draw_result(cv::Mat& frame, const VisionResult& result) {
+    draw_result_impl(frame, result, nullptr);
+}
+
+void VisionVisualizer::draw_result(
+    cv::Mat& frame, const VisionResult& result,
+    const cv::Point2d& line_of_sight_reference_point) {
+    draw_result_impl(frame, result, &line_of_sight_reference_point);
+}
+
+void VisionVisualizer::draw_guidance_overlay(
+    cv::Mat& frame, const VisionOverlayData& data) {
+    draw_guidance_overlay_impl(frame, data);
 }

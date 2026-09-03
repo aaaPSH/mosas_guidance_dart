@@ -393,7 +393,28 @@ void GuidanceRuntime::vision_worker() {
                 return;
             }
             if (frame_sink_ != nullptr) {
-                frame_sink_->publish(frame, vision_result, *state, guidance);
+                const VisionOverlayData overlay{
+                    true,
+                    line_of_sight.q_y,
+                    line_of_sight.q_z,
+                    true,
+                    angular_velocity.q_y,
+                    angular_velocity.q_z,
+                    true,
+                    guidance.body_overload.x,
+                    guidance.body_overload.y,
+                    guidance.body_overload.z,
+                    true,
+                    state->attitude.pitch,
+                    state->attitude.yaw,
+                    state->attitude.roll,
+                    true,
+                    state->velocity.x,
+                    state->velocity.y,
+                    state->velocity.z,
+                };
+                frame_sink_->publish(frame, vision_result, *state, guidance,
+                                     overlay);
             }
         }
     } catch (const std::exception& exception) {
