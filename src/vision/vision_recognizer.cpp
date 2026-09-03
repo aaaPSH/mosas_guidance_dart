@@ -83,6 +83,9 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
     try {
         const cv::Mat roi_view =
             frame(cv::Rect(roi.x, roi.y, roi.width, roi.height));
+        // 尺寸不变时 create() 复用已有存储，尺寸变化时才重新分配。
+        hsv_frame_.create(roi_view.size(), CV_8UC3);
+        mask_.create(roi_view.size(), CV_8UC1);
         cv::cvtColor(roi_view, hsv_frame_, cv::COLOR_RGB2HSV);
         cv::inRange(
             hsv_frame_,
@@ -91,6 +94,13 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
             cv::Scalar(config_.threshold.h_max, config_.threshold.s_max,
                        config_.threshold.v_max),
             mask_);
+
+        // 无前景时无需生成连通域标签和统计矩阵，直接恢复全局搜索 ROI。
+        if (cv::countNonZero(mask_) == 0) {
+            current_roi_ = clip_roi(config_.initial_roi, frame.cols, frame.rows);
+            result.next_roi = current_roi_;
+            return result;
+        }
 
         const int component_count = cv::connectedComponentsWithStats(
             mask_, labels_, stats_, centroids_, 8, CV_32S);

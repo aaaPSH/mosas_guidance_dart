@@ -1,4 +1,4 @@
-#include <cassert>
+#include <stdexcept>
 #include <string>
 
 #include <mosas/wireless/rtsp_frame_sink.hpp>
@@ -8,14 +8,26 @@
 
 namespace {
 
+void test_check(bool condition, const char* expression, const char* file,
+                int line) {
+    if (!condition) {
+        throw std::runtime_error(std::string(file) + ":" +
+                                 std::to_string(line) +
+                                 ": check failed: " + expression);
+    }
+}
+
+#define TEST_CHECK(condition) \
+    test_check(static_cast<bool>(condition), #condition, __FILE__, __LINE__)
+
 void test_streamer_rejects_non_rtsp_url() {
     mosas::wireless::RtspStreamConfig config;
     config.rtsp_url = "udp://127.0.0.1:5000";
 
     mosas::wireless::RtspStreamer streamer(config);
     std::string error;
-    assert(!streamer.start(&error));
-    assert(error.find("rtsp://") != std::string::npos);
+    TEST_CHECK(!streamer.start(&error));
+    TEST_CHECK(error.find("rtsp://") != std::string::npos);
 }
 
 void test_streamer_rejects_empty_rtsp_url() {
@@ -24,8 +36,8 @@ void test_streamer_rejects_empty_rtsp_url() {
 
     mosas::wireless::RtspStreamer streamer(config);
     std::string error;
-    assert(!streamer.start(&error));
-    assert(error.find("RTSP") != std::string::npos);
+    TEST_CHECK(!streamer.start(&error));
+    TEST_CHECK(error.find("RTSP") != std::string::npos);
 }
 
 void test_frame_sink_switch_disables_wireless_output() {
@@ -50,7 +62,26 @@ void test_frame_sink_switch_disables_wireless_output() {
         0.0,
     };
 
-    assert(sink.publish(frame, vision_result, imu_state, guidance));
+    TEST_CHECK(sink.publish(frame, vision_result, imu_state, guidance));
+}
+
+void test_frame_sink_rejects_recording_without_path() {
+    mosas::wireless::RtspFrameSinkConfig config;
+    config.enable_recording = true;
+    config.enable_wireless_stream = false;
+
+    mosas::wireless::RtspFrameSink sink(config, cv::Point2d(20.0, 18.0));
+    mosas::runtime::CameraFrame frame{
+        123,
+        cv::Mat(40, 40, CV_8UC3, cv::Scalar(0, 0, 0)),
+    };
+    const VisionResult vision_result{
+        false, {0, 0, 0, 0, 0, 0, 0}, {0, 0, 40, 40}};
+    const mosas::runtime::ImuStateSnapshot imu_state{};
+    const PngGuidanceOutput guidance{};
+
+    TEST_CHECK(!sink.publish(frame, vision_result, imu_state, guidance));
+    TEST_CHECK(sink.last_error().find("recording") != std::string::npos);
 }
 
 }  // namespace
@@ -59,5 +90,6 @@ int main() {
     test_streamer_rejects_non_rtsp_url();
     test_streamer_rejects_empty_rtsp_url();
     test_frame_sink_switch_disables_wireless_output();
+    test_frame_sink_rejects_recording_without_path();
     return 0;
 }

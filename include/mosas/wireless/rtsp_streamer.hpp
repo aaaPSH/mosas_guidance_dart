@@ -34,6 +34,10 @@ public:
     bool start(std::string* error = nullptr);
     bool send_bgr(const cv::Mat& frame, std::int64_t capture_timestamp_ns,
                   std::string* error = nullptr);
+    // 请求中断当前网络 I/O；资源由 stop() 在调用线程安全释放。
+    void cancel() noexcept;
+    // 清除停止后的取消状态，供下一轮 start() 使用。
+    void reset() noexcept;
     void stop() noexcept;
     bool running() const noexcept;
 

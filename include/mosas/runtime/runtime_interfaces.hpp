@@ -43,6 +43,15 @@ class FrameSink {
 public:
     virtual ~FrameSink() = default;
 
+    // 请求中断可能阻塞的发布操作；实现必须是线程安全且非阻塞的。
+    virtual void cancel() noexcept {}
+
+    // 新一轮运行开始前清除上一次停止状态。
+    virtual void reset() noexcept {}
+
+    // 输出线程退出时释放网络、录像等资源。
+    virtual void stop() noexcept {}
+
     virtual bool publish(const CameraFrame& frame,
                          const VisionResult& vision_result,
                          const ImuStateSnapshot& imu_state,
