@@ -111,9 +111,23 @@ uint32_t ProductionNoriSdkApi::set_sensor_shutter(uint32_t device_id,
     return Nori_Xvision_SetSensorShutter(device_id, value);
 }
 
+uint32_t ProductionNoriSdkApi::get_sensor_shutter(uint32_t device_id,
+                                                  uint32_t* value) {
+    return Nori_Xvision_GetSensorShutter(device_id, value);
+}
+
 uint32_t ProductionNoriSdkApi::set_sensor_gain(uint32_t device_id,
                                                uint32_t value) {
     return Nori_Xvision_SetSensorGain(device_id, value);
+}
+
+uint32_t ProductionNoriSdkApi::get_sensor_gain(uint32_t device_id,
+                                               uint32_t* current,
+                                               uint32_t* minimum,
+                                               uint32_t* maximum,
+                                               uint32_t* step) {
+    return Nori_Xvision_GetSensorGain(device_id, current, minimum, maximum,
+                                      step);
 }
 
 void ProductionNoriSdkApi::yuyv_to_bgr24(uint8_t* input, uint8_t* output,

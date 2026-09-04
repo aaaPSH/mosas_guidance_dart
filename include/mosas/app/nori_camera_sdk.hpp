@@ -44,8 +44,13 @@ public:
                                                  int32_t value) = 0;
     virtual uint32_t set_sensor_shutter(uint32_t device_id,
                                         uint32_t value) = 0;
+    virtual uint32_t get_sensor_shutter(uint32_t device_id,
+                                        uint32_t* value) = 0;
     virtual uint32_t set_sensor_gain(uint32_t device_id,
                                      uint32_t value) = 0;
+    virtual uint32_t get_sensor_gain(uint32_t device_id, uint32_t* current,
+                                    uint32_t* minimum, uint32_t* maximum,
+                                    uint32_t* step) = 0;
     virtual void yuyv_to_bgr24(uint8_t* yuyv, uint8_t* out_bgr,
                                int width, int height) = 0;
 };
@@ -77,7 +82,12 @@ public:
     uint32_t set_processing_unit_control(uint32_t device_id, int32_t id,
                                          int32_t value) override;
     uint32_t set_sensor_shutter(uint32_t device_id, uint32_t value) override;
+    uint32_t get_sensor_shutter(uint32_t device_id,
+                                uint32_t* value) override;
     uint32_t set_sensor_gain(uint32_t device_id, uint32_t value) override;
+    uint32_t get_sensor_gain(uint32_t device_id, uint32_t* current,
+                            uint32_t* minimum, uint32_t* maximum,
+                            uint32_t* step) override;
     void yuyv_to_bgr24(uint8_t* yuyv, uint8_t* out_bgr, int width,
                        int height) override;
 };
