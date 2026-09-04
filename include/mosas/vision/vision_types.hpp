@@ -44,6 +44,8 @@ struct VisionResult {
     bool found;
     VisionBlob blob;
     VisionRoi next_roi;
+    // 用于可视化视线角基准点的最小目标面积阈值，单位：像素。
+    int minimum_blob_area = 0;
 };
 
 // 可视化面板使用的引导数据，角度单位为弧度，角速度单位为弧度/秒。
