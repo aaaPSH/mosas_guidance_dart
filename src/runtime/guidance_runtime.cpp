@@ -234,7 +234,14 @@ std::optional<ImuStateSnapshot> GuidanceRuntime::latest_state() const {
 }
 
 GuidanceRuntimeStatistics GuidanceRuntime::statistics() const {
-    return {capture_fps_meter_.snapshot(), processing_fps_meter_.snapshot(),
+    double capture_fps = capture_fps_meter_.snapshot();
+    if (camera_source_ != nullptr) {
+        const double source_capture_fps = camera_source_->capture_fps();
+        if (std::isfinite(source_capture_fps) && source_capture_fps > 0.0) {
+            capture_fps = source_capture_fps;
+        }
+    }
+    return {capture_fps, processing_fps_meter_.snapshot(),
             output_fps_meter_.snapshot()};
 }
 

@@ -28,6 +28,7 @@ public:
 
     bool configure(const runtime::CameraCaptureConfig& config) override;
     bool capture(runtime::CameraFrame* frame) override;
+    double capture_fps() const noexcept override;
     bool prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
 
@@ -75,6 +76,7 @@ private:
     bool device_video_initialized_ = false;
     bool video_started_ = false;
     bool configured_ = false;
+    std::atomic<double> sdk_capture_fps_{0.0};
 
     mutable std::mutex lifecycle_mutex_;
     CallbackContext* callback_context_ = nullptr;

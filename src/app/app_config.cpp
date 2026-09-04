@@ -85,6 +85,21 @@ bool parse_size(const std::string& text, std::size_t* value) {
     return true;
 }
 
+bool parse_uint32(const std::string& text, uint32_t* value) {
+    if (text.empty() || text.front() == '-') {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0' ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+    *value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
 bool parse_double(const std::string& text, double* value) {
     if (text.empty()) {
         return false;
@@ -154,6 +169,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     if (section == "camera") {
         if (key == "device") {
             config->camera.device = value;
+        } else if (key == "device_id" &&
+                   parse_uint32(value, &config->camera.device_id)) {
         } else if (key == "width" && parse_int(value, &integer)) {
             config->camera.width = integer;
         } else if (key == "height" && parse_int(value, &integer)) {
