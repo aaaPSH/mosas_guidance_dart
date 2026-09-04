@@ -13,7 +13,6 @@ namespace {
 
 constexpr double kRadiansToDegrees = 57.29577951308232;
 const cv::Scalar kOverlayColor{0, 255, 0};
-const cv::Scalar kOverlayPanelColor{16, 16, 16};
 
 bool is_valid_frame(const cv::Mat& frame) {
     return !frame.empty() && frame.rows > 0 && frame.cols > 0 &&
@@ -155,22 +154,18 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
 
     constexpr int kPanel_x = 4;
     constexpr int kPanel_y = 4;
-    constexpr int kPanel_width = 310;
     constexpr int kPanel_padding = 7;
     constexpr int kLine_height = 17;
-    const int panel_width = std::min(kPanel_width, frame.cols - kPanel_x - 1);
     const int panel_height =
         std::min(kPanel_padding * 2 +
                      static_cast<int>(lines.size()) * kLine_height,
                  frame.rows - kPanel_y - 1);
-    if (panel_width <= 0 || panel_height <= 0) {
+    if (panel_height <= 0) {
         return;
     }
 
     try {
-        cv::rectangle(frame, cv::Rect(kPanel_x, kPanel_y, panel_width,
-                                      panel_height),
-                      kOverlayPanelColor, cv::FILLED);
+        // 仅绘制文字，保持原始画面可见，不使用背景矩形遮挡画面。
         for (std::size_t index = 0; index < lines.size(); ++index) {
             const int baseline = kPanel_y + kPanel_padding + 12 +
                                  static_cast<int>(index) * kLine_height;

@@ -15,7 +15,7 @@ public:
     static void draw_result(cv::Mat& frame, const VisionResult& result,
                             const cv::Point2d& line_of_sight_reference_point);
 
-    // 在画面左上角绘制绿色引导关键数据面板。
+    // 在画面左上角以透明背景绘制绿色引导关键数据。
     static void draw_guidance_overlay(cv::Mat& frame,
                                       const VisionOverlayData& data);
 };
