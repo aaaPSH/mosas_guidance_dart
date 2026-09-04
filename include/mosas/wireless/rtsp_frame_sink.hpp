@@ -66,8 +66,8 @@ private:
     mutable std::mutex streamer_mutex_;
     std::unique_ptr<RtspStreamer> streamer_;
     // 输出线程复用这些缓冲区，避免每帧重复申请图像头和像素内存。
-    cv::Mat annotated_rgb_frame_;
-    cv::Mat resized_rgb_frame_;
+    cv::Mat annotated_bgr_frame_;
+    cv::Mat resized_bgr_frame_;
     cv::Mat bgr_frame_;
     cv::VideoWriter recording_writer_;
     std::ofstream flight_data_writer_;

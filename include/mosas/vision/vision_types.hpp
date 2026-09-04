@@ -66,6 +66,7 @@ struct VisionOverlayData {
     double velocity_x_mps;
     double velocity_y_mps;
     double velocity_z_mps;
+    double processing_fps = 0.0;
 };
 
 #endif  // VISION_TYPES_HPP

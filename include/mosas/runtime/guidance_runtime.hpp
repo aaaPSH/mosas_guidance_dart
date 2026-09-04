@@ -3,11 +3,14 @@
 
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/flight_phase_detector.hpp>
+#include <mosas/runtime/frame_rate_meter.hpp>
 #include <mosas/runtime/imu_state_history.hpp>
 #include <mosas/runtime/latest_frame_queue.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,7 +19,32 @@
 
 namespace mosas::runtime {
 
+struct GuidanceRuntimeStatistics {
+    double capture_fps = 0.0;
+    double processing_fps = 0.0;
+    double output_fps = 0.0;
+};
+
+struct GuidanceRuntimeTimingStage {
+    std::uint64_t samples = 0;
+    double average_ms = 0.0;
+    double maximum_ms = 0.0;
+};
+
+struct GuidanceRuntimeTiming {
+    GuidanceRuntimeTimingStage capture;
+    GuidanceRuntimeTimingStage prepare;
+    GuidanceRuntimeTimingStage vision;
+    GuidanceRuntimeTimingStage line_of_sight;
+    GuidanceRuntimeTimingStage guidance;
+    GuidanceRuntimeTimingStage command;
+    GuidanceRuntimeTimingStage processing_total;
+    GuidanceRuntimeTimingStage output;
+};
+
 struct GuidanceRuntimeConfig {
+    // 测试模式：使用假基准跳过 IMU 静止自检。
+    bool skip_imu_self_check = false;
     FlightPhaseDetectorConfig phase_detector{};
     double launch_speed_mps = 100.0;
     std::size_t history_capacity = 256;
@@ -55,6 +83,8 @@ public:
     bool faulted() const noexcept;
     std::string last_error() const;
     std::optional<ImuStateSnapshot> latest_state() const;
+    GuidanceRuntimeStatistics statistics() const;
+    GuidanceRuntimeTiming timing() const;
 
 private:
     struct ProcessedFrame {
@@ -70,6 +100,25 @@ private:
     void capture_worker();
     void processing_worker();
     void output_worker();
+    enum class TimingStage {
+        capture,
+        prepare,
+        vision,
+        line_of_sight,
+        guidance,
+        command,
+        processing_total,
+        output,
+    };
+
+    struct TimingAccumulator {
+        std::uint64_t samples = 0;
+        std::uint64_t total_ns = 0;
+        std::uint64_t maximum_ns = 0;
+    };
+
+    void record_timing(TimingStage stage,
+                       std::chrono::steady_clock::duration duration) noexcept;
     void set_error(const std::string& message);
     void set_fault(const std::string& message);
     void cancel_sources() noexcept;
@@ -96,6 +145,18 @@ private:
 
     mutable std::mutex state_mutex_;
     std::optional<ImuStateSnapshot> latest_state_;
+    FrameRateMeter capture_fps_meter_;
+    FrameRateMeter processing_fps_meter_;
+    FrameRateMeter output_fps_meter_;
+    mutable std::mutex timing_mutex_;
+    TimingAccumulator capture_timing_;
+    TimingAccumulator prepare_timing_;
+    TimingAccumulator vision_timing_;
+    TimingAccumulator line_of_sight_timing_;
+    TimingAccumulator guidance_timing_;
+    TimingAccumulator command_timing_;
+    TimingAccumulator processing_total_timing_;
+    TimingAccumulator output_timing_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
 };

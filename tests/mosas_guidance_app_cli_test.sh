@@ -6,6 +6,7 @@ APP="$1"
 
 HELP_OUTPUT="$(${APP} --help)"
 grep -q -- "--config PATH" <<<"${HELP_OUTPUT}"
+grep -q -- "--timing" <<<"${HELP_OUTPUT}"
 
 set +e
 ERROR_OUTPUT="$(${APP} --config /definitely/missing/mosas.conf 2>&1)"

@@ -148,6 +148,13 @@ if(BUILD_TESTING)
     target_link_libraries(guidance_runtime_test PRIVATE mosas_runtime)
     add_test(NAME guidance_runtime_test COMMAND guidance_runtime_test)
 
+    add_executable(frame_rate_meter_test
+        tests/frame_rate_meter_test.cpp
+    )
+    configure_mosas_target(frame_rate_meter_test)
+    target_link_libraries(frame_rate_meter_test PRIVATE mosas_runtime)
+    add_test(NAME frame_rate_meter_test COMMAND frame_rate_meter_test)
+
     add_executable(app_config_test
         tests/app_config_test.cpp
     )
@@ -178,6 +185,14 @@ if(BUILD_TESTING)
         COMMAND bash
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_guidance_script_test.sh
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_guidance.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    add_test(
+        NAME profile_guidance_script_test
+        COMMAND bash
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/profile_guidance_script_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/profile_guidance.sh
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
@@ -262,5 +277,8 @@ install(FILES config/mosas_guidance.conf
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/mosas
 )
 install(PROGRAMS scripts/run_guidance.sh
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(PROGRAMS scripts/profile_guidance.sh
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

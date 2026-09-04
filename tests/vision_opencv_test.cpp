@@ -49,6 +49,28 @@ void test_finds_green_blob_and_centroid() {
     TEST_CHECK(result.next_roi.height == 90);
 }
 
+void test_processes_camera_bgr_frame_without_channel_swap() {
+    VisionConfig config{
+        {0, 0, 160, 120},
+        {110, 130, 200, 255, 200, 255},
+        5,
+        5,
+        20,
+        0.5,
+        0.35,
+    };
+    VisionRecognizer recognizer(config);
+    cv::Mat frame(120, 160, CV_8UC3, cv::Scalar(0, 0, 0));
+    // OpenCV BGR 顺序下，蓝色像素为 (255, 0, 0)。
+    frame(cv::Rect(40, 30, 20, 20)).setTo(cv::Scalar(255, 0, 0));
+
+    const VisionResult result = recognizer.process(frame);
+
+    TEST_CHECK(result.found);
+    TEST_CHECK(result.blob.x == 40);
+    TEST_CHECK(result.blob.y == 30);
+}
+
 void test_selects_largest_valid_blob() {
     VisionRecognizer recognizer;
     cv::Mat frame = make_rgb_frame(320, 240);
@@ -182,10 +204,26 @@ void test_visualizer_draws_green_guidance_overlay() {
     TEST_CHECK(has_green_text);
 }
 
+void test_visualizer_draws_processing_fps() {
+    cv::Mat frame_with_fps = make_rgb_frame(320, 240);
+    cv::Mat frame_without_fps = make_rgb_frame(320, 240);
+    VisionOverlayData overlay_with_fps{};
+    overlay_with_fps.processing_fps = 12.34;
+    VisionOverlayData overlay_without_fps{};
+
+    VisionVisualizer::draw_guidance_overlay(frame_with_fps, overlay_with_fps);
+    VisionVisualizer::draw_guidance_overlay(frame_without_fps,
+                                             overlay_without_fps);
+
+    TEST_CHECK(cv::norm(frame_with_fps, frame_without_fps, cv::NORM_INF) >
+               0.0);
+}
+
 }  // namespace
 
 int main() {
     test_finds_green_blob_and_centroid();
+    test_processes_camera_bgr_frame_without_channel_swap();
     test_selects_largest_valid_blob();
     test_rejects_invalid_blob_and_restores_initial_roi();
     test_empty_mask_restores_initial_roi_without_target();
@@ -194,5 +232,6 @@ int main() {
     test_process_does_not_modify_input();
     test_visualizer_draws_result();
     test_visualizer_draws_green_guidance_overlay();
+    test_visualizer_draws_processing_fps();
     return 0;
 }

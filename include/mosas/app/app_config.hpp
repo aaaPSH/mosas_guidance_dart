@@ -34,6 +34,8 @@ struct CameraAppConfig {
     int width = 640;
     int height = 480;
     int fps = 30;
+    // 摄像头像素格式；auto 表示不强制格式，其他值必须是四字符 FOURCC。
+    std::string pixel_format = "MJPG";
     bool auto_exposure = true;
     double exposure_us = 10000.0;
     double gain = 0.0;
@@ -52,6 +54,8 @@ enum class ImuMode {
 struct ImuAppConfig {
     ImuMode mode = ImuMode::simulated;
     double sample_rate_hz = 200.0;
+    // 测试模式：使用假基准跳过 IMU 静止自检。
+    bool skip_self_check = false;
 };
 
 enum class CommandMode {

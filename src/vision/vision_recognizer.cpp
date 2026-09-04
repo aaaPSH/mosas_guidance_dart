@@ -86,7 +86,7 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
         // 尺寸不变时 create() 复用已有存储，尺寸变化时才重新分配。
         hsv_frame_.create(roi_view.size(), CV_8UC3);
         mask_.create(roi_view.size(), CV_8UC1);
-        cv::cvtColor(roi_view, hsv_frame_, cv::COLOR_RGB2HSV);
+        cv::cvtColor(roi_view, hsv_frame_, cv::COLOR_BGR2HSV);
         cv::inRange(
             hsv_frame_,
             cv::Scalar(config_.threshold.h_min, config_.threshold.s_min,
