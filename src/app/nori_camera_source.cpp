@@ -166,6 +166,7 @@ bool NoriSdkCameraSource::configure(
     session_acquired_ = true;
 
     bool device_found = false;
+    uint32_t fallback_device_id = 0;
     std::vector<std::string> discovered_devices;
     for (uint32_t device_id = 0; device_id < device_count; ++device_id) {
         DEVICE_INFO info{};
@@ -183,13 +184,21 @@ bool NoriSdkCameraSource::configure(
         if (same_device_path(config_.device, discovered_path)) {
             device_id_ = device_id;
             device_found = true;
-            break;
         }
+        if (device_id == 0) {
+            fallback_device_id = device_id;
+        }
+    }
+    if (!device_found && device_count == 1) {
+        // SDK Sample 直接使用唯一枚举设备的 device_id，不依赖路径文本。
+        device_id_ = fallback_device_id;
+        device_found = true;
     }
     if (!device_found) {
         std::ostringstream message;
         message << "Nori_Xvision_GetDeviceInfo 未找到匹配设备 "
-                << config_.device << "，SDK 枚举结果 ";
+                << config_.device << "，SDK 枚举数量 " << device_count
+                << "，枚举结果 ";
         if (discovered_devices.empty()) {
             message << "为空";
         } else {
@@ -265,11 +274,21 @@ bool NoriSdkCameraSource::configure(
         return false;
     }
 
-    const E_TRIGGER_MODE trigger_mode =
+    const E_TRIGGER_MODE desired_trigger_mode =
         capture_config.mode == runtime::CameraCaptureMode::hardware_trigger
             ? HARDWARE_TRIGGER_MODE
             : NON_TRIIGER_MODE;
-    result = sdk_->set_trigger_mode(device_id_, trigger_mode);
+    E_TRIGGER_MODE trigger_mode = NON_TRIIGER_MODE;
+    result = sdk_->get_trigger_mode(device_id_, &trigger_mode);
+    if (result != NORI_OK) {
+        set_error(sdk_error("Nori_Xvision_GetTriggerMode", config_.device,
+                            device_id_, result));
+        cancel_locked();
+        return false;
+    }
+    if (trigger_mode != desired_trigger_mode) {
+        result = sdk_->set_trigger_mode(device_id_, desired_trigger_mode);
+    }
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_SetTriggerMode", config_.device,
                             device_id_, result));

@@ -29,6 +29,8 @@ public:
     virtual uint32_t video_callback(uint32_t device_id,
                                     PCall_Back_Frame callback,
                                     void* user) = 0;
+    virtual uint32_t get_trigger_mode(uint32_t device_id,
+                                      E_TRIGGER_MODE* mode) = 0;
     virtual uint32_t set_trigger_mode(uint32_t device_id,
                                       E_TRIGGER_MODE mode) = 0;
     virtual uint32_t video_start(uint32_t device_id) = 0;
@@ -62,6 +64,8 @@ public:
     uint32_t device_video_uninit(uint32_t device_id) override;
     uint32_t video_callback(uint32_t device_id, PCall_Back_Frame callback,
                             void* user) override;
+    uint32_t get_trigger_mode(uint32_t device_id,
+                              E_TRIGGER_MODE* mode) override;
     uint32_t set_trigger_mode(uint32_t device_id,
                               E_TRIGGER_MODE mode) override;
     uint32_t video_start(uint32_t device_id) override;
