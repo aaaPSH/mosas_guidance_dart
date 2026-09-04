@@ -1,5 +1,6 @@
 #include <mosas/app/app_config.hpp>
 #include <mosas/app/host_adapters.hpp>
+#include <mosas/app/nori_camera_source.hpp>
 #include <mosas/runtime/guidance_runtime.hpp>
 
 #if defined(MOSAS_APP_HAS_WIRELESS)
@@ -78,7 +79,7 @@ bool parse_options(int argc, char** argv, CommandLineOptions* options) {
     return options->show_help || !options->config_path.empty();
 }
 
-}  // namespace
+}  // 匿名命名空间结束
 
 int main(int argc, char** argv) {
     CommandLineOptions options;
@@ -104,7 +105,7 @@ int main(int argc, char** argv) {
 
     auto imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
         config.imu.sample_rate_hz);
-    auto camera_source = std::make_unique<mosas::app::OpenCvCameraSource>(
+    auto camera_source = std::make_unique<mosas::app::NoriSdkCameraSource>(
         config.camera);
     auto command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
 

@@ -9,30 +9,7 @@
 #include <iosfwd>
 #include <mutex>
 
-#include <opencv2/videoio.hpp>
-
 namespace mosas::app {
-
-class OpenCvCameraSource final : public runtime::CameraSource {
-public:
-    explicit OpenCvCameraSource(CameraAppConfig config);
-    ~OpenCvCameraSource() override;
-
-    bool configure(const runtime::CameraCaptureConfig& config) override;
-    bool capture(runtime::CameraFrame* frame) override;
-    bool prepare(runtime::CameraFrame* frame) override;
-    void cancel() noexcept override;
-
-private:
-    CameraAppConfig config_;
-    cv::VideoCapture camera_;
-    cv::Mat undistort_map_x_;
-    cv::Mat undistort_map_y_;
-    cv::Mat undistorted_frame_;
-    std::mutex mutex_;
-    bool cancelled_ = false;
-    bool configured_ = false;
-};
 
 class SimulatedImuSource final : public runtime::ImuSource {
 public:
@@ -62,6 +39,6 @@ private:
     std::mutex mutex_;
 };
 
-}  // namespace mosas::app
+}  // mosas::app 命名空间结束
 
 #endif  // MOSAS_APP_HOST_ADAPTERS_HPP
