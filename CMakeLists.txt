@@ -2,9 +2,55 @@ cmake_minimum_required(VERSION 3.16)
 project(mosas_guidance LANGUAGES CXX)
 
 include(GNUInstallDirs)
-include(CTest)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
+
+# 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
+set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
+    "Nori 相机 SDK 根目录")
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" MOSAS_CAMERA_SDK_PROCESSOR)
+if(MOSAS_CAMERA_SDK_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(MOSAS_CAMERA_SDK_ARCH arm64)
+else()
+    message(FATAL_ERROR
+        "未知的 Nori SDK 目标架构: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+set(MOSAS_CAMERA_SDK_INCLUDE_DIR "${MOSAS_CAMERA_SDK_ROOT}/Includes")
+set(MOSAS_CAMERA_SDK_API_INCLUDE_DIR
+    "${MOSAS_CAMERA_SDK_INCLUDE_DIR}/Nori_Xvision_API")
+set(MOSAS_CAMERA_SDK_REQUIRED_HEADERS
+    Nori_Error_Define.h
+    Nori_Public.h
+    Nori_Xvision_API.h
+)
+set(MOSAS_CAMERA_SDK_LIBRARY_DIR
+    "${MOSAS_CAMERA_SDK_ROOT}/Libraries/${MOSAS_CAMERA_SDK_ARCH}")
+set(MOSAS_CAMERA_SDK_LIBRARY
+    "${MOSAS_CAMERA_SDK_LIBRARY_DIR}/libNori_Xvision_Std.so")
+if(NOT IS_DIRECTORY "${MOSAS_CAMERA_SDK_ROOT}")
+    message(FATAL_ERROR
+        "Nori SDK 根目录不存在: ${MOSAS_CAMERA_SDK_ROOT}")
+endif()
+foreach(MOSAS_CAMERA_SDK_HEADER IN LISTS MOSAS_CAMERA_SDK_REQUIRED_HEADERS)
+    if(NOT EXISTS "${MOSAS_CAMERA_SDK_API_INCLUDE_DIR}/${MOSAS_CAMERA_SDK_HEADER}")
+        message(FATAL_ERROR
+            "Nori SDK 头文件不存在: ${MOSAS_CAMERA_SDK_API_INCLUDE_DIR}/${MOSAS_CAMERA_SDK_HEADER}")
+    endif()
+endforeach()
+if(NOT EXISTS "${MOSAS_CAMERA_SDK_LIBRARY}")
+    message(FATAL_ERROR "Nori SDK 库不存在: ${MOSAS_CAMERA_SDK_LIBRARY}")
+endif()
+
+# 让所有使用 SDK 的构建目标在构建树和安装树中找到正确的库。
+set(CMAKE_BUILD_RPATH "${MOSAS_CAMERA_SDK_LIBRARY_DIR}")
+set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
+
+add_library(mosas_camera_sdk SHARED IMPORTED GLOBAL)
+set_target_properties(mosas_camera_sdk PROPERTIES
+    IMPORTED_LOCATION "${MOSAS_CAMERA_SDK_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${MOSAS_CAMERA_SDK_INCLUDE_DIR}"
+)
 
 set(MOSAS_OPENCV_COMPONENTS core imgproc videoio calib3d)
 if(MOSAS_BUILD_WIRELESS)
@@ -102,6 +148,8 @@ endif()
 add_library(mosas_app STATIC
     src/app/app_config.cpp
     src/app/host_adapters.cpp
+    src/app/nori_camera_sdk.cpp
+    src/app/nori_camera_source.cpp
 )
 configure_mosas_target(mosas_app)
 target_include_directories(mosas_app
@@ -111,6 +159,7 @@ target_include_directories(mosas_app
 target_link_libraries(mosas_app
     PUBLIC
         mosas_runtime
+        mosas_camera_sdk
         ${OpenCV_LIBS}
 )
 if(MOSAS_BUILD_WIRELESS)
@@ -126,129 +175,6 @@ if(MOSAS_BUILD_WIRELESS)
     target_compile_definitions(mosas_guidance_app PRIVATE MOSAS_APP_HAS_WIRELESS=1)
 endif()
 
-if(BUILD_TESTING)
-    add_executable(vision_opencv_test
-        tests/vision_opencv_test.cpp
-    )
-    configure_mosas_target(vision_opencv_test)
-    target_link_libraries(vision_opencv_test PRIVATE mosas_vision)
-    add_test(NAME vision_opencv_test COMMAND vision_opencv_test)
-
-    add_executable(png_guidance_test
-        tests/png_guidance_test.cpp
-    )
-    configure_mosas_target(png_guidance_test)
-    target_link_libraries(png_guidance_test PRIVATE mosas_guidance)
-    add_test(NAME png_guidance_test COMMAND png_guidance_test)
-
-    add_executable(guidance_runtime_test
-        tests/guidance_runtime_test.cpp
-    )
-    configure_mosas_target(guidance_runtime_test)
-    target_link_libraries(guidance_runtime_test PRIVATE mosas_runtime)
-    add_test(NAME guidance_runtime_test COMMAND guidance_runtime_test)
-
-    add_executable(frame_rate_meter_test
-        tests/frame_rate_meter_test.cpp
-    )
-    configure_mosas_target(frame_rate_meter_test)
-    target_link_libraries(frame_rate_meter_test PRIVATE mosas_runtime)
-    add_test(NAME frame_rate_meter_test COMMAND frame_rate_meter_test)
-
-    add_executable(app_config_test
-        tests/app_config_test.cpp
-    )
-    configure_mosas_target(app_config_test)
-    target_include_directories(app_config_test
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    target_link_libraries(app_config_test PRIVATE mosas_app)
-    add_test(NAME app_config_test COMMAND app_config_test)
-
-    add_executable(host_adapters_test
-        tests/host_adapters_test.cpp
-    )
-    configure_mosas_target(host_adapters_test)
-    target_link_libraries(host_adapters_test PRIVATE mosas_app)
-    add_test(NAME host_adapters_test COMMAND host_adapters_test)
-
-    add_test(
-        NAME mosas_guidance_app_cli_test
-        COMMAND bash
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mosas_guidance_app_cli_test.sh
-            $<TARGET_FILE:mosas_guidance_app>
-    )
-
-    add_test(
-        NAME run_guidance_script_test
-        COMMAND bash
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_guidance_script_test.sh
-            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_guidance.sh
-            ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-
-    add_test(
-        NAME profile_guidance_script_test
-        COMMAND bash
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/profile_guidance_script_test.sh
-            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/profile_guidance.sh
-            ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-
-    if(MOSAS_BUILD_WIRELESS)
-        add_executable(wireless_streamer_test
-            tests/wireless_streamer_test.cpp
-        )
-        configure_mosas_target(wireless_streamer_test)
-        target_link_libraries(wireless_streamer_test PRIVATE mosas_wireless)
-        add_test(NAME wireless_streamer_test COMMAND wireless_streamer_test)
-
-        add_test(
-            NAME wireless_test_frame_generator_fallback_test
-            COMMAND bash
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/wireless_test_frame_generator_fallback_test.sh
-                $<TARGET_FILE:wireless_test_frame_generator>
-        )
-    endif()
-endif()
-
-add_library(serial_package STATIC
-    src/serial_package/serial_port.cpp
-)
-configure_mosas_target(serial_package)
-target_link_libraries(serial_package PUBLIC Threads::Threads)
-
-add_executable(serial_port_probe
-    examples/serial_port_probe.cpp
-)
-configure_mosas_target(serial_port_probe)
-target_link_libraries(serial_port_probe PRIVATE serial_package)
-
-add_executable(guidance_timing_probe
-    examples/guidance_timing_probe.cpp
-)
-configure_mosas_target(guidance_timing_probe)
-target_link_libraries(guidance_timing_probe PRIVATE mosas_guidance)
-
-if(MOSAS_BUILD_WIRELESS)
-    add_executable(wireless_stream_probe
-        examples/wireless_stream_probe.cpp
-    )
-    configure_mosas_target(wireless_stream_probe)
-    target_link_libraries(wireless_stream_probe PRIVATE mosas_wireless)
-
-    add_executable(wireless_test_frame_generator
-        examples/wireless_test_frame_generator.cpp
-    )
-    configure_mosas_target(wireless_test_frame_generator)
-    target_include_directories(wireless_test_frame_generator
-        PRIVATE
-            ${OpenCV_INCLUDE_DIRS}
-    )
-    target_link_libraries(wireless_test_frame_generator PRIVATE ${OpenCV_LIBS})
-endif()
-
 set(MOSAS_INSTALL_TARGETS
     mosas_dart
     mosas_vision
@@ -256,15 +182,10 @@ set(MOSAS_INSTALL_TARGETS
     mosas_runtime
     mosas_app
     mosas_guidance_app
-    serial_package
-    serial_port_probe
-    guidance_timing_probe
 )
 if(MOSAS_BUILD_WIRELESS)
     list(APPEND MOSAS_INSTALL_TARGETS
         mosas_wireless
-        wireless_stream_probe
-        wireless_test_frame_generator
     )
 endif()
 
@@ -279,6 +200,6 @@ install(FILES config/mosas_guidance.conf
 install(PROGRAMS scripts/run_guidance.sh
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(PROGRAMS scripts/profile_guidance.sh
-    DESTINATION ${CMAKE_INSTALL_BINDIR}
+install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

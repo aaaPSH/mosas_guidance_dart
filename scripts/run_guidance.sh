@@ -57,7 +57,7 @@ while (($# > 0)); do
 done
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
-    cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" -DBUILD_TESTING=OFF
+    cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}"
     cmake --build "${BUILD_DIR}" --target mosas_guidance_app --parallel
 fi
 
