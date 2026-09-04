@@ -34,8 +34,8 @@ struct CameraAppConfig {
     int width = 640;
     int height = 480;
     int fps = 30;
-    // 摄像头像素格式；auto 表示不强制格式，其他值必须是四字符 FOURCC。
-    std::string pixel_format = "MJPG";
+    // 摄像头像素格式；支持 MJPEG（SDK 映射为 MJPG）、YUYV 和 auto。
+    std::string pixel_format = "MJPEG";
     bool auto_exposure = true;
     double exposure_us = 10000.0;
     double gain = 0.0;

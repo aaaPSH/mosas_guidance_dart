@@ -130,6 +130,11 @@ bool parse_mode(const std::string& text, runtime::CameraCaptureMode* value) {
     return false;
 }
 
+bool valid_pixel_format(const std::string& value) {
+    return value == "auto" || value == "MJPEG" || value == "MJPG" ||
+           value == "YUYV";
+}
+
 bool parse_key(const std::filesystem::path& path, std::size_t line,
                const std::string& section, const std::string& key,
                const std::string& value, AppConfig* config,
@@ -349,8 +354,7 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     if (config.camera.device.empty() || config.camera.width <= 0 ||
         config.camera.height <= 0 || config.camera.width % 2 != 0 ||
         config.camera.height % 2 != 0 || config.camera.fps <= 0 ||
-        (config.camera.pixel_format != "auto" &&
-         config.camera.pixel_format.size() != 4) ||
+        !valid_pixel_format(config.camera.pixel_format) ||
         !std::isfinite(config.camera.exposure_us) ||
         config.camera.exposure_us <= 0.0 || !std::isfinite(config.camera.gain) ||
         config.camera.gain < 0.0 || !std::isfinite(matrix.m00) ||
