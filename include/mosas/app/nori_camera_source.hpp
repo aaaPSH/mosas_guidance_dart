@@ -31,7 +31,7 @@ public:
     bool prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
 
-    std::string last_error() const;
+    std::string last_error() const override;
 
 private:
     struct CallbackContext {

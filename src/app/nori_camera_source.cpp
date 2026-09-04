@@ -40,7 +40,8 @@ bool is_supported_format(uint32_t format) {
 }
 
 uint32_t requested_format(const std::string& format) {
-    if (format == "MJPG") {
+    // 配置使用标准名称 MJPEG，SDK 枚举名称为 MJPG。
+    if (format == "MJPEG" || format == "MJPG") {
         return VIDEO_MEDIA_TYPE_MJPG;
     }
     if (format == "YUYV") {

@@ -4,6 +4,8 @@
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/vision/vision_types.hpp>
 
+#include <string>
+
 namespace mosas::runtime {
 
 class ImuSource {
@@ -35,6 +37,9 @@ public:
         return frame != nullptr && !frame->image.empty() &&
                frame->image.type() == CV_8UC3;
     }
+
+    // 返回最近一次相机错误；默认实现表示没有可用的详细错误。
+    virtual std::string last_error() const { return {}; }
 
     virtual void cancel() noexcept = 0;
 };

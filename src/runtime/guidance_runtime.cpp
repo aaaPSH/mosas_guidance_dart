@@ -146,7 +146,10 @@ bool GuidanceRuntime::start() {
         return false;
     }
     if (!camera_source_->configure(config_.camera_capture)) {
-        set_fault("camera configuration failed");
+        const std::string camera_error = camera_source_->last_error();
+        set_fault(camera_error.empty()
+                      ? "camera configuration failed"
+                      : "camera configuration failed: " + camera_error);
         return false;
     }
 
