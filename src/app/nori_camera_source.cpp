@@ -18,7 +18,6 @@
 namespace mosas::app {
 namespace {
 
-constexpr std::size_t kPendingFrameCapacity = 2;
 constexpr uint32_t kMaxCallbackFrameBytes = 64U * 1024U * 1024U;
 
 runtime::TimestampNs steady_timestamp_ns() {
@@ -120,7 +119,7 @@ bool NoriSdkCameraSource::configure(
 
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
-        config_.fps <= 0 ||
+        config_.fps <= 0 || config_.callback_queue_capacity == 0 ||
         (config_.pixel_format != "auto" &&
          requested_format(config_.pixel_format) == 0)) {
         set_error("视频配置无效，设备 " + config_.device);
@@ -326,13 +325,31 @@ bool NoriSdkCameraSource::configure(
 }
 
 bool NoriSdkCameraSource::configure_exposure() {
-    const int32_t exposure_mode = config_.auto_exposure ? 3 : 1;
-    uint32_t result = sdk_->set_processing_unit_control(
-        device_id_, V4L2_CID_EXPOSURE_AUTO, exposure_mode);
+    int32_t current_mode = 0;
+    int32_t flags = 0;
+    int32_t step = 0;
+    int32_t minimum = 0;
+    int32_t maximum = 0;
+    int32_t default_value = 0;
+    uint32_t result = sdk_->get_processing_unit_control(
+        device_id_, V4L2_CID_EXPOSURE_AUTO, &current_mode, &flags, &step,
+        &minimum, &maximum, &default_value);
     if (result != NORI_OK) {
-        set_error(sdk_error("Nori_Xvision_SetProcessingUnitControl",
+        set_error(sdk_error("Nori_Xvision_GetProcessingUnitControl",
                             config_.device, device_id_, result));
         return false;
+    }
+
+    const int32_t desired_mode =
+        config_.auto_exposure ? V4L2_EXPOSURE_AUTO : V4L2_EXPOSURE_MANUAL;
+    if (current_mode != desired_mode) {
+        result = sdk_->set_processing_unit_control(
+            device_id_, V4L2_CID_EXPOSURE_AUTO, desired_mode);
+        if (result != NORI_OK) {
+            set_error(sdk_error("Nori_Xvision_SetProcessingUnitControl",
+                                config_.device, device_id_, result));
+            return false;
+        }
     }
     if (config_.auto_exposure) {
         return true;
@@ -343,6 +360,13 @@ bool NoriSdkCameraSource::configure_exposure() {
             static_cast<double>(std::numeric_limits<uint32_t>::max())) {
         set_error("Nori_Xvision_SetSensorShutter 参数无效，设备 " +
                   config_.device + "，返回码 0x0");
+        return false;
+    }
+    uint32_t current_shutter = 0;
+    result = sdk_->get_sensor_shutter(device_id_, &current_shutter);
+    if (result != NORI_OK) {
+        set_error(sdk_error("Nori_Xvision_GetSensorShutter", config_.device,
+                            device_id_, result));
         return false;
     }
     result = sdk_->set_sensor_shutter(
@@ -358,6 +382,18 @@ bool NoriSdkCameraSource::configure_exposure() {
                 static_cast<double>(std::numeric_limits<uint32_t>::max())) {
             set_error("Nori_Xvision_SetSensorGain 参数无效，设备 " +
                       config_.device + "，返回码 0x0");
+            return false;
+        }
+        uint32_t current_gain = 0;
+        uint32_t minimum_gain = 0;
+        uint32_t maximum_gain = 0;
+        uint32_t gain_step = 0;
+        result = sdk_->get_sensor_gain(device_id_, &current_gain,
+                                       &minimum_gain, &maximum_gain,
+                                       &gain_step);
+        if (result != NORI_OK) {
+            set_error(sdk_error("Nori_Xvision_GetSensorGain", config_.device,
+                                device_id_, result));
             return false;
         }
         result = sdk_->set_sensor_gain(device_id_,
@@ -620,7 +656,7 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
             callback_context_->cancel_requested.load(std::memory_order_acquire)) {
             return NORI_OK;
         }
-        if (pending_frames_.size() >= kPendingFrameCapacity) {
+        if (pending_frames_.size() >= config_.callback_queue_capacity) {
             pending_frames_.pop_front();
         }
         pending_frames_.push_back(std::move(pending));

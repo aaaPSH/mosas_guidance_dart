@@ -169,6 +169,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->camera.exposure_us = decimal;
         } else if (key == "gain" && parse_double(value, &decimal)) {
             config->camera.gain = decimal;
+        } else if (key == "callback_queue_capacity" &&
+                   parse_size(value, &config->camera.callback_queue_capacity)) {
         } else if (key == "undistort" &&
                    parse_bool(value, &config->camera.undistort)) {
         } else if (key == "distortion_k1" && parse_double(value, &decimal)) {
@@ -357,7 +359,8 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         !valid_pixel_format(config.camera.pixel_format) ||
         !std::isfinite(config.camera.exposure_us) ||
         config.camera.exposure_us <= 0.0 || !std::isfinite(config.camera.gain) ||
-        config.camera.gain < 0.0 || !std::isfinite(matrix.m00) ||
+        config.camera.gain < 0.0 || config.camera.callback_queue_capacity == 0 ||
+        !std::isfinite(matrix.m00) ||
         !std::isfinite(matrix.m01) || !std::isfinite(matrix.m02) ||
         !std::isfinite(matrix.m10) || !std::isfinite(matrix.m11) ||
         !std::isfinite(matrix.m12) || !std::isfinite(matrix.m20) ||

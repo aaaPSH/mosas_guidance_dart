@@ -5,6 +5,7 @@
 #include <mosas/wireless/rtsp_frame_sink.hpp>
 
 #include <filesystem>
+#include <cstddef>
 #include <string>
 
 namespace mosas::app {
@@ -39,6 +40,8 @@ struct CameraAppConfig {
     bool auto_exposure = true;
     double exposure_us = 10000.0;
     double gain = 0.0;
+    // SDK 回调与处理线程之间的帧缓存容量；队列满时丢弃最旧帧。
+    std::size_t callback_queue_capacity = 2;
     bool undistort = false;
     CameraMatrix3 camera_matrix{};
     DistortionCoefficients distortion{};
