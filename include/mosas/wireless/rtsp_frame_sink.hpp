@@ -4,6 +4,7 @@
 #include <mosas/wireless/rtsp_streamer.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -19,7 +20,7 @@ struct RtspFrameSinkConfig {
     bool enable_wireless_stream = false;
     // 是否启用本地录像；关闭时不创建 VideoWriter。
     bool enable_recording = false;
-    // 视频录像文件路径；启用录像时不能为空，CSV 飞行数据使用同名 .csv 文件。
+    // 视频录像基础路径；启用录像时不能为空，实际文件名会追加会话时间编号。
     std::string recording_path;
     double recording_fps = 30.0;
     // 是否在无线输出前绘制识别框和引导数据面板。
@@ -59,6 +60,8 @@ private:
                       const mosas::runtime::ImuStateSnapshot& imu_state,
                       const PngGuidanceOutput& guidance,
                       const VisionOverlayData* overlay);
+    bool initialize_recording();
+    bool initialize_recording_impl();
 
     RtspFrameSinkConfig config_;
     cv::Point2d line_of_sight_reference_point_;
@@ -71,7 +74,9 @@ private:
     cv::Mat bgr_frame_;
     cv::VideoWriter recording_writer_;
     std::ofstream flight_data_writer_;
+    std::string recording_video_path_;
     std::string flight_data_path_;
+    std::uint64_t recording_frame_index_ = 0;
     // RTSP 失败后停止重试，但不影响同一输出线程继续内录。
     bool wireless_stream_failed_ = false;
     std::atomic<bool> cancel_requested_{false};

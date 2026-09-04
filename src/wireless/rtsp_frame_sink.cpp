@@ -1,5 +1,9 @@
 #include <mosas/wireless/rtsp_frame_sink.hpp>
 
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 #include <utility>
 
 #include <mosas/vision/vision_visualizer.hpp>
@@ -9,6 +13,40 @@
 #include <opencv2/imgproc.hpp>
 
 namespace mosas::wireless {
+namespace {
+
+std::string recording_session_id() {
+    const auto now = std::chrono::system_clock::now();
+    const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                            now - seconds)
+                            .count();
+    const std::time_t time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+    localtime_r(&time, &local_time);
+
+    std::ostringstream stream;
+    stream << std::put_time(&local_time, "%Y%m%d_%H%M%S") << '_'
+           << std::setfill('0') << std::setw(6) << micros;
+    return stream.str();
+}
+
+std::filesystem::path timestamped_video_path(
+    const std::filesystem::path& configured_path,
+    const std::string& session_id) {
+    std::string stem = configured_path.stem().string();
+    if (stem.empty()) {
+        stem = "recording";
+    }
+    std::string extension = configured_path.extension().string();
+    if (extension.empty()) {
+        extension = ".avi";
+    }
+    return configured_path.parent_path() /
+           (stem + "_" + session_id + extension);
+}
+
+}  // 匿名命名空间结束
 
 RtspFrameSink::RtspFrameSink(
     RtspFrameSinkConfig config, cv::Point2d line_of_sight_reference_point)
@@ -127,25 +165,15 @@ bool RtspFrameSink::publish_impl(
             return false;
         }
         if (config_.enable_recording) {
-            const std::filesystem::path recording_path(config_.recording_path);
-            if (recording_path.has_parent_path()) {
-                std::error_code directory_error;
-                std::filesystem::create_directories(
-                    recording_path.parent_path(), directory_error);
-                if (directory_error) {
-                    last_error_ = "create recording directory failed: " +
-                                  recording_path.parent_path().string() +
-                                  " (" + directory_error.message() + ")";
+            if (!recording_writer_.isOpened() ||
+                !flight_data_writer_.is_open()) {
+                if (!initialize_recording()) {
                     return false;
                 }
             }
-            if (!recording_writer_.isOpened() &&
-                !recording_writer_.open(
-                    config_.recording_path,
-                    cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-                    config_.recording_fps, bgr_frame_.size(), true)) {
-                last_error_ = "open recording writer failed: " +
-                              config_.recording_path;
+            if (bgr_frame_.size() !=
+                cv::Size(config_.stream.width, config_.stream.height)) {
+                last_error_ = "recording frame size does not match configured output size";
                 return false;
             }
             recording_writer_.write(bgr_frame_);
@@ -154,44 +182,6 @@ bool RtspFrameSink::publish_impl(
             if (!recording_writer_.isOpened()) {
                 last_error_ = "write recording frame failed";
                 return false;
-            }
-
-            if (!flight_data_writer_.is_open()) {
-                std::filesystem::path csv_path(config_.recording_path);
-                if (csv_path.has_extension()) {
-                    csv_path.replace_extension(".csv");
-                } else {
-                    csv_path += ".csv";
-                }
-                flight_data_path_ = csv_path.string();
-                flight_data_writer_.open(
-                    flight_data_path_, std::ios::out | std::ios::trunc);
-                if (!flight_data_writer_.is_open()) {
-                    last_error_ = "open flight data CSV failed: " +
-                                  flight_data_path_;
-                    return false;
-                }
-                flight_data_writer_
-                    << "frame_timestamp_ns,imu_timestamp_ns,flight_phase,"
-                       "vision_found,target_x,target_y,target_width,target_height,"
-                       "target_area,target_center_x,target_center_y,"
-                       "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
-                       "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
-                       "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
-                       "attitude_pitch_rad,attitude_yaw_rad,attitude_roll_rad,"
-                       "velocity_x_mps,velocity_y_mps,velocity_z_mps,"
-                       "los_valid,los_q_y_rad,los_q_z_rad,los_rate_valid,"
-                       "los_rate_q_y_rad_s,los_rate_q_z_rad_s,guidance_valid,"
-                       "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"
-                       "navigation_acceleration_z_mps2,body_acceleration_x_mps2,"
-                       "body_acceleration_y_mps2,body_acceleration_z_mps2,"
-                       "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
-                       "command_overload_g,command_phase_rad\n";
-                if (!flight_data_writer_) {
-                    last_error_ = "write flight data CSV header failed: " +
-                                  flight_data_path_;
-                    return false;
-                }
             }
 
             const auto phase_name = [](mosas::runtime::FlightPhase phase) {
@@ -209,7 +199,8 @@ bool RtspFrameSink::publish_impl(
             const VisionOverlayData& data =
                 overlay == nullptr ? empty_overlay : *overlay;
             flight_data_writer_
-                << frame.timestamp_ns << ',' << imu_state.timestamp_ns << ','
+                << recording_frame_index_ << ',' << frame.timestamp_ns << ','
+                << imu_state.timestamp_ns << ','
                 << phase_name(imu_state.phase) << ','
                 << (vision_result.found ? 1 : 0) << ',' << vision_result.blob.x
                 << ',' << vision_result.blob.y << ',' << vision_result.blob.width
@@ -246,6 +237,7 @@ bool RtspFrameSink::publish_impl(
                               flight_data_path_;
                 return false;
             }
+            ++recording_frame_index_;
         }
         return true;
     } catch (const cv::Exception& exception) {
@@ -254,12 +246,115 @@ bool RtspFrameSink::publish_impl(
     }
 }
 
+bool RtspFrameSink::initialize_recording() {
+    try {
+        return initialize_recording_impl();
+    } catch (const cv::Exception& exception) {
+        last_error_ = exception.what();
+        return false;
+    } catch (const std::exception& exception) {
+        last_error_ = exception.what();
+        return false;
+    } catch (...) {
+        last_error_ = "initialize recording failed";
+        return false;
+    }
+}
+
+bool RtspFrameSink::initialize_recording_impl() {
+    if (!config_.enable_recording) {
+        return true;
+    }
+    if (config_.recording_path.empty()) {
+        last_error_ = "recording path must not be empty";
+        return false;
+    }
+    if (!std::isfinite(config_.recording_fps) || config_.recording_fps <= 0.0) {
+        last_error_ = "recording FPS must be positive";
+        return false;
+    }
+    if (config_.stream.width <= 0 || config_.stream.height <= 0) {
+        last_error_ = "recording output size must be positive";
+        return false;
+    }
+
+    if (recording_writer_.isOpened()) {
+        recording_writer_.release();
+    }
+    if (flight_data_writer_.is_open()) {
+        flight_data_writer_.flush();
+        flight_data_writer_.close();
+    }
+
+    const std::string session_id = recording_session_id();
+    const std::filesystem::path configured_path(config_.recording_path);
+    const std::filesystem::path video_path =
+        timestamped_video_path(configured_path, session_id);
+    std::filesystem::path csv_path = video_path;
+    csv_path.replace_extension(".csv");
+
+    if (video_path.has_parent_path()) {
+        std::error_code directory_error;
+        std::filesystem::create_directories(video_path.parent_path(),
+                                            directory_error);
+        if (directory_error) {
+            last_error_ = "create recording directory failed: " +
+                          video_path.parent_path().string() + " (" +
+                          directory_error.message() + ")";
+            return false;
+        }
+    }
+
+    recording_video_path_ = video_path.string();
+    flight_data_path_ = csv_path.string();
+    recording_frame_index_ = 0;
+    if (!recording_writer_.open(
+            recording_video_path_, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
+            config_.recording_fps,
+            cv::Size(config_.stream.width, config_.stream.height), true)) {
+        last_error_ = "open recording writer failed: " + recording_video_path_;
+        return false;
+    }
+
+    flight_data_writer_.open(flight_data_path_, std::ios::out | std::ios::trunc);
+    if (!flight_data_writer_.is_open()) {
+        recording_writer_.release();
+        last_error_ = "open flight data CSV failed: " + flight_data_path_;
+        return false;
+    }
+    flight_data_writer_
+        << "frame_index,frame_timestamp_ns,imu_timestamp_ns,flight_phase,"
+           "vision_found,target_x,target_y,target_width,target_height,"
+           "target_area,target_center_x,target_center_y,"
+           "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
+           "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
+           "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
+           "attitude_pitch_rad,attitude_yaw_rad,attitude_roll_rad,"
+           "velocity_x_mps,velocity_y_mps,velocity_z_mps,"
+           "los_valid,los_q_y_rad,los_q_z_rad,los_rate_valid,"
+           "los_rate_q_y_rad_s,los_rate_q_z_rad_s,guidance_valid,"
+           "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"
+           "navigation_acceleration_z_mps2,body_acceleration_x_mps2,"
+           "body_acceleration_y_mps2,body_acceleration_z_mps2,"
+           "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
+           "command_overload_g,command_phase_rad\n";
+    if (!flight_data_writer_) {
+        recording_writer_.release();
+        flight_data_writer_.close();
+        last_error_ = "write flight data CSV header failed: " +
+                      flight_data_path_;
+        return false;
+    }
+    return true;
+}
+
 void RtspFrameSink::stop() noexcept {
     cancel_requested_.store(true);
     if (recording_writer_.isOpened()) {
         recording_writer_.release();
     }
     if (flight_data_writer_.is_open()) {
+        flight_data_writer_.flush();
         flight_data_writer_.close();
     }
     std::unique_ptr<RtspStreamer> streamer;
@@ -286,11 +381,17 @@ void RtspFrameSink::cancel() noexcept {
 void RtspFrameSink::reset() noexcept {
     cancel_requested_.store(false);
     wireless_stream_failed_ = false;
+    recording_frame_index_ = 0;
+    recording_video_path_.clear();
+    flight_data_path_.clear();
     std::lock_guard<std::mutex> lock(streamer_mutex_);
     if (streamer_ != nullptr) {
         streamer_->reset();
     }
     last_error_.clear();
+    if (config_.enable_recording) {
+        (void)initialize_recording();
+    }
 }
 
 bool RtspFrameSink::running() const noexcept {
