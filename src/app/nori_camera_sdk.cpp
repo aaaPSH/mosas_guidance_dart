@@ -74,6 +74,11 @@ uint32_t ProductionNoriSdkApi::video_callback(uint32_t device_id,
     return Nori_Xvision_VideoCallBack(device_id, callback, user);
 }
 
+uint32_t ProductionNoriSdkApi::get_trigger_mode(uint32_t device_id,
+                                                E_TRIGGER_MODE* mode) {
+    return Nori_Xvision_GetTriggerMode(device_id, mode);
+}
+
 uint32_t ProductionNoriSdkApi::set_trigger_mode(uint32_t device_id,
                                                 E_TRIGGER_MODE mode) {
     return Nori_Xvision_SetTriggerMode(device_id, mode);
