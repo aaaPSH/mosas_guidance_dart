@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
-#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -58,23 +57,6 @@ bool same_video(const VIDEO_INFO& video, const CameraAppConfig& config,
            video.f_Fps == static_cast<float>(config.fps);
 }
 
-std::string device_path(const DEVICE_INFO& info) {
-    const auto length = strnlen(info.device, sizeof(info.device));
-    return std::string(info.device, length);
-}
-
-bool same_device_path(const std::string& configured_path,
-                      const std::string& discovered_path) {
-    if (configured_path == discovered_path) {
-        return true;
-    }
-
-    std::error_code error;
-    return std::filesystem::equivalent(configured_path, discovered_path,
-                                       error) &&
-           !error;
-}
-
 }  // 匿名命名空间结束
 
 NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config)
@@ -116,6 +98,7 @@ bool NoriSdkCameraSource::configure(
         return false;
     }
     set_error("");
+    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
 
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
@@ -164,60 +147,28 @@ bool NoriSdkCameraSource::configure(
     }
     session_acquired_ = true;
 
-    bool device_found = false;
-    uint32_t fallback_device_id = 0;
-    std::vector<std::string> discovered_devices;
-    for (uint32_t device_id = 0; device_id < device_count; ++device_id) {
-        DEVICE_INFO info{};
-        const uint32_t result = sdk_->get_device_info(device_id, &info);
-        if (result != NORI_OK) {
-            set_error(sdk_error("Nori_Xvision_GetDeviceInfo", config_.device,
-                                device_id, result));
-            cancel_locked();
-            return false;
-        }
-        const std::string discovered_path = device_path(info);
-        if (!discovered_path.empty()) {
-            discovered_devices.push_back(discovered_path);
-        }
-        if (same_device_path(config_.device, discovered_path)) {
-            device_id_ = device_id;
-            device_found = true;
-        }
-        if (device_id == 0) {
-            fallback_device_id = device_id;
-        }
-    }
-    if (!device_found && device_count == 1) {
-        // SDK Sample 直接使用唯一枚举设备的 device_id，不依赖路径文本。
-        device_id_ = fallback_device_id;
-        device_found = true;
-    }
-    if (!device_found) {
+    if (device_count == 0 || config_.device_id >= device_count) {
         std::ostringstream message;
-        message << "Nori_Xvision_GetDeviceInfo 未找到匹配设备 "
-                << config_.device << "，SDK 枚举数量 " << device_count
-                << "，枚举结果 ";
-        if (discovered_devices.empty()) {
-            message << "为空";
-        } else {
-            for (std::size_t index = 0; index < discovered_devices.size();
-                 ++index) {
-                if (index != 0) {
-                    message << ", ";
-                }
-                message << discovered_devices[index];
-            }
-        }
-        message << "，返回码 0x0";
+        message << "Nori_Xvision_GetDeviceInfo 设备索引无效，设备 "
+                << config_.device << "，请求索引 " << config_.device_id
+                << "，SDK 枚举数量 " << device_count << "，返回码 0x0";
         set_error(message.str());
+        cancel_locked();
+        return false;
+    }
+    // 与 SDK 示例保持一致：使用配置指定的设备索引，不根据设备路径重新匹配。
+    device_id_ = config_.device_id;
+    DEVICE_INFO device_info{};
+    uint32_t result = sdk_->get_device_info(device_id_, &device_info);
+    if (result != NORI_OK) {
+        set_error(sdk_error("Nori_Xvision_GetDeviceInfo", config_.device,
+                            device_id_, result));
         cancel_locked();
         return false;
     }
 
     uint32_t video_info_size = 0;
-    uint32_t result = sdk_->get_device_video_info_size(device_id_,
-                                                       &video_info_size);
+    result = sdk_->get_device_video_info_size(device_id_, &video_info_size);
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_GetDeviceVideoInfoSize", config_.device,
                             device_id_, result));
@@ -505,6 +456,10 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
     return !frame->image.empty() && frame->image.type() == CV_8UC3;
 }
 
+double NoriSdkCameraSource::capture_fps() const noexcept {
+    return sdk_capture_fps_.load(std::memory_order_relaxed);
+}
+
 bool NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
     if (frame == nullptr || frame->image.empty() ||
         frame->image.type() != CV_8UC3) {
@@ -548,6 +503,7 @@ void NoriSdkCameraSource::cancel() noexcept {
 void NoriSdkCameraSource::cancel_locked() noexcept {
     undistort_map_x_.release();
     undistort_map_y_.release();
+    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> callback_lock(callback_context_->mutex);
@@ -649,6 +605,11 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     pending.width = frame->PixFormat.u_Width;
     pending.height = frame->PixFormat.u_Height;
     pending.timestamp_ns = steady_timestamp_ns();
+    if (std::isfinite(frame->PixFormat.f_Fps) &&
+        frame->PixFormat.f_Fps > 0.0F) {
+        sdk_capture_fps_.store(static_cast<double>(frame->PixFormat.f_Fps),
+                               std::memory_order_relaxed);
+    }
 
     {
         std::lock_guard<std::mutex> queue_lock(queue_mutex_);

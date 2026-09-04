@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace mosas::app {
@@ -32,6 +33,8 @@ struct DistortionCoefficients {
 
 struct CameraAppConfig {
     std::string device = "/dev/video0";
+    // Nori SDK 设备索引；示例程序默认使用 0。
+    uint32_t device_id = 0;
     int width = 640;
     int height = 480;
     int fps = 30;

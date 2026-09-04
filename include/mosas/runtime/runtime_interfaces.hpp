@@ -32,6 +32,9 @@ public:
     virtual bool configure(const CameraCaptureConfig& config) = 0;
     virtual bool capture(CameraFrame* frame) = 0;
 
+    // 返回相机源报告的采集帧率；没有源报告时返回 0，运行时使用本地统计回退。
+    virtual double capture_fps() const noexcept { return 0.0; }
+
     // 在处理线程完成颜色转换、缩放和去畸变等帧预处理。
     virtual bool prepare(CameraFrame* frame) {
         return frame != nullptr && !frame->image.empty() &&
