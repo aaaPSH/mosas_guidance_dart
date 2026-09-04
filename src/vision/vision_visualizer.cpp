@@ -12,6 +12,7 @@
 namespace {
 
 constexpr double kRadiansToDegrees = 57.29577951308232;
+constexpr double kPi = 3.14159265358979323846;
 const cv::Scalar kOverlayColor{0, 255, 0};
 
 bool is_valid_frame(const cv::Mat& frame) {
@@ -50,6 +51,22 @@ void draw_cross(cv::Mat& frame, const cv::Point2d& raw_center,
              1);
 }
 
+void draw_reference_circle(cv::Mat& frame, const cv::Point2d& raw_center,
+                           int minimum_blob_area,
+                           const cv::Scalar& color) {
+    if (!std::isfinite(raw_center.x) || !std::isfinite(raw_center.y) ||
+        minimum_blob_area <= 0) {
+        return;
+    }
+
+    const double radius = std::sqrt(
+        static_cast<double>(minimum_blob_area) / kPi);
+    const int radius_pixels = std::max(1, cvRound(radius));
+    cv::circle(frame,
+               {cvRound(raw_center.x), cvRound(raw_center.y)},
+               radius_pixels, color, 1, cv::LINE_8);
+}
+
 void draw_result_impl(cv::Mat& frame, const VisionResult& result,
                       const cv::Point2d* line_of_sight_reference_point) {
     if (!is_valid_frame(frame)) {
@@ -57,10 +74,11 @@ void draw_result_impl(cv::Mat& frame, const VisionResult& result,
     }
 
     try {
-        // 使用 OpenCV BGR 存储约定：目标框为蓝色，中心十字为红色。
+        // 使用 OpenCV BGR 存储约定：基准圆为绿色，目标框为蓝色，目标中心十字为红色。
         draw_rectangle(frame, result.next_roi, {0, 0, 255});
         if (line_of_sight_reference_point != nullptr) {
-            draw_cross(frame, *line_of_sight_reference_point, {0, 255, 255});
+            draw_reference_circle(frame, *line_of_sight_reference_point,
+                                  result.minimum_blob_area, {0, 255, 0});
         }
         if (!result.found) {
             return;

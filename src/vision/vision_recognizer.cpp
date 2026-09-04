@@ -68,7 +68,8 @@ void VisionRecognizer::reset() {
 }
 
 VisionResult VisionRecognizer::process(const cv::Mat& frame) {
-    VisionResult result{false, {0, 0, 0, 0, 0, 0.0, 0.0}, current_roi_};
+    VisionResult result{false, {0, 0, 0, 0, 0, 0.0, 0.0}, current_roi_,
+                        config_.min_blob_area};
     if (!is_valid_frame(frame)) {
         return result;
     }
