@@ -155,6 +155,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->camera.height = integer;
         } else if (key == "fps" && parse_int(value, &integer)) {
             config->camera.fps = integer;
+        } else if (key == "pixel_format") {
+            config->camera.pixel_format = value;
         } else if (key == "auto_exposure" &&
                    parse_bool(value, &config->camera.auto_exposure)) {
         } else if (key == "exposure_us" &&
@@ -208,6 +210,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     if (section == "imu") {
         if (key == "mode" && value == "simulated") {
             config->imu.mode = ImuMode::simulated;
+        } else if (key == "skip_self_check") {
+            return parse_bool(value, &config->imu.skip_self_check) || invalid();
         } else if (key == "sample_rate_hz" && parse_double(value, &decimal)) {
             config->imu.sample_rate_hz = decimal;
         } else {
@@ -345,6 +349,8 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     if (config.camera.device.empty() || config.camera.width <= 0 ||
         config.camera.height <= 0 || config.camera.width % 2 != 0 ||
         config.camera.height % 2 != 0 || config.camera.fps <= 0 ||
+        (config.camera.pixel_format != "auto" &&
+         config.camera.pixel_format.size() != 4) ||
         !std::isfinite(config.camera.exposure_us) ||
         config.camera.exposure_us <= 0.0 || !std::isfinite(config.camera.gain) ||
         config.camera.gain < 0.0 || !std::isfinite(matrix.m00) ||

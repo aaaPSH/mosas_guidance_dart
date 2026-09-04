@@ -63,38 +63,35 @@ bool RtspFrameSink::publish_impl(
 
     try {
         if (config_.draw_visualization) {
-            frame.image.copyTo(annotated_rgb_frame_);
+            frame.image.copyTo(annotated_bgr_frame_);
             if (overlay != nullptr) {
                 VisionVisualizer::draw_result(
-                    annotated_rgb_frame_, vision_result,
+                    annotated_bgr_frame_, vision_result,
                     line_of_sight_reference_point_);
-                VisionVisualizer::draw_guidance_overlay(annotated_rgb_frame_,
+                VisionVisualizer::draw_guidance_overlay(annotated_bgr_frame_,
                                                         *overlay);
             } else {
                 VisionVisualizer::draw_result(
-                    annotated_rgb_frame_, vision_result,
+                    annotated_bgr_frame_, vision_result,
                     line_of_sight_reference_point_);
             }
-            if (annotated_rgb_frame_.cols != config_.stream.width ||
-                annotated_rgb_frame_.rows != config_.stream.height) {
+            if (annotated_bgr_frame_.cols != config_.stream.width ||
+                annotated_bgr_frame_.rows != config_.stream.height) {
                 cv::resize(
-                    annotated_rgb_frame_, resized_rgb_frame_,
+                    annotated_bgr_frame_, bgr_frame_,
                     cv::Size(config_.stream.width, config_.stream.height),
                     0.0, 0.0, cv::INTER_LINEAR);
-                cv::cvtColor(resized_rgb_frame_, bgr_frame_,
-                             cv::COLOR_RGB2BGR);
             } else {
-                cv::cvtColor(annotated_rgb_frame_, bgr_frame_,
-                             cv::COLOR_RGB2BGR);
+                annotated_bgr_frame_.copyTo(bgr_frame_);
             }
         } else if (frame.image.cols != config_.stream.width ||
                    frame.image.rows != config_.stream.height) {
-            cv::resize(frame.image, resized_rgb_frame_,
+            cv::resize(frame.image, resized_bgr_frame_,
                        cv::Size(config_.stream.width, config_.stream.height),
                        0.0, 0.0, cv::INTER_LINEAR);
-            cv::cvtColor(resized_rgb_frame_, bgr_frame_, cv::COLOR_RGB2BGR);
+            resized_bgr_frame_.copyTo(bgr_frame_);
         } else {
-            cv::cvtColor(frame.image, bgr_frame_, cv::COLOR_RGB2BGR);
+            frame.image.copyTo(bgr_frame_);
         }
 
         if (config_.enable_wireless_stream && !wireless_stream_failed_) {

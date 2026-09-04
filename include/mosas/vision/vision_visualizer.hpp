@@ -8,7 +8,7 @@
 
 class VisionVisualizer {
 public:
-    // 在 RGB888 帧上绘制搜索 ROI、目标框和目标计算中心的红色十字。
+    // 在 BGR888 帧上绘制搜索 ROI、目标框和目标计算中心的红色十字。
     static void draw_result(cv::Mat& frame, const VisionResult& result);
 
     // 额外绘制用于计算视线角的相机主点基准十字。

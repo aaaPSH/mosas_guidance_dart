@@ -58,7 +58,7 @@ void draw_result_impl(cv::Mat& frame, const VisionResult& result,
     }
 
     try {
-        // RGB 存储下沿用项目现有的颜色通道约定。
+        // 使用 OpenCV BGR 存储约定：目标框为蓝色，中心十字为红色。
         draw_rectangle(frame, result.next_roi, {0, 0, 255});
         if (line_of_sight_reference_point != nullptr) {
             draw_cross(frame, *line_of_sight_reference_point, {0, 255, 255});
@@ -87,6 +87,16 @@ std::string format_value(bool valid, double value, double scale,
 
     std::ostringstream stream;
     stream << std::fixed << std::setprecision(1) << value * scale << unit;
+    return stream.str();
+}
+
+std::string format_fps(double value) {
+    if (!std::isfinite(value) || value < 0.0) {
+        return "N/A";
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(2) << value;
     return stream.str();
 }
 
@@ -140,6 +150,7 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             format_value(data.velocity_valid, data.velocity_z_mps, 1.0, ""),
         "Speed(m/s): " +
             format_value(data.velocity_valid, speed, 1.0, ""),
+        "Processing FPS: " + format_fps(data.processing_fps),
     };
 
     constexpr int kPanel_x = 4;

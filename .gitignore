@@ -12,13 +12,21 @@
 /tests/*
 !/tests/wireless_streamer_test.cpp
 !/tests/wireless_test_frame_generator_fallback_test.sh
+!/tests/app_config_test.cpp
+!/tests/host_adapters_test.cpp
+!/tests/mosas_guidance_app_cli_test.sh
+!/tests/run_guidance_script_test.sh
+!/tests/frame_rate_meter_test.cpp
+!/tests/profile_guidance_script_test.sh
 !/docs/
 /docs/*
 !/docs/wireless_stream.md
+!/docs/guidance_config.md
 
 # 无线图传验收图片仅保留在本地，不提交到 Git。
-/assets/wireless_test_frames/*.png
-/assets/wireless_test_frames/**/*.png
+
+/assets/
+/docs/
 
 # IDE 配置
 /.vscode/

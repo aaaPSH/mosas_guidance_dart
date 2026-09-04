@@ -1,6 +1,7 @@
 #include <mosas/runtime/guidance_runtime.hpp>
 #include <mosas/vision/vision_recognizer.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <thread>
@@ -229,6 +230,71 @@ std::optional<ImuStateSnapshot> GuidanceRuntime::latest_state() const {
     return latest_state_;
 }
 
+GuidanceRuntimeStatistics GuidanceRuntime::statistics() const {
+    return {capture_fps_meter_.snapshot(), processing_fps_meter_.snapshot(),
+            output_fps_meter_.snapshot()};
+}
+
+GuidanceRuntimeTiming GuidanceRuntime::timing() const {
+    std::lock_guard<std::mutex> lock(timing_mutex_);
+    const auto to_stage = [](const TimingAccumulator& accumulator) {
+        if (accumulator.samples == 0) {
+            return GuidanceRuntimeTimingStage{};
+        }
+        return GuidanceRuntimeTimingStage{
+            accumulator.samples,
+            static_cast<double>(accumulator.total_ns) /
+                static_cast<double>(accumulator.samples) / 1e6,
+            static_cast<double>(accumulator.maximum_ns) / 1e6};
+    };
+    return {to_stage(capture_timing_), to_stage(prepare_timing_),
+            to_stage(vision_timing_), to_stage(line_of_sight_timing_),
+            to_stage(guidance_timing_), to_stage(command_timing_),
+            to_stage(processing_total_timing_), to_stage(output_timing_)};
+}
+
+void GuidanceRuntime::record_timing(
+    TimingStage stage, std::chrono::steady_clock::duration duration) noexcept {
+    const auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        duration).count();
+    if (duration_ns < 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(timing_mutex_);
+    TimingAccumulator* accumulator = nullptr;
+    switch (stage) {
+        case TimingStage::capture:
+            accumulator = &capture_timing_;
+            break;
+        case TimingStage::prepare:
+            accumulator = &prepare_timing_;
+            break;
+        case TimingStage::vision:
+            accumulator = &vision_timing_;
+            break;
+        case TimingStage::line_of_sight:
+            accumulator = &line_of_sight_timing_;
+            break;
+        case TimingStage::guidance:
+            accumulator = &guidance_timing_;
+            break;
+        case TimingStage::command:
+            accumulator = &command_timing_;
+            break;
+        case TimingStage::processing_total:
+            accumulator = &processing_total_timing_;
+            break;
+        case TimingStage::output:
+            accumulator = &output_timing_;
+            break;
+    }
+    ++accumulator->samples;
+    accumulator->total_ns += static_cast<std::uint64_t>(duration_ns);
+    accumulator->maximum_ns = std::max(
+        accumulator->maximum_ns, static_cast<std::uint64_t>(duration_ns));
+}
+
 void GuidanceRuntime::set_error(const std::string& message) {
     std::lock_guard<std::mutex> lock(error_mutex_);
     last_error_ = message;
@@ -284,21 +350,29 @@ void GuidanceRuntime::imu_worker() {
         }
 
         const FlightPhase phase_before = phase_detector_.phase();
-        const FlightPhase phase = phase_detector_.update(sample);
+        const FlightPhase phase = config_.skip_imu_self_check
+                                      ? FlightPhase::free_flight
+                                      : phase_detector_.update(sample);
         has_previous_timestamp = true;
         previous_timestamp_ns = sample.timestamp_ns;
 
-        if (!initialized && phase_detector_.initialized()) {
+        if (!initialized &&
+            (config_.skip_imu_self_check || phase_detector_.initialized())) {
+            const Vector3 baseline = config_.skip_imu_self_check
+                                         ? Vector3{0.0, 9.80665, 0.0}
+                                         : phase_detector_.baseline_acceleration();
             if (!dart_condition_.initialize(
-                    phase_detector_.baseline_acceleration())) {
+                    baseline)) {
                 set_fault("failed to initialize dart condition");
                 return;
             }
             initialized = true;
         }
 
-        if (initialized && !launched && phase_before != FlightPhase::ejection &&
-            phase == FlightPhase::ejection) {
+        if (initialized && !launched &&
+            (config_.skip_imu_self_check ||
+             (phase_before != FlightPhase::ejection &&
+              phase == FlightPhase::ejection))) {
             dart_condition_.launch();
             launched = true;
             has_update_timestamp = true;
@@ -340,7 +414,9 @@ void GuidanceRuntime::capture_worker() {
     try {
         while (!stop_requested_.load()) {
             CameraFrame frame{};
-            if (!camera_source_->capture(&frame)) {
+            const auto capture_started = std::chrono::steady_clock::now();
+            const bool captured = camera_source_->capture(&frame);
+            if (!captured) {
                 if (!stop_requested_.load()) {
                     std::this_thread::yield();
                 }
@@ -349,18 +425,14 @@ void GuidanceRuntime::capture_worker() {
             if (stop_requested_.load()) {
                 break;
             }
-            if (frame.timestamp_ns < 0 || frame.image.empty() ||
-                frame.image.type() != CV_8UC3) {
+            if (frame.timestamp_ns < 0 || frame.image.empty()) {
                 continue;
             }
 
-            try {
-                // 相机驱动可能复用内部缓冲区，异步处理前必须取得独立所有权。
-                frame.image = frame.image.clone();
-            } catch (const cv::Exception& exception) {
-                set_fault(exception.what());
-                return;
-            }
+            capture_fps_meter_.record();
+            record_timing(TimingStage::capture,
+                          std::chrono::steady_clock::now() - capture_started);
+
             if (!capture_queue_.push(std::move(frame))) {
                 return;
             }
@@ -391,6 +463,26 @@ void GuidanceRuntime::processing_worker() {
             if (stop_requested_.load()) {
                 break;
             }
+            const auto processing_started = std::chrono::steady_clock::now();
+            const auto prepare_started = std::chrono::steady_clock::now();
+            const bool prepared = camera_source_->prepare(&result.frame);
+            if (prepared) {
+                record_timing(TimingStage::prepare,
+                              std::chrono::steady_clock::now() -
+                                  prepare_started);
+            }
+            if (!prepared) {
+                result = ProcessedFrame{};
+                continue;
+            }
+            const auto enqueue_processed_frame =
+                [this, &result, &enqueue_result, processing_started] {
+                    processing_fps_meter_.record();
+                    record_timing(TimingStage::processing_total,
+                                  std::chrono::steady_clock::now() -
+                                      processing_started);
+                    return enqueue_result(std::move(result));
+                };
             const TimestampNs timestamp_ns = result.frame.timestamp_ns;
             result.vision_result = {
                 false, {0, 0, 0, 0, 0, 0.0, 0.0},
@@ -404,7 +496,7 @@ void GuidanceRuntime::processing_worker() {
                  timestamp_ns <= previous_frame_timestamp_ns)) {
                 rate_estimator.reset();
                 has_frame_timestamp = false;
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -415,7 +507,7 @@ void GuidanceRuntime::processing_worker() {
             if (!state.has_value() ||
                 timestamp_ns - state->timestamp_ns > config_.max_imu_age_ns ||
                 state->phase != FlightPhase::free_flight) {
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -432,25 +524,32 @@ void GuidanceRuntime::processing_worker() {
             result.overlay.velocity_y_mps = state->velocity.y;
             result.overlay.velocity_z_mps = state->velocity.z;
 
+            const auto vision_started = std::chrono::steady_clock::now();
             result.vision_result = recognizer.process(result.frame.image);
+            record_timing(TimingStage::vision,
+                          std::chrono::steady_clock::now() - vision_started);
             if (!result.vision_result.found) {
                 rate_estimator.reset();
                 has_frame_timestamp = false;
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
                 continue;
             }
 
+            const auto line_of_sight_started = std::chrono::steady_clock::now();
             const LineOfSight line_of_sight =
                 GuidanceEstimator::calculate_compensated(
                     result.vision_result, config_.camera_intrinsics,
                     state->attitude, config_.camera_to_body);
+            record_timing(
+                TimingStage::line_of_sight,
+                std::chrono::steady_clock::now() - line_of_sight_started);
             if (!line_of_sight.valid) {
                 rate_estimator.reset();
                 has_frame_timestamp = false;
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -465,7 +564,7 @@ void GuidanceRuntime::processing_worker() {
                 rate_estimator.update(line_of_sight, 1.0);
                 previous_frame_timestamp_ns = timestamp_ns;
                 has_frame_timestamp = true;
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -480,7 +579,7 @@ void GuidanceRuntime::processing_worker() {
             if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
                 rate_estimator.reset();
                 has_frame_timestamp = false;
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -490,7 +589,7 @@ void GuidanceRuntime::processing_worker() {
             const LineOfSightAngularVelocity angular_velocity =
                 rate_estimator.update(line_of_sight, dt_seconds);
             if (!angular_velocity.valid) {
-                if (!enqueue_result(std::move(result))) {
+                if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
@@ -500,9 +599,12 @@ void GuidanceRuntime::processing_worker() {
             result.overlay.line_of_sight_rate_q_y_rad_s = angular_velocity.q_y;
             result.overlay.line_of_sight_rate_q_z_rad_s = angular_velocity.q_z;
 
+            const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = PngGuidance::calculate(
                 line_of_sight, angular_velocity, state->velocity,
                 state->attitude, config_.png_guidance);
+            record_timing(TimingStage::guidance,
+                          std::chrono::steady_clock::now() - guidance_started);
             if (result.guidance.valid && !faulted_.load() &&
                 !stop_requested_.load()) {
                 result.overlay.body_overload_valid = true;
@@ -512,12 +614,17 @@ void GuidanceRuntime::processing_worker() {
                     result.guidance.body_overload.y;
                 result.overlay.body_overload_z_g =
                     result.guidance.body_overload.z;
-                if (!command_sink_->send({timestamp_ns, result.guidance})) {
+                const auto command_started = std::chrono::steady_clock::now();
+                const bool sent =
+                    command_sink_->send({timestamp_ns, result.guidance});
+                record_timing(TimingStage::command,
+                              std::chrono::steady_clock::now() - command_started);
+                if (!sent) {
                     set_fault("guidance command send failed");
                     return;
                 }
             }
-            if (!enqueue_result(std::move(result))) {
+            if (!enqueue_processed_frame()) {
                 return;
             }
             result = ProcessedFrame{};
@@ -546,12 +653,19 @@ void GuidanceRuntime::output_worker() {
             if (stop_requested_.load()) {
                 break;
             }
-            if (frame_sink_ != nullptr &&
-                !frame_sink_->publish(result.frame, result.vision_result,
-                                       result.imu_state, result.guidance,
-                                       result.overlay)) {
-                set_fault("frame output failed");
-                return;
+            if (frame_sink_ != nullptr) {
+                result.overlay.processing_fps =
+                    processing_fps_meter_.snapshot();
+                const auto output_started = std::chrono::steady_clock::now();
+                if (!frame_sink_->publish(result.frame, result.vision_result,
+                                          result.imu_state, result.guidance,
+                                          result.overlay)) {
+                    set_fault("frame output failed");
+                    return;
+                }
+                record_timing(TimingStage::output,
+                              std::chrono::steady_clock::now() - output_started);
+                output_fps_meter_.record();
             }
             result = ProcessedFrame{};
         }

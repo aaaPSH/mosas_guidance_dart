@@ -174,6 +174,12 @@ public:
         return true;
     }
 
+    bool prepare(mosas::runtime::CameraFrame*) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++prepare_count_;
+        return true;
+    }
+
     void release() {
         std::lock_guard<std::mutex> lock(mutex_);
         released_ = true;
@@ -201,6 +207,11 @@ public:
         return capture_count_;
     }
 
+    std::size_t prepare_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return prepare_count_;
+    }
+
 private:
     std::vector<mosas::runtime::CameraFrame> frames_;
     std::size_t next_frame_ = 0;
@@ -211,6 +222,7 @@ private:
     bool released_ = false;
     bool cancelled_ = false;
     std::size_t capture_count_ = 0;
+    std::size_t prepare_count_ = 0;
 };
 
 class RecordingCommandSink final : public mosas::runtime::CommandSink {
@@ -254,12 +266,17 @@ public:
         return true;
     }
 
-    bool publish(const mosas::runtime::CameraFrame& frame,
+    bool publish(const mosas::runtime::CameraFrame&,
                  const VisionResult& vision_result,
-                 const mosas::runtime::ImuStateSnapshot& imu_state,
+                 const mosas::runtime::ImuStateSnapshot&,
                  const PngGuidanceOutput& guidance,
-                 const VisionOverlayData&) override {
-        return publish(frame, vision_result, imu_state, guidance);
+                 const VisionOverlayData& overlay) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++publish_count_;
+        last_vision_found_ = vision_result.found;
+        last_guidance_valid_ = guidance.valid;
+        last_processing_fps_ = overlay.processing_fps;
+        return true;
     }
 
     std::size_t publish_count() const {
@@ -277,11 +294,17 @@ public:
         return stopped_;
     }
 
+    double last_processing_fps() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_processing_fps_;
+    }
+
 private:
     mutable std::mutex mutex_;
     std::size_t publish_count_ = 0;
     bool last_vision_found_ = false;
     bool last_guidance_valid_ = false;
+    double last_processing_fps_ = 0.0;
     bool stopped_ = false;
 };
 
@@ -559,6 +582,91 @@ void test_runtime_imu_worker_initializes_and_publishes_free_flight_state() {
     TEST_CHECK(std::abs(state->attitude.pitch) > 1e-6);
     runtime.stop();
     TEST_CHECK(!runtime.running());
+}
+
+void test_runtime_skips_imu_self_check_with_fake_state() {
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        std::vector<mosas::runtime::ImuSample>{
+            {100, {20.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+        });
+    auto camera_source = std::make_unique<EmptyCameraSource>();
+    auto command_sink = std::make_unique<EmptyCommandSink>();
+
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.skip_imu_self_check = true;
+    config.launch_speed_mps = 10.0;
+    config.history_capacity = 4;
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config);
+
+    TEST_CHECK(runtime.start());
+    TEST_CHECK(wait_until(
+        [&runtime] {
+            const auto state = runtime.latest_state();
+            return state.has_value() &&
+                   state->phase == mosas::runtime::FlightPhase::free_flight;
+        },
+        std::chrono::milliseconds(500)));
+    const auto state = runtime.latest_state();
+    TEST_CHECK(state.has_value());
+    TEST_CHECK(std::abs(state->velocity.x - 10.0) < 1e-6);
+    runtime.stop();
+}
+
+void test_runtime_reports_capture_processing_and_output_fps() {
+    auto imu_source = std::make_unique<ScriptedImuSource>(
+        std::vector<mosas::runtime::ImuSample>{
+            {100, {20.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+        });
+    auto camera_source = std::make_unique<ScriptedCameraSource>(
+        std::vector<mosas::runtime::CameraFrame>{
+            {100, make_guidance_frame()},
+            {101, make_guidance_frame()},
+            {102, make_guidance_frame()},
+        });
+    ScriptedCameraSource* camera_source_view = camera_source.get();
+    auto command_sink = std::make_unique<EmptyCommandSink>();
+    auto frame_sink = std::make_unique<RecordingFrameSink>();
+    RecordingFrameSink* frame_sink_view = frame_sink.get();
+
+    mosas::runtime::GuidanceRuntimeConfig config;
+    config.skip_imu_self_check = true;
+    config.history_capacity = 4;
+    config.max_imu_age_ns = 1000;
+    config.capture_queue_capacity = 3;
+    config.output_queue_capacity = 3;
+    config.camera_intrinsics = {100.0, 100.0, 32.0, 24.0};
+    config.vision_config.initial_roi = {0, 0, 64, 48};
+
+    mosas::runtime::GuidanceRuntime runtime(
+        std::move(imu_source), std::move(camera_source),
+        std::move(command_sink), config, std::move(frame_sink));
+
+    TEST_CHECK(runtime.start());
+    TEST_CHECK(wait_until(
+        [&runtime] { return runtime.latest_state().has_value(); },
+        std::chrono::milliseconds(500)));
+    camera_source_view->release();
+    TEST_CHECK(wait_until(
+        [frame_sink_view] { return frame_sink_view->publish_count() == 3; },
+        std::chrono::milliseconds(500)));
+    TEST_CHECK(camera_source_view->prepare_count() == 3);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const mosas::runtime::GuidanceRuntimeStatistics statistics =
+        runtime.statistics();
+    runtime.stop();
+    TEST_CHECK(statistics.capture_fps > 0.0);
+    TEST_CHECK(statistics.processing_fps > 0.0);
+    TEST_CHECK(statistics.output_fps > 0.0);
+    TEST_CHECK(frame_sink_view->last_processing_fps() > 0.0);
+    const auto timing = runtime.timing();
+    TEST_CHECK(timing.capture.samples >= 3);
+    TEST_CHECK(timing.prepare.samples >= 3);
+    TEST_CHECK(timing.vision.samples >= 3);
+    TEST_CHECK(timing.output.samples >= 3);
 }
 
 void test_runtime_rejects_invalid_config_without_starting_workers() {
@@ -902,6 +1010,8 @@ int main() {
     test_history_evicts_oldest_snapshot_at_capacity();
     test_latest_frame_queue_replaces_old_frame_and_closes();
     test_runtime_imu_worker_initializes_and_publishes_free_flight_state();
+    test_runtime_skips_imu_self_check_with_fake_state();
+    test_runtime_reports_capture_processing_and_output_fps();
     test_runtime_rejects_invalid_config_without_starting_workers();
     test_runtime_stop_cancels_blocking_sources();
     test_vision_worker_sends_command_only_for_fresh_free_flight_state();

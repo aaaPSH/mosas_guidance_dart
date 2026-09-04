@@ -50,6 +50,7 @@ void test_loads_typed_configuration() {
         "width=800\n"
         "height=600\n"
         "fps=25\n"
+        "pixel_format=MJPG\n"
         "mode=hardware_trigger\n"
         "auto_exposure=false\n"
         "exposure_us=10000\n"
@@ -94,6 +95,7 @@ void test_loads_typed_configuration() {
     TEST_CHECK(config.camera.width == 800);
     TEST_CHECK(config.camera.height == 600);
     TEST_CHECK(config.camera.fps == 25);
+    TEST_CHECK(config.camera.pixel_format == "MJPG");
     TEST_CHECK(config.camera.capture_mode ==
                mosas::runtime::CameraCaptureMode::hardware_trigger);
     TEST_CHECK(!config.camera.auto_exposure);
@@ -135,16 +137,28 @@ void test_applies_defaults_for_omitted_values() {
     TEST_CHECK(config.camera.width == 640);
     TEST_CHECK(config.camera.height == 480);
     TEST_CHECK(config.camera.fps == 30);
+    TEST_CHECK(config.camera.pixel_format == "MJPG");
     TEST_CHECK(config.camera.auto_exposure);
     TEST_CHECK(config.camera.exposure_us == 10000.0);
     TEST_CHECK(config.camera.gain == 0.0);
     TEST_CHECK(!config.camera.undistort);
     TEST_CHECK(config.imu.sample_rate_hz == 200.0);
+    TEST_CHECK(!config.imu.skip_self_check);
     TEST_CHECK(config.guidance.vision_config.initial_roi.width == 320);
     TEST_CHECK(config.guidance.png_guidance.navigation_constant_y == 3.0);
     TEST_CHECK(config.guidance.png_guidance.navigation_constant_z == 3.0);
     TEST_CHECK(config.wireless.stream.rtsp_url ==
                "rtsp://127.0.0.1:8554/mosas");
+}
+
+void test_parses_imu_self_check_bypass() {
+    TemporaryConfigFile file("[imu]\n"
+                             "skip_self_check=true\n");
+
+    mosas::app::AppConfig config;
+    std::string error;
+    TEST_CHECK(mosas::app::AppConfigLoader::load(file.path(), &config, &error));
+    TEST_CHECK(config.imu.skip_self_check);
 }
 
 void test_rejects_invalid_configuration_with_line_number() {
@@ -175,6 +189,7 @@ void test_rejects_strict_syntax_and_ranges() {
     expect_invalid("[camera]\nwidth=\n");
     expect_invalid("[wireless]\nenable_recording=maybe\n");
     expect_invalid("[camera]\nmode=triggered\n");
+    expect_invalid("[camera]\npixel_format=MJ\n");
     expect_invalid("[camera]\nwidth=641\n");
     expect_invalid("[guidance]\ncapture_queue_capacity=0\n");
     expect_invalid("[guidance]\npng_navigation_constant_y=0\n");
@@ -189,6 +204,7 @@ void test_rejects_strict_syntax_and_ranges() {
 int main() {
     test_loads_typed_configuration();
     test_applies_defaults_for_omitted_values();
+    test_parses_imu_self_check_bypass();
     test_rejects_invalid_configuration_with_line_number();
     test_rejects_strict_syntax_and_ranges();
     return 0;

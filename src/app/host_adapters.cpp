@@ -1,9 +1,13 @@
 #include <mosas/app/host_adapters.hpp>
 
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include <opencv2/calib3d.hpp>
@@ -16,6 +20,45 @@ runtime::TimestampNs steady_timestamp_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+int fourcc_code(const std::string& value) {
+    return cv::VideoWriter::fourcc(value[0], value[1], value[2], value[3]);
+}
+
+std::string fourcc_text(double value) {
+    if (!std::isfinite(value) || value <= 0.0) {
+        return "unknown";
+    }
+    const auto code = static_cast<std::uint32_t>(value);
+    std::string result(4, ' ');
+    for (int index = 0; index < 4; ++index) {
+        const auto character = static_cast<unsigned char>(
+            (code >> (8 * index)) & 0xffU);
+        result[index] = std::isprint(character) ?
+            static_cast<char>(character) : '.';
+    }
+    return result;
+}
+
+void set_and_report(cv::VideoCapture* camera, int property,
+                    const char* name, double requested) {
+    const bool accepted = camera->set(property, requested);
+    const double actual = camera->get(property);
+    std::cerr << "[相机] " << name << ": requested=" << std::fixed
+              << std::setprecision(2) << requested
+              << " set=" << (accepted ? "ok" : "failed")
+              << " actual=" << actual << '\n';
+}
+
+void set_fourcc_and_report(cv::VideoCapture* camera,
+                           const std::string& requested) {
+    const int code = fourcc_code(requested);
+    const bool accepted = camera->set(cv::CAP_PROP_FOURCC, code);
+    const double actual = camera->get(cv::CAP_PROP_FOURCC);
+    std::cerr << "[相机] pixel_format: requested=" << requested
+              << " set=" << (accepted ? "ok" : "failed")
+              << " actual=" << fourcc_text(actual) << '\n';
 }
 
 }  // namespace
@@ -34,20 +77,27 @@ bool OpenCvCameraSource::configure(const runtime::CameraCaptureConfig& config) {
     camera_.release();
     config_.capture_mode = config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
-        config_.fps <= 0) {
+        config_.fps <= 0 ||
+        (config_.pixel_format != "auto" && config_.pixel_format.size() != 4)) {
         return false;
     }
     if (!camera_.open(config_.device, cv::CAP_V4L2)) {
         return false;
     }
-    camera_.set(cv::CAP_PROP_FRAME_WIDTH, config_.width);
-    camera_.set(cv::CAP_PROP_FRAME_HEIGHT, config_.height);
-    camera_.set(cv::CAP_PROP_FPS, config_.fps);
-    camera_.set(cv::CAP_PROP_EXPOSURE, config_.exposure_us);
-    camera_.set(cv::CAP_PROP_GAIN, config_.gain);
+    if (config_.pixel_format != "auto") {
+        set_fourcc_and_report(&camera_, config_.pixel_format);
+    } else {
+        std::cerr << "[相机] pixel_format: auto，使用驱动默认格式\n";
+    }
+    set_and_report(&camera_, cv::CAP_PROP_FRAME_WIDTH, "width", config_.width);
+    set_and_report(&camera_, cv::CAP_PROP_FRAME_HEIGHT, "height", config_.height);
+    set_and_report(&camera_, cv::CAP_PROP_FPS, "fps", config_.fps);
     // V4L2 常用 0.75 表示自动曝光、0.25 表示手动曝光。
-    camera_.set(cv::CAP_PROP_AUTO_EXPOSURE,
-                config_.auto_exposure ? 0.75 : 0.25);
+    set_and_report(&camera_, cv::CAP_PROP_AUTO_EXPOSURE, "auto_exposure",
+                   config_.auto_exposure ? 0.75 : 0.25);
+    set_and_report(&camera_, cv::CAP_PROP_EXPOSURE, "exposure_us",
+                   config_.exposure_us);
+    set_and_report(&camera_, cv::CAP_PROP_GAIN, "gain", config_.gain);
     undistort_map_x_.release();
     undistort_map_y_.release();
     if (config_.undistort) {
@@ -79,8 +129,15 @@ bool OpenCvCameraSource::capture(runtime::CameraFrame* frame) {
         !camera_.read(frame->image) || frame->image.empty()) {
         return false;
     }
-    // 在图像格式转换、缩放和去畸变之前记录时间，尽量接近取帧时刻。
+    // 在所有图像转换之前记录取帧时间，采集 FPS 不包含后续预处理耗时。
     frame->timestamp_ns = steady_timestamp_ns();
+    return true;
+}
+
+bool OpenCvCameraSource::prepare(runtime::CameraFrame* frame) {
+    if (frame == nullptr || frame->image.empty()) {
+        return false;
+    }
     if (frame->image.channels() == 1) {
         cv::cvtColor(frame->image, frame->image, cv::COLOR_GRAY2BGR);
     } else if (frame->image.channels() == 4) {
@@ -95,7 +152,7 @@ bool OpenCvCameraSource::capture(runtime::CameraFrame* frame) {
                   undistort_map_y_, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
         frame->image = undistorted_frame_;
     }
-    return true;
+    return frame->image.type() == CV_8UC3;
 }
 
 void OpenCvCameraSource::cancel() noexcept {

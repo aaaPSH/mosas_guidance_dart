@@ -20,6 +20,7 @@ public:
 
     bool configure(const runtime::CameraCaptureConfig& config) override;
     bool capture(runtime::CameraFrame* frame) override;
+    bool prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
 
 private:

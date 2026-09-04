@@ -24,12 +24,33 @@ void handle_signal(int) {
 struct CommandLineOptions {
     std::string config_path;
     bool show_help = false;
+    bool show_timing = false;
 };
 
 void print_usage(const char* program) {
     std::cout << "用法: " << program << " --config PATH\n"
               << "  --config PATH  统一配置文件路径\n"
+              << "  --timing       退出时输出各流水线阶段耗时\n"
               << "  --help         显示帮助\n";
+}
+
+void print_timing_stage(
+    const char* name,
+    const mosas::runtime::GuidanceRuntimeTimingStage& stage) {
+    std::cout << "[TIMING] " << name << " samples=" << stage.samples
+              << " avg_ms=" << stage.average_ms
+              << " max_ms=" << stage.maximum_ms << '\n';
+}
+
+void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
+    print_timing_stage("capture", timing.capture);
+    print_timing_stage("prepare", timing.prepare);
+    print_timing_stage("vision", timing.vision);
+    print_timing_stage("line_of_sight", timing.line_of_sight);
+    print_timing_stage("guidance", timing.guidance);
+    print_timing_stage("command", timing.command);
+    print_timing_stage("processing_total", timing.processing_total);
+    print_timing_stage("output", timing.output);
 }
 
 bool parse_options(int argc, char** argv, CommandLineOptions* options) {
@@ -45,6 +66,10 @@ bool parse_options(int argc, char** argv, CommandLineOptions* options) {
                 return false;
             }
             options->config_path = argv[++index];
+            continue;
+        }
+        if (argument == "--timing") {
+            options->show_timing = true;
             continue;
         }
         std::cerr << "未知参数: " << argument << '\n';
@@ -72,6 +97,7 @@ int main(int argc, char** argv) {
         std::cerr << "加载配置失败: " << error << '\n';
         return 2;
     }
+    config.guidance.skip_imu_self_check = config.imu.skip_self_check;
 
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
@@ -108,13 +134,26 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "统一制导程序已启动\n";
+    auto next_statistics_at = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(1);
     while (g_stop_requested == 0 && !runtime.faulted()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_statistics_at) {
+            const auto statistics = runtime.statistics();
+            std::cout << "[FPS] capture=" << statistics.capture_fps
+                      << " processing=" << statistics.processing_fps
+                      << " output=" << statistics.output_fps << '\n';
+            next_statistics_at = now + std::chrono::seconds(1);
+        }
     }
     const bool faulted = runtime.faulted();
     if (faulted) {
         std::cerr << "制导程序发生故障: " << runtime.last_error() << '\n';
     }
     runtime.stop();
+    if (options.show_timing) {
+        print_timing(runtime.timing());
+    }
     return faulted ? 1 : 0;
 }
