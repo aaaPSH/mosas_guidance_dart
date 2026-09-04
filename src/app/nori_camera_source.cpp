@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -61,6 +62,18 @@ bool same_video(const VIDEO_INFO& video, const CameraAppConfig& config,
 std::string device_path(const DEVICE_INFO& info) {
     const auto length = strnlen(info.device, sizeof(info.device));
     return std::string(info.device, length);
+}
+
+bool same_device_path(const std::string& configured_path,
+                      const std::string& discovered_path) {
+    if (configured_path == discovered_path) {
+        return true;
+    }
+
+    std::error_code error;
+    return std::filesystem::equivalent(configured_path, discovered_path,
+                                       error) &&
+           !error;
 }
 
 }  // 匿名命名空间结束
@@ -153,6 +166,7 @@ bool NoriSdkCameraSource::configure(
     session_acquired_ = true;
 
     bool device_found = false;
+    std::vector<std::string> discovered_devices;
     for (uint32_t device_id = 0; device_id < device_count; ++device_id) {
         DEVICE_INFO info{};
         const uint32_t result = sdk_->get_device_info(device_id, &info);
@@ -162,15 +176,33 @@ bool NoriSdkCameraSource::configure(
             cancel_locked();
             return false;
         }
-        if (device_path(info) == config_.device) {
+        const std::string discovered_path = device_path(info);
+        if (!discovered_path.empty()) {
+            discovered_devices.push_back(discovered_path);
+        }
+        if (same_device_path(config_.device, discovered_path)) {
             device_id_ = device_id;
             device_found = true;
             break;
         }
     }
     if (!device_found) {
-        set_error("Nori_Xvision_GetDeviceInfo 未找到精确匹配设备 " +
-                  config_.device + "，返回码 0x0");
+        std::ostringstream message;
+        message << "Nori_Xvision_GetDeviceInfo 未找到匹配设备 "
+                << config_.device << "，SDK 枚举结果 ";
+        if (discovered_devices.empty()) {
+            message << "为空";
+        } else {
+            for (std::size_t index = 0; index < discovered_devices.size();
+                 ++index) {
+                if (index != 0) {
+                    message << ", ";
+                }
+                message << discovered_devices[index];
+            }
+        }
+        message << "，返回码 0x0";
+        set_error(message.str());
         cancel_locked();
         return false;
     }
