@@ -8,11 +8,37 @@
 
 namespace mosas::runtime {
 
+enum class SourceStatus {
+    ok,
+    timeout,
+    fatal,
+    cancelled,
+};
+
+struct SourceResult {
+    SourceStatus status = SourceStatus::fatal;
+    std::string message;
+};
+
+inline const char* source_status_name(SourceStatus status) noexcept {
+    switch (status) {
+        case SourceStatus::ok:
+            return "ok";
+        case SourceStatus::timeout:
+            return "timeout";
+        case SourceStatus::fatal:
+            return "fatal";
+        case SourceStatus::cancelled:
+            return "cancelled";
+    }
+    return "unknown";
+}
+
 class ImuSource {
 public:
     virtual ~ImuSource() = default;
 
-    virtual bool read(ImuSample* sample) = 0;
+    virtual SourceResult read(ImuSample* sample) = 0;
     virtual void cancel() noexcept = 0;
 };
 
@@ -29,20 +55,23 @@ class CameraSource {
 public:
     virtual ~CameraSource() = default;
 
-    virtual bool configure(const CameraCaptureConfig& config) = 0;
-    virtual bool capture(CameraFrame* frame) = 0;
+    virtual SourceResult configure(const CameraCaptureConfig& config) = 0;
+    virtual SourceResult capture(CameraFrame* frame) = 0;
 
     // 返回相机源报告的采集帧率；没有源报告时返回 0，运行时使用本地统计回退。
     virtual double capture_fps() const noexcept { return 0.0; }
 
     // 在处理线程完成颜色转换、缩放和去畸变等帧预处理。
-    virtual bool prepare(CameraFrame* frame) {
-        return frame != nullptr && !frame->image.empty() &&
-               frame->image.type() == CV_8UC3;
+    virtual SourceResult prepare(CameraFrame* frame) {
+        if (frame == nullptr || frame->image.empty() ||
+            frame->image.type() != CV_8UC3) {
+            return {SourceStatus::fatal, "camera frame is invalid"};
+        }
+        return {SourceStatus::ok, {}};
     }
 
-    // 返回最近一次相机错误；默认实现表示没有可用的详细错误。
-    virtual std::string last_error() const { return {}; }
+    // 仅请求取消并唤醒阻塞操作；source 资源由 stop() 最终释放。
+    virtual void stop() noexcept {}
 
     virtual void cancel() noexcept = 0;
 };

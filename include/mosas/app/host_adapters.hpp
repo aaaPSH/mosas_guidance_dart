@@ -15,7 +15,7 @@ class SimulatedImuSource final : public runtime::ImuSource {
 public:
     explicit SimulatedImuSource(double sample_rate_hz);
 
-    bool read(runtime::ImuSample* sample) override;
+    runtime::SourceResult read(runtime::ImuSample* sample) override;
     void cancel() noexcept override;
 
 private:

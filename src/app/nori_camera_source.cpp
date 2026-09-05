@@ -74,6 +74,7 @@ NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config,
 
 NoriSdkCameraSource::~NoriSdkCameraSource() {
     cancel();
+    stop();
     detach_callback_owner();
 }
 
@@ -87,15 +88,15 @@ NoriSdkCameraSource::create_callback_context() {
     return contexts.back().get();
 }
 
-bool NoriSdkCameraSource::configure(
+runtime::SourceResult NoriSdkCameraSource::configure(
     const runtime::CameraCaptureConfig& capture_config) {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    cancel_locked();
+    stop_locked();
     if (session_acquired_ || device_video_initialized_ || video_started_) {
-        if (last_error().empty()) {
+        if (error_message().empty()) {
             set_error("上一次相机停止未完成，设备 " + config_.device);
         }
-        return false;
+        return fatal_result();
     }
     set_error("");
     sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
@@ -106,7 +107,7 @@ bool NoriSdkCameraSource::configure(
         (config_.pixel_format != "auto" &&
          requested_format(config_.pixel_format) == 0)) {
         set_error("视频配置无效，设备 " + config_.device);
-        return false;
+        return fatal_result();
     }
 
     if (config_.undistort) {
@@ -130,12 +131,12 @@ bool NoriSdkCameraSource::configure(
                       "，设备 " + config_.device);
             undistort_map_x_.release();
             undistort_map_y_.release();
-            return false;
+            return fatal_result();
         } catch (...) {
             set_error("初始化去畸变映射发生未知异常，设备 " + config_.device);
             undistort_map_x_.release();
             undistort_map_y_.release();
-            return false;
+            return fatal_result();
         }
     }
 
@@ -143,7 +144,8 @@ bool NoriSdkCameraSource::configure(
     std::string session_error;
     if (!session_.acquire(&device_count, &session_error)) {
         set_error(session_error + "，设备 " + config_.device);
-        return false;
+        stop_locked();
+        return fatal_result();
     }
     session_acquired_ = true;
 
@@ -153,8 +155,8 @@ bool NoriSdkCameraSource::configure(
                 << config_.device << "，请求索引 " << config_.device_id
                 << "，SDK 枚举数量 " << device_count << "，返回码 0x0";
         set_error(message.str());
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
     // 与 SDK 示例保持一致：使用配置指定的设备索引，不根据设备路径重新匹配。
     device_id_ = config_.device_id;
@@ -163,8 +165,8 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_GetDeviceInfo", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     uint32_t video_info_size = 0;
@@ -172,8 +174,8 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_GetDeviceVideoInfoSize", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     const bool auto_format = config_.pixel_format == "auto";
@@ -185,8 +187,8 @@ bool NoriSdkCameraSource::configure(
         if (result != NORI_OK) {
             set_error(sdk_error("Nori_Xvision_GetDeviceVideoInfo", config_.device,
                                 device_id_, result));
-            cancel_locked();
-            return false;
+            stop_locked();
+            return fatal_result();
         }
         if ((auto_format && is_supported_format(video.u_Format)) ||
             (!auto_format && same_video(video, config_, desired_format))) {
@@ -202,16 +204,16 @@ bool NoriSdkCameraSource::configure(
                 << "、分辨率 " << config_.width << "x" << config_.height
                 << "、帧率 " << config_.fps << "，返回码 0x0";
         set_error(message.str());
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     result = sdk_->device_video_init(device_id_, selected_video_);
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_DeviceVideoInit", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
     device_video_initialized_ = true;
 
@@ -220,8 +222,8 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_VideoCallBack", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     const E_TRIGGER_MODE desired_trigger_mode =
@@ -233,8 +235,8 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_GetTriggerMode", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
     if (trigger_mode != desired_trigger_mode) {
         result = sdk_->set_trigger_mode(device_id_, desired_trigger_mode);
@@ -242,8 +244,8 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_SetTriggerMode", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     {
@@ -261,18 +263,22 @@ bool NoriSdkCameraSource::configure(
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_VideoStart", config_.device,
                             device_id_, result));
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
     video_started_ = true;
 
     if (!configure_exposure()) {
-        cancel_locked();
-        return false;
+        stop_locked();
+        return fatal_result();
     }
 
     configured_ = true;
-    return true;
+    {
+        std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+        capture_stopping_ = false;
+    }
+    return {runtime::SourceStatus::ok, {}};
 }
 
 bool NoriSdkCameraSource::configure_exposure() {
@@ -358,11 +364,17 @@ bool NoriSdkCameraSource::configure_exposure() {
     return true;
 }
 
-bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
+runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
     if (frame == nullptr) {
         set_error("capture 参数为空，设备 " + config_.device);
-        return false;
+        return fatal_result();
     }
+
+    if (!enter_capture()) {
+        return {runtime::SourceStatus::cancelled,
+                "camera source is not configured"};
+    }
+    CaptureGuard capture_guard(this);
 
     frame->image.release();
     frame->timestamp_ns = 0;
@@ -374,7 +386,8 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
             return queue_closed_ || !pending_frames_.empty();
         });
         if (queue_closed_ || pending_frames_.empty()) {
-            return false;
+            return {runtime::SourceStatus::cancelled,
+                    "camera capture queue is closed"};
         }
         pending = std::move(pending_frames_.front());
         pending_frames_.pop_front();
@@ -383,14 +396,14 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
     const auto max_int = static_cast<uint32_t>(std::numeric_limits<int>::max());
     if (pending.bytes.empty()) {
         set_error("capture 收到空帧，设备 " + config_.device);
-        return false;
+        return fatal_result();
     }
     if (pending.width == 0 || pending.height == 0 || pending.width > max_int ||
         pending.height > max_int) {
         set_error("capture 收到无效帧尺寸 " + std::to_string(pending.width) +
                   "x" + std::to_string(pending.height) + "，设备 " +
                   config_.device);
-        return false;
+        return fatal_result();
     }
 
     try {
@@ -398,7 +411,7 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
             if (pending.bytes.size() >
                 static_cast<std::size_t>(std::numeric_limits<int>::max())) {
                 set_error("capture 收到过大的 MJPG 帧，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             const cv::Mat encoded(1, static_cast<int>(pending.bytes.size()),
                                   CV_8UC1, pending.bytes.data());
@@ -408,7 +421,7 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
                 decoded.rows != static_cast<int>(pending.height)) {
                 set_error("capture 解码 MJPG 帧失败或尺寸不匹配，设备 " +
                           config_.device);
-                return false;
+                return fatal_result();
             }
             frame->image = std::move(decoded);
         } else if (pending.media_type == VIDEO_MEDIA_TYPE_YUYV) {
@@ -416,18 +429,18 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
                                           static_cast<uint64_t>(pending.height);
             if (pixel_count > std::numeric_limits<uint64_t>::max() / 2U) {
                 set_error("capture YUYV 输入尺寸溢出，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             const uint64_t required_bytes = pixel_count * 2U;
             if (required_bytes > std::numeric_limits<std::size_t>::max() ||
                 pending.bytes.size() < static_cast<std::size_t>(required_bytes)) {
                 set_error("capture YUYV 帧长度不足，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             if (pixel_count >
                 std::numeric_limits<std::size_t>::max() / sizeof(uint8_t) / 3U) {
                 set_error("capture YUYV 输出尺寸溢出，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             cv::Mat bgr(static_cast<int>(pending.height),
                         static_cast<int>(pending.width), CV_8UC3);
@@ -436,36 +449,45 @@ bool NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
                                 static_cast<int>(pending.height));
             if (bgr.empty() || bgr.type() != CV_8UC3) {
                 set_error("capture YUYV 转 BGR 失败，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             frame->image = std::move(bgr);
         } else {
             set_error("capture 收到不支持的视频格式，设备 " + config_.device);
-            return false;
+            return fatal_result();
         }
     } catch (const std::exception& error) {
         set_error("capture 图像转换异常：" + std::string(error.what()) +
                   "，设备 " + config_.device);
-        return false;
+        return fatal_result();
     } catch (...) {
         set_error("capture 图像转换发生未知异常，设备 " + config_.device);
-        return false;
+        return fatal_result();
     }
 
     frame->timestamp_ns = pending.timestamp_ns;
-    return !frame->image.empty() && frame->image.type() == CV_8UC3;
+    if (frame->image.empty() || frame->image.type() != CV_8UC3) {
+        set_error("capture 输出图像无效，设备 " + config_.device);
+        return fatal_result();
+    }
+    return {runtime::SourceStatus::ok, {}};
 }
 
 double NoriSdkCameraSource::capture_fps() const noexcept {
     return sdk_capture_fps_.load(std::memory_order_relaxed);
 }
 
-bool NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
+runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
     if (frame == nullptr || frame->image.empty() ||
         frame->image.type() != CV_8UC3) {
-        return false;
+        set_error("相机帧预处理输入无效，设备 " + config_.device);
+        return fatal_result();
     }
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (!configured_) {
+        return {runtime::SourceStatus::cancelled,
+                "camera source is not configured"};
+    }
     try {
         if (frame->image.cols != config_.width ||
             frame->image.rows != config_.height) {
@@ -477,7 +499,7 @@ bool NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
                 undistort_map_x_.size() != cv::Size(config_.width, config_.height) ||
                 undistort_map_y_.size() != cv::Size(config_.width, config_.height)) {
                 set_error("去畸变映射未按目标尺寸配置，设备 " + config_.device);
-                return false;
+                return fatal_result();
             }
             cv::Mat undistorted_frame;
             cv::remap(frame->image, undistorted_frame, undistort_map_x_,
@@ -487,12 +509,16 @@ bool NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
     } catch (const std::exception& error) {
         set_error("相机帧预处理失败：" + std::string(error.what()) +
                   "，设备 " + config_.device);
-        return false;
+        return fatal_result();
     } catch (...) {
         set_error("相机帧预处理发生未知异常，设备 " + config_.device);
-        return false;
+        return fatal_result();
     }
-    return !frame->image.empty() && frame->image.type() == CV_8UC3;
+    if (frame->image.empty() || frame->image.type() != CV_8UC3) {
+        set_error("相机帧预处理输出无效，设备 " + config_.device);
+        return fatal_result();
+    }
+    return {runtime::SourceStatus::ok, {}};
 }
 
 void NoriSdkCameraSource::cancel() noexcept {
@@ -501,10 +527,10 @@ void NoriSdkCameraSource::cancel() noexcept {
 }
 
 void NoriSdkCameraSource::cancel_locked() noexcept {
-    undistort_map_x_.release();
-    undistort_map_y_.release();
-    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
-
+    {
+        std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+        capture_stopping_ = true;
+    }
     {
         std::lock_guard<std::mutex> callback_lock(callback_context_->mutex);
         callback_context_->callbacks_enabled = false;
@@ -512,6 +538,42 @@ void NoriSdkCameraSource::cancel_locked() noexcept {
                                                    std::memory_order_release);
     }
     configured_ = false;
+    close_queue();
+}
+
+bool NoriSdkCameraSource::enter_capture() noexcept {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    if (capture_stopping_) {
+        return false;
+    }
+    ++captures_in_flight_;
+    return true;
+}
+
+void NoriSdkCameraSource::leave_capture() noexcept {
+    std::lock_guard<std::mutex> capture_lock(capture_mutex_);
+    if (captures_in_flight_ != 0) {
+        --captures_in_flight_;
+    }
+    if (captures_in_flight_ == 0) {
+        capture_condition_.notify_all();
+    }
+}
+
+void NoriSdkCameraSource::wait_for_captures() noexcept {
+    std::unique_lock<std::mutex> capture_lock(capture_mutex_);
+    capture_condition_.wait(
+        capture_lock, [this] { return captures_in_flight_ == 0; });
+}
+
+void NoriSdkCameraSource::stop() noexcept {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    stop_locked();
+}
+
+void NoriSdkCameraSource::stop_locked() noexcept {
+    cancel_locked();
+    wait_for_captures();
 
     if (video_started_) {
         const uint32_t result = sdk_->video_stop(device_id_);
@@ -519,7 +581,6 @@ void NoriSdkCameraSource::cancel_locked() noexcept {
             set_error(sdk_error("Nori_Xvision_VideoStop", config_.device,
                                 device_id_, result));
             wait_for_callbacks();
-            close_queue();
             return;
         }
         video_started_ = false;
@@ -528,7 +589,6 @@ void NoriSdkCameraSource::cancel_locked() noexcept {
     // SDK 当前没有文档化的注销回调接口；VideoStop 返回后 SDK 不再发起新回调，
     // 此等待屏障覆盖 VideoStop 返回前已经通过准入检查的回调。
     wait_for_callbacks();
-    close_queue();
 
     if (device_video_initialized_) {
         const uint32_t result = sdk_->device_video_uninit(device_id_);
@@ -547,6 +607,16 @@ void NoriSdkCameraSource::cancel_locked() noexcept {
             return;
         }
         session_acquired_ = false;
+    }
+
+    undistort_map_x_.release();
+    undistort_map_y_.release();
+    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
+}
+
+NoriSdkCameraSource::CaptureGuard::~CaptureGuard() noexcept {
+    if (owner_ != nullptr) {
+        owner_->leave_capture();
     }
 }
 
@@ -669,9 +739,13 @@ void NoriSdkCameraSource::set_error(const std::string& error) {
     last_error_ = error;
 }
 
-std::string NoriSdkCameraSource::last_error() const {
+std::string NoriSdkCameraSource::error_message() const {
     std::lock_guard<std::mutex> lock(error_mutex_);
     return last_error_;
+}
+
+runtime::SourceResult NoriSdkCameraSource::fatal_result() const {
+    return {runtime::SourceStatus::fatal, error_message()};
 }
 
 }  // mosas::app 命名空间结束

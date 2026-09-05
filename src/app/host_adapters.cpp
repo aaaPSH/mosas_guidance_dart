@@ -25,13 +25,13 @@ SimulatedImuSource::SimulatedImuSource(double sample_rate_hz)
     }
 }
 
-bool SimulatedImuSource::read(runtime::ImuSample* sample) {
+runtime::SourceResult SimulatedImuSource::read(runtime::ImuSample* sample) {
     if (sample == nullptr) {
-        return false;
+        return {runtime::SourceStatus::fatal, "imu sample output is null"};
     }
     std::unique_lock<std::mutex> lock(mutex_);
     if (cancelled_) {
-        return false;
+        return {runtime::SourceStatus::cancelled, {}};
     }
     const auto now = std::chrono::steady_clock::now();
     if (!started_) {
@@ -40,14 +40,14 @@ bool SimulatedImuSource::read(runtime::ImuSample* sample) {
     }
     if (condition_.wait_until(lock, next_deadline_,
                               [this] { return cancelled_; })) {
-        return false;
+        return {runtime::SourceStatus::cancelled, {}};
     }
     const auto timestamp = steady_timestamp_ns();
     next_deadline_ = std::chrono::steady_clock::now() + period_;
     sample->timestamp_ns = timestamp;
     sample->acceleration = {0.0, 0.0, 0.0};
     sample->angular_velocity = {0.0, 0.0, 0.0};
-    return true;
+    return {runtime::SourceStatus::ok, {}};
 }
 
 void SimulatedImuSource::cancel() noexcept {
