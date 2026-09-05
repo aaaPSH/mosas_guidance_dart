@@ -59,6 +59,20 @@ bool valid_rotation(const RotationMatrix3& value) {
            std::abs(determinant - 1.0) <= 1e-6;
 }
 
+std::string format_source_error(const char* source_name,
+                                const char* operation,
+                                const SourceResult& result) {
+    std::string message = std::string(source_name) + " " + operation + " " +
+                          source_status_name(result.status);
+    if (!result.message.empty()) {
+        message += ": ";
+        message += result.message;
+    } else if (result.status == SourceStatus::fatal) {
+        message += ": source returned fatal without details";
+    }
+    return message;
+}
+
 bool valid_detector_config(const FlightPhaseDetectorConfig& config) {
     return config.min_static_samples > 0 &&
            config.min_static_duration_ns >= 0 &&
@@ -145,11 +159,11 @@ bool GuidanceRuntime::start() {
         set_error("invalid guidance runtime configuration");
         return false;
     }
-    if (!camera_source_->configure(config_.camera_capture)) {
-        const std::string camera_error = camera_source_->last_error();
-        set_fault(camera_error.empty()
-                      ? "camera configuration failed"
-                      : "camera configuration failed: " + camera_error);
+    const SourceResult configure_result =
+        camera_source_->configure(config_.camera_capture);
+    if (configure_result.status != SourceStatus::ok) {
+        set_fault(format_source_error("camera source", "configure",
+                                      configure_result));
         return false;
     }
 
@@ -200,6 +214,10 @@ void GuidanceRuntime::stop() noexcept {
     cancel_sources();
     if (capture_thread_.joinable()) {
         capture_thread_.join();
+    }
+    // 采集线程可能仍在执行 SDK 图像转换，必须退出后才能释放相机源。
+    if (camera_source_ != nullptr) {
+        camera_source_->stop();
     }
     capture_queue_.close();
     if (imu_thread_.joinable()) {
@@ -345,18 +363,39 @@ void GuidanceRuntime::imu_worker() {
     TimestampNs previous_update_timestamp_ns = 0;
     while (!stop_requested_.load()) {
         ImuSample sample{};
-        if (!imu_source_->read(&sample)) {
-            if (!stop_requested_.load()) {
-                std::this_thread::yield();
-            }
-            continue;
+        const SourceResult source_result = imu_source_->read(&sample);
+        switch (source_result.status) {
+            case SourceStatus::ok:
+                break;
+            case SourceStatus::timeout:
+                if (!stop_requested_.load()) {
+                    std::this_thread::yield();
+                }
+                continue;
+            case SourceStatus::cancelled:
+                if (stop_requested_.load()) {
+                    return;
+                }
+                set_fault(format_source_error("imu source", "read",
+                                              source_result));
+                return;
+            case SourceStatus::fatal:
+                set_fault(format_source_error("imu source", "read",
+                                              source_result));
+                return;
+            default:
+                set_fault("imu source read returned unknown status");
+                return;
         }
-        if (stop_requested_.load() || sample.timestamp_ns < 0 ||
-            !is_finite(sample.acceleration) ||
+        if (stop_requested_.load()) {
+            return;
+        }
+        if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
             !is_finite(sample.angular_velocity) ||
             (has_previous_timestamp &&
              sample.timestamp_ns <= previous_timestamp_ns)) {
-            continue;
+            set_fault("imu source read returned ok with invalid sample");
+            return;
         }
 
         const FlightPhase phase_before = phase_detector_.phase();
@@ -425,18 +464,36 @@ void GuidanceRuntime::capture_worker() {
         while (!stop_requested_.load()) {
             CameraFrame frame{};
             const auto capture_started = std::chrono::steady_clock::now();
-            const bool captured = camera_source_->capture(&frame);
-            if (!captured) {
-                if (!stop_requested_.load()) {
-                    std::this_thread::yield();
-                }
-                continue;
+            const SourceResult source_result = camera_source_->capture(&frame);
+            switch (source_result.status) {
+                case SourceStatus::ok:
+                    break;
+                case SourceStatus::timeout:
+                    if (!stop_requested_.load()) {
+                        std::this_thread::yield();
+                    }
+                    continue;
+                case SourceStatus::cancelled:
+                    if (stop_requested_.load()) {
+                        return;
+                    }
+                    set_fault(format_source_error("camera source", "capture",
+                                                  source_result));
+                    return;
+                case SourceStatus::fatal:
+                    set_fault(format_source_error("camera source", "capture",
+                                                  source_result));
+                    return;
+                default:
+                    set_fault("camera source capture returned unknown status");
+                    return;
             }
             if (stop_requested_.load()) {
-                break;
+                return;
             }
             if (frame.timestamp_ns < 0 || frame.image.empty()) {
-                continue;
+                set_fault("camera source capture returned ok with invalid frame");
+                return;
             }
 
             capture_fps_meter_.record();
@@ -475,15 +532,25 @@ void GuidanceRuntime::processing_worker() {
             }
             const auto processing_started = std::chrono::steady_clock::now();
             const auto prepare_started = std::chrono::steady_clock::now();
-            const bool prepared = camera_source_->prepare(&result.frame);
-            if (prepared) {
+            const SourceResult prepare_result =
+                camera_source_->prepare(&result.frame);
+            if (prepare_result.status == SourceStatus::ok) {
                 record_timing(TimingStage::prepare,
                               std::chrono::steady_clock::now() -
                                   prepare_started);
             }
-            if (!prepared) {
-                result = ProcessedFrame{};
-                continue;
+            if (prepare_result.status != SourceStatus::ok) {
+                if (prepare_result.status == SourceStatus::timeout) {
+                    result = ProcessedFrame{};
+                    continue;
+                }
+                if (prepare_result.status == SourceStatus::cancelled &&
+                    stop_requested_.load()) {
+                    return;
+                }
+                set_fault(format_source_error("camera source", "prepare",
+                                              prepare_result));
+                return;
             }
             const auto enqueue_processed_frame =
                 [this, &result, &enqueue_result, processing_started] {

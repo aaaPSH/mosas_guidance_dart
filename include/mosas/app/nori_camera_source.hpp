@@ -26,13 +26,13 @@ public:
     NoriSdkCameraSource(const NoriSdkCameraSource&) = delete;
     NoriSdkCameraSource& operator=(const NoriSdkCameraSource&) = delete;
 
-    bool configure(const runtime::CameraCaptureConfig& config) override;
-    bool capture(runtime::CameraFrame* frame) override;
+    runtime::SourceResult configure(
+        const runtime::CameraCaptureConfig& config) override;
+    runtime::SourceResult capture(runtime::CameraFrame* frame) override;
     double capture_fps() const noexcept override;
-    bool prepare(runtime::CameraFrame* frame) override;
+    runtime::SourceResult prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
-
-    std::string last_error() const override;
+    void stop() noexcept override;
 
 private:
     struct CallbackContext {
@@ -52,6 +52,19 @@ private:
         runtime::TimestampNs timestamp_ns = 0;
     };
 
+    class CaptureGuard {
+    public:
+        explicit CaptureGuard(NoriSdkCameraSource* owner) noexcept
+            : owner_(owner) {}
+        ~CaptureGuard() noexcept;
+
+        CaptureGuard(const CaptureGuard&) = delete;
+        CaptureGuard& operator=(const CaptureGuard&) = delete;
+
+    private:
+        NoriSdkCameraSource* owner_;
+    };
+
     static uint32_t frame_callback(PVOID, FRAME_BUFFER_DATA*, PVOID);
     static CallbackContext* create_callback_context();
     static bool enter_callback(CallbackContext* context,
@@ -61,9 +74,15 @@ private:
     void wait_for_callbacks() noexcept;
     void detach_callback_owner() noexcept;
     bool configure_exposure();
+    bool enter_capture() noexcept;
+    void leave_capture() noexcept;
+    void wait_for_captures() noexcept;
+    std::string error_message() const;
+    runtime::SourceResult fatal_result() const;
     void set_error(const std::string& error);
     void close_queue();
     void cancel_locked() noexcept;
+    void stop_locked() noexcept;
 
     CameraAppConfig config_;
     cv::Mat undistort_map_x_;
@@ -79,6 +98,10 @@ private:
     std::atomic<double> sdk_capture_fps_{0.0};
 
     mutable std::mutex lifecycle_mutex_;
+    mutable std::mutex capture_mutex_;
+    std::condition_variable capture_condition_;
+    std::size_t captures_in_flight_ = 0;
+    bool capture_stopping_ = true;
     CallbackContext* callback_context_ = nullptr;
     mutable std::mutex queue_mutex_;
     std::condition_variable queue_condition_;
