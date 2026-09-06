@@ -36,6 +36,7 @@ private:
 
     void align_buffer();
     void discard_prefix(std::size_t count, const std::string& reason);
+    void remember_initialization_g(std::uint16_t raw_value);
     void log(const std::string& message);
     runtime::SourceResult fatal_result(const std::string& message);
     int remaining_timeout_ms(Clock::time_point deadline) const;
