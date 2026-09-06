@@ -42,6 +42,44 @@ std::string port_error_or(const serial_package::SerialPort& port,
     return error.empty() ? std::string(fallback) : error;
 }
 
+runtime::TimestampNs saturating_add(runtime::TimestampNs lhs,
+                                    runtime::TimestampNs rhs) noexcept {
+    const auto maximum = std::numeric_limits<runtime::TimestampNs>::max();
+    const auto minimum = std::numeric_limits<runtime::TimestampNs>::min();
+    if (rhs > 0 && lhs > maximum - rhs) {
+        return maximum;
+    }
+    if (rhs < 0 && lhs < minimum - rhs) {
+        return minimum;
+    }
+    return lhs + rhs;
+}
+
+runtime::TimestampNs saturating_subtract(runtime::TimestampNs lhs,
+                                         runtime::TimestampNs rhs) noexcept {
+    const auto maximum = std::numeric_limits<runtime::TimestampNs>::max();
+    const auto minimum = std::numeric_limits<runtime::TimestampNs>::min();
+    if (rhs > 0 && lhs < minimum + rhs) {
+        return minimum;
+    }
+    if (rhs < 0 && lhs > maximum + rhs) {
+        return maximum;
+    }
+    return lhs - rhs;
+}
+
+runtime::TimestampNs saturating_multiply(runtime::TimestampNs value,
+                                         std::size_t multiplier) noexcept {
+    if (value <= 0 || multiplier == 0) {
+        return 0;
+    }
+    const auto maximum = std::numeric_limits<runtime::TimestampNs>::max();
+    if (multiplier > static_cast<std::size_t>(maximum / value)) {
+        return maximum;
+    }
+    return value * static_cast<runtime::TimestampNs>(multiplier);
+}
+
 }  // 匿名命名空间结束
 
 SerialImuSource::SerialImuSource(
@@ -161,12 +199,39 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                 continue;
             }
 
-            // 当前读取调用只允许交付这一帧，不能把完整帧留在源内部。
+            // 当前读取调用只交付这一帧，后续完整帧留给下一次读取。
             buffered_size_ = 0;
-            const runtime::TimestampNs timestamp_ns = steady_timestamp_ns();
+            const ssize_t pending_bytes = port_->input_bytes_available();
+            if (pending_bytes < 0) {
+                return fatal_result("查询串口输入积压失败: " +
+                                    port_error_or(*port_, "未知串口错误"));
+            }
+            if (!has_timestamp_ &&
+                pending_bytes >=
+                    static_cast<ssize_t>(serial_package::kImuFrameSize)) {
+                remember_initialization_g(values.initialization_g_raw);
+                std::ostringstream message;
+                message << "检测到启动阶段串口输入积压 " << pending_bytes
+                        << " 字节，清理旧数据并等待新的 IMU 帧";
+                log(message.str());
+                if (!port_->flush_input()) {
+                    return fatal_result("清理启动阶段串口输入队列失败: " +
+                                        port_error_or(*port_, "未知串口错误"));
+                }
+                // 当前候选帧已经被消费，但它属于启动旧数据。
+                buffered_size_ = 0;
+                continue;
+            }
+
+            const auto pending_frame_count =
+                static_cast<std::size_t>(pending_bytes) /
+                serial_package::kImuFrameSize;
+            const runtime::TimestampNs timestamp_ns = timestamp_for_frame(
+                steady_timestamp_ns(), pending_frame_count);
             runtime::TimestampNs interval_ns = 0;
             if (has_timestamp_) {
-                interval_ns = timestamp_ns - last_timestamp_ns_;
+                interval_ns =
+                    saturating_subtract(timestamp_ns, last_timestamp_ns_);
                 if (interval_ns <= 0) {
                     std::ostringstream message;
                     message << "IMU 时间戳不递增: previous="
@@ -174,34 +239,6 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                             << timestamp_ns;
                     return fatal_result(message.str());
                 }
-            }
-
-            const ssize_t pending_bytes = port_->input_bytes_available();
-            if (pending_bytes < 0) {
-                return fatal_result("查询串口输入积压失败: " +
-                                    port_error_or(*port_, "未知串口错误"));
-            }
-            if (pending_bytes >=
-                static_cast<ssize_t>(serial_package::kImuFrameSize)) {
-                if (!has_timestamp_) {
-                    remember_initialization_g(values.initialization_g_raw);
-                    std::ostringstream message;
-                    message << "检测到启动阶段串口输入积压 " << pending_bytes
-                            << " 字节，清理旧数据并等待新的 IMU 帧";
-                    log(message.str());
-                    if (!port_->flush_input()) {
-                        return fatal_result("清理启动阶段串口输入队列失败: " +
-                                            port_error_or(
-                                                *port_, "未知串口错误"));
-                    }
-                    // 当前候选帧已经被消费，但它属于启动旧数据。
-                    buffered_size_ = 0;
-                    continue;
-                }
-                std::ostringstream message;
-                message << "串口输入积压 " << pending_bytes
-                        << " 字节，至少有一个完整 IMU 帧未处理，拒绝继续积分";
-                return fatal_result(message.str());
             }
 
             if (interval_statistics_enabled_ && has_timestamp_) {
@@ -289,6 +326,22 @@ void SerialImuSource::remember_initialization_g(std::uint16_t raw_value) {
                 << static_cast<unsigned int>(raw_value);
         log(message.str());
     }
+}
+
+runtime::TimestampNs SerialImuSource::timestamp_for_frame(
+    runtime::TimestampNs received_timestamp_ns,
+    std::size_t pending_frame_count) const {
+    runtime::TimestampNs timestamp = received_timestamp_ns;
+    if (has_timestamp_ && pending_frame_count != 0) {
+        const runtime::TimestampNs backlog_ns = saturating_multiply(
+            period_.count(), pending_frame_count);
+        timestamp = saturating_subtract(received_timestamp_ns, backlog_ns);
+    }
+    if (has_timestamp_) {
+        timestamp = std::max(
+            timestamp, saturating_add(last_timestamp_ns_, period_.count()));
+    }
+    return timestamp;
 }
 
 void SerialImuSource::align_buffer() {
