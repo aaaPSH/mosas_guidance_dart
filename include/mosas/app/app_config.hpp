@@ -3,6 +3,7 @@
 
 #include <mosas/runtime/guidance_runtime.hpp>
 #include <mosas/wireless/rtsp_frame_sink.hpp>
+#include <serial_package/serial_port.hpp>
 
 #include <filesystem>
 #include <cstddef>
@@ -66,6 +67,7 @@ struct ImuAppConfig {
 
 enum class CommandMode {
     log,
+    serial,
 };
 
 struct CommandAppConfig {
@@ -76,6 +78,7 @@ struct AppConfig {
     CameraAppConfig camera{};
     ImuAppConfig imu{};
     CommandAppConfig command{};
+    serial_package::SerialPortConfig serial{};
     runtime::GuidanceRuntimeConfig guidance{};
     wireless::RtspFrameSinkConfig wireless{};
 };

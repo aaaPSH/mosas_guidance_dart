@@ -124,6 +124,52 @@ bool parse_uint8(const std::string& text, uint8_t* value) {
     return true;
 }
 
+bool parse_stop_bits(const std::string& text,
+                     serial_package::StopBits* value) {
+    if (text == "1" || text == "one") {
+        *value = serial_package::StopBits::one;
+        return true;
+    }
+    if (text == "2" || text == "two") {
+        *value = serial_package::StopBits::two;
+        return true;
+    }
+    return false;
+}
+
+bool parse_parity(const std::string& text, serial_package::Parity* value) {
+    if (text == "none") {
+        *value = serial_package::Parity::none;
+        return true;
+    }
+    if (text == "even") {
+        *value = serial_package::Parity::even;
+        return true;
+    }
+    if (text == "odd") {
+        *value = serial_package::Parity::odd;
+        return true;
+    }
+    return false;
+}
+
+bool parse_flow_control(const std::string& text,
+                        serial_package::FlowControl* value) {
+    if (text == "none") {
+        *value = serial_package::FlowControl::none;
+        return true;
+    }
+    if (text == "software") {
+        *value = serial_package::FlowControl::software;
+        return true;
+    }
+    if (text == "hardware") {
+        *value = serial_package::FlowControl::hardware;
+        return true;
+    }
+    return false;
+}
+
 bool parse_timestamp_ms(const std::string& text, runtime::TimestampNs* value) {
     int parsed = 0;
     if (!parse_int(text, &parsed) || parsed <= 0) {
@@ -247,6 +293,31 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     if (section == "command") {
         if (key == "mode" && value == "log") {
             config->command.mode = CommandMode::log;
+        } else if (key == "mode" && value == "serial") {
+            config->command.mode = CommandMode::serial;
+        } else {
+            return invalid();
+        }
+        return true;
+    }
+
+    if (section == "serial") {
+        if (key == "device") {
+            config->serial.device = value;
+        } else if (key == "baud_rate" &&
+                   parse_uint32(value, &config->serial.baud_rate)) {
+        } else if (key == "data_bits" &&
+                   parse_uint8(value, &config->serial.data_bits)) {
+        } else if (key == "stop_bits" &&
+                   parse_stop_bits(value, &config->serial.stop_bits)) {
+        } else if (key == "parity" &&
+                   parse_parity(value, &config->serial.parity)) {
+        } else if (key == "flow_control" &&
+                   parse_flow_control(value, &config->serial.flow_control)) {
+        } else if (key == "read_timeout_ms" &&
+                   parse_int(value, &config->serial.read_timeout_ms)) {
+        } else if (key == "write_timeout_ms" &&
+                   parse_int(value, &config->serial.write_timeout_ms)) {
         } else {
             return invalid();
         }
@@ -396,6 +467,13 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.imu.sample_rate_hz <= 0.0) {
         return fail_global(path, "IMU 参数无效", error);
     }
+    if (config.command.mode == CommandMode::serial &&
+        (config.serial.device.empty() || config.serial.baud_rate == 0 ||
+         config.serial.data_bits < 5 || config.serial.data_bits > 8 ||
+         config.serial.read_timeout_ms < 0 ||
+         config.serial.write_timeout_ms < 0)) {
+        return fail_global(path, "串口参数无效", error);
+    }
     const auto& vision = config.guidance.vision_config;
     if (config.guidance.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
@@ -460,7 +538,8 @@ bool AppConfigLoader::load(const std::filesystem::path& path, AppConfig* config,
             section = trim(line.substr(1, line.size() - 2));
             if (section.empty() ||
                 (section != "camera" && section != "imu" &&
-                 section != "command" && section != "guidance" &&
+                 section != "command" && section != "serial" &&
+                 section != "guidance" &&
                  section != "wireless")) {
                 return fail(path, line_number, "未知配置节: " + section, error);
             }
