@@ -18,6 +18,9 @@ public:
     // 在画面左上角以透明背景绘制绿色引导关键数据。
     static void draw_guidance_overlay(cv::Mat& frame,
                                       const VisionOverlayData& data);
+
+    // 在显示画面上绘制视觉识别阶段、统计信息和可疑目标框。
+    static void draw_vision_debug(cv::Mat& frame, const VisionResult& result);
 };
 
 #endif  // VISION_VISUALIZER_HPP

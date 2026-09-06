@@ -25,6 +25,8 @@ struct RtspFrameSinkConfig {
     double recording_fps = 30.0;
     // 是否在无线输出前绘制识别框和引导数据面板。
     bool draw_visualization = true;
+    // 是否在无线显示画面叠加视觉诊断阶段信息；不影响本地录像。
+    bool draw_vision_debug = false;
     RtspStreamConfig stream{};
 };
 
@@ -70,8 +72,8 @@ private:
     std::unique_ptr<RtspStreamer> streamer_;
     // 输出线程复用这些缓冲区，避免每帧重复申请图像头和像素内存。
     cv::Mat annotated_bgr_frame_;
-    cv::Mat resized_bgr_frame_;
     cv::Mat bgr_frame_;
+    cv::Mat recording_bgr_frame_;
     cv::VideoWriter recording_writer_;
     std::ofstream flight_data_writer_;
     std::string recording_video_path_;
