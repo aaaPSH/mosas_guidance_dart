@@ -357,10 +357,10 @@ void GuidanceRuntime::imu_worker() {
     try {
     bool initialized = false;
     bool launched = false;
-    bool has_update_timestamp = false;
+    bool has_attitude_timestamp = false;
     bool has_previous_timestamp = false;
     TimestampNs previous_timestamp_ns = 0;
-    TimestampNs previous_update_timestamp_ns = 0;
+    TimestampNs previous_attitude_timestamp_ns = 0;
     while (!stop_requested_.load()) {
         ImuSample sample{};
         const SourceResult source_result = imu_source_->read(&sample);
@@ -416,6 +416,28 @@ void GuidanceRuntime::imu_worker() {
                 return;
             }
             initialized = true;
+            has_attitude_timestamp = true;
+            previous_attitude_timestamp_ns = sample.timestamp_ns;
+        }
+
+        if (initialized && has_attitude_timestamp &&
+            sample.timestamp_ns > previous_attitude_timestamp_ns) {
+            const double dt_seconds = static_cast<double>(
+                                         sample.timestamp_ns -
+                                         previous_attitude_timestamp_ns) *
+                                     1e-9;
+            if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
+                set_fault("imu attitude update received invalid time step");
+                return;
+            }
+            if (launched) {
+                dart_condition_.update(sample.acceleration,
+                                       sample.angular_velocity, dt_seconds);
+            } else {
+                dart_condition_.update_attitude(sample.angular_velocity,
+                                                dt_seconds);
+            }
+            previous_attitude_timestamp_ns = sample.timestamp_ns;
         }
 
         if (initialized && !launched &&
@@ -424,17 +446,6 @@ void GuidanceRuntime::imu_worker() {
               phase == FlightPhase::ejection))) {
             dart_condition_.launch();
             launched = true;
-            has_update_timestamp = true;
-            previous_update_timestamp_ns = sample.timestamp_ns;
-        } else if (launched && has_update_timestamp &&
-                   sample.timestamp_ns > previous_update_timestamp_ns) {
-            const double dt_seconds = static_cast<double>(
-                                         sample.timestamp_ns -
-                                         previous_update_timestamp_ns) *
-                                     1e-9;
-            dart_condition_.update(sample.acceleration, sample.angular_velocity,
-                                   dt_seconds);
-            previous_update_timestamp_ns = sample.timestamp_ns;
         }
 
         const ImuStateSnapshot snapshot{
