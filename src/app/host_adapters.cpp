@@ -48,7 +48,8 @@ runtime::SourceResult SimulatedImuSource::read(runtime::ImuSample* sample) {
     const auto timestamp = steady_timestamp_ns();
     next_deadline_ = std::chrono::steady_clock::now() + period_;
     sample->timestamp_ns = timestamp;
-    sample->acceleration = {0.0, 0.0, 0.0};
+    // 模拟静止 IMU 的测量值包含 +Y 方向重力，供速度积分时扣除重力。
+    sample->acceleration = {0.0, 9.80665, 0.0};
     sample->angular_velocity = {0.0, 0.0, 0.0};
     return {runtime::SourceStatus::ok, {}};
 }
