@@ -81,6 +81,8 @@ struct AppConfig {
     ImuAppConfig imu{};
     CommandAppConfig command{};
     serial_package::SerialPortConfig serial{};
+    // 是否在程序退出时输出 IMU 数据帧间隔统计摘要。
+    bool enable_serial_interval_statistics = false;
     runtime::GuidanceRuntimeConfig guidance{};
     wireless::RtspFrameSinkConfig wireless{};
 };

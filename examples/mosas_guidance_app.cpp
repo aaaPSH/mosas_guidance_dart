@@ -10,8 +10,10 @@
 
 #include <chrono>
 #include <csignal>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -53,6 +55,26 @@ void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
     print_timing_stage("command", timing.command);
     print_timing_stage("processing_total", timing.processing_total);
     print_timing_stage("output", timing.output);
+}
+
+void print_serial_imu_interval_statistics(
+    const mosas::app::SerialImuIntervalStatistics& statistics) {
+    std::ostringstream output;
+    output << "[串口统计] IMU 数据帧间隔: count="
+           << statistics.interval_count;
+    if (statistics.interval_count == 0) {
+        std::cout << output.str() << '\n';
+        return;
+    }
+    output << std::fixed << std::setprecision(3)
+           << " avg_ms="
+           << static_cast<double>(statistics.total_interval_ns) /
+                  static_cast<double>(statistics.interval_count) / 1e6
+           << " min_ms="
+           << static_cast<double>(statistics.minimum_interval_ns) / 1e6
+           << " max_ms="
+           << static_cast<double>(statistics.maximum_interval_ns) / 1e6;
+    std::cout << output.str() << '\n';
 }
 
 bool parse_options(int argc, char** argv, CommandLineOptions* options) {
@@ -118,13 +140,17 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<mosas::runtime::ImuSource> imu_source;
+    mosas::app::SerialImuSource* serial_imu_source = nullptr;
     if (config.imu.mode == mosas::app::ImuMode::simulated) {
         imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
             config.imu.sample_rate_hz);
     } else if (config.imu.mode == mosas::app::ImuMode::serial) {
-        imu_source = std::make_unique<mosas::app::SerialImuSource>(
+        auto source = std::make_unique<mosas::app::SerialImuSource>(
             serial_port, config.imu.sample_rate_hz,
-            config.serial.read_timeout_ms);
+            config.serial.read_timeout_ms,
+            config.enable_serial_interval_statistics);
+        serial_imu_source = source.get();
+        imu_source = std::move(source);
     } else {
         std::cerr << "未知的 IMU 数据源模式\n";
         return 2;
@@ -186,6 +212,11 @@ int main(int argc, char** argv) {
         std::cerr << "制导程序发生故障: " << runtime.last_error() << '\n';
     }
     runtime.stop();
+    if (serial_imu_source != nullptr &&
+        config.enable_serial_interval_statistics) {
+        print_serial_imu_interval_statistics(
+            serial_imu_source->interval_statistics());
+    }
     if (options.show_timing) {
         print_timing(runtime.timing());
     }

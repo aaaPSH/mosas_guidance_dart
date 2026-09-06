@@ -47,13 +47,28 @@ std::string port_error_or(const serial_package::SerialPort& port,
 SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
+    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms, false,
                       std::cerr) {}
 
 SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms, std::ostream& output)
-    : port_(std::move(port)), output_(&output) {
+    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms, false,
+                      output) {}
+
+SerialImuSource::SerialImuSource(
+    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
+    int read_timeout_ms, bool enable_interval_statistics)
+    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
+                      enable_interval_statistics, std::cerr) {}
+
+SerialImuSource::SerialImuSource(
+    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
+    int read_timeout_ms, bool enable_interval_statistics,
+    std::ostream& output)
+    : port_(std::move(port)),
+      output_(&output),
+      interval_statistics_enabled_(enable_interval_statistics) {
     if (port_ == nullptr) {
         configuration_error_ = "串口对象为空";
         return;
@@ -189,14 +204,21 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                 return fatal_result(message.str());
             }
 
-            if (has_timestamp_) {
-                std::ostringstream message;
-                message << "IMU 数据帧间隔: interval_ns=" << interval_ns
-                        << ", interval_ms=" << std::fixed
-                        << std::setprecision(3)
-                        << static_cast<double>(interval_ns) / 1e6;
-                log(message.str());
+            if (interval_statistics_enabled_ && has_timestamp_) {
+                if (interval_statistics_.interval_count == 0) {
+                    interval_statistics_.minimum_interval_ns = interval_ns;
+                    interval_statistics_.maximum_interval_ns = interval_ns;
+                } else {
+                    interval_statistics_.minimum_interval_ns = std::min(
+                        interval_statistics_.minimum_interval_ns, interval_ns);
+                    interval_statistics_.maximum_interval_ns = std::max(
+                        interval_statistics_.maximum_interval_ns, interval_ns);
+                }
+                ++interval_statistics_.interval_count;
+                interval_statistics_.total_interval_ns +=
+                    static_cast<std::uint64_t>(interval_ns);
             }
+
             sample->timestamp_ns = timestamp_ns;
             sample->acceleration = {values.acceleration_x_mps2,
                                     values.acceleration_y_mps2,
@@ -247,6 +269,11 @@ void SerialImuSource::cancel() noexcept {
 
 std::uint16_t SerialImuSource::initialization_g_raw() const noexcept {
     return initialization_g_raw_.load();
+}
+
+SerialImuIntervalStatistics
+SerialImuSource::interval_statistics() const noexcept {
+    return interval_statistics_;
 }
 
 void SerialImuSource::remember_initialization_g(std::uint16_t raw_value) {
