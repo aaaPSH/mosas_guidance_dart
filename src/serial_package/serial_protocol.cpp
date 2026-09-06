@@ -1,18 +1,46 @@
 #include <serial_package/serial_protocol.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 
 namespace serial_package {
 namespace {
 
 constexpr double kOverloadScale = 100.0;
 
-void set_error(const char* message, std::string* error) {
+void set_error(const std::string& message, std::string* error) {
     if (error != nullptr) {
         *error = message;
     }
+}
+
+std::string hex_byte(std::uint8_t value) {
+    std::ostringstream stream;
+    stream << "0x" << std::hex << std::uppercase << std::setfill('0')
+           << std::setw(2) << static_cast<unsigned int>(value);
+    return stream.str();
+}
+
+std::string hex_word(std::uint16_t value) {
+    std::ostringstream stream;
+    stream << "0x" << std::hex << std::uppercase << std::setfill('0')
+           << std::setw(4) << static_cast<unsigned int>(value);
+    return stream.str();
+}
+
+std::int16_t read_int16_le(const std::uint8_t* data) noexcept {
+    const std::uint16_t encoded =
+        static_cast<std::uint16_t>(data[0]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[1]) << 8u);
+    if (encoded >= 0x8000u) {
+        return static_cast<std::int16_t>(
+            static_cast<std::int32_t>(encoded) - 0x10000);
+    }
+    return static_cast<std::int16_t>(encoded);
 }
 
 bool encode_overload(double value, std::uint8_t* destination,
@@ -69,6 +97,85 @@ bool encode_control_frame(
     (*frame)[11] = static_cast<std::uint8_t>((checksum >> 8u) & 0xFFu);
     (*frame)[12] = 0x0D;
     (*frame)[13] = 0x0A;
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+std::uint16_t calculate_imu_frame_checksum(
+    const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept {
+    std::uint32_t checksum = 0;
+    for (std::size_t index = 2; index < 16; ++index) {
+        checksum += frame[index];
+    }
+    return static_cast<std::uint16_t>(checksum & 0xFFFFu);
+}
+
+bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
+                      ImuFrameValues* values, std::string* error) {
+    if (data == nullptr) {
+        set_error("IMU 帧数据指针为空", error);
+        return false;
+    }
+    if (size != kImuFrameSize) {
+        std::ostringstream message;
+        message << "IMU 帧长度错误: received=" << size
+                << ", expected=" << kImuFrameSize;
+        set_error(message.str(), error);
+        return false;
+    }
+    if (values == nullptr) {
+        set_error("IMU 帧输出指针为空", error);
+        return false;
+    }
+    if (data[0] != 0x55 || data[1] != 0xAA) {
+        std::ostringstream message;
+        message << "IMU 帧头错误: received=" << hex_byte(data[0]) << ' '
+                << hex_byte(data[1]) << ", expected=0x55 0xAA";
+        set_error(message.str(), error);
+        return false;
+    }
+    if (data[18] != 0x0D || data[19] != 0x0A) {
+        std::ostringstream message;
+        message << "IMU 帧尾错误: received=" << hex_byte(data[18]) << ' '
+                << hex_byte(data[19]) << ", expected=0x0D 0x0A";
+        set_error(message.str(), error);
+        return false;
+    }
+
+    std::array<std::uint8_t, kImuFrameSize> frame{};
+    std::copy(data, data + kImuFrameSize, frame.begin());
+    const std::uint16_t expected_checksum = calculate_imu_frame_checksum(frame);
+    const std::uint16_t received_checksum =
+        static_cast<std::uint16_t>(data[16]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[17]) << 8u);
+    if (received_checksum != expected_checksum) {
+        std::ostringstream message;
+        message << "IMU CRC 错误: received=" << hex_word(received_checksum)
+                << ", expected=" << hex_word(expected_checksum);
+        set_error(message.str(), error);
+        return false;
+    }
+
+    ImuFrameValues decoded;
+    decoded.acceleration_x_mps2 =
+        static_cast<double>(read_int16_le(data + 2)) * 0.01;
+    decoded.acceleration_y_mps2 =
+        static_cast<double>(read_int16_le(data + 4)) * 0.01;
+    decoded.acceleration_z_mps2 =
+        static_cast<double>(read_int16_le(data + 6)) * 0.01;
+    decoded.angular_velocity_x_rad_s =
+        static_cast<double>(read_int16_le(data + 8)) * 0.1;
+    decoded.angular_velocity_y_rad_s =
+        static_cast<double>(read_int16_le(data + 10)) * 0.1;
+    decoded.angular_velocity_z_rad_s =
+        static_cast<double>(read_int16_le(data + 12)) * 0.1;
+    decoded.initialization_g_raw =
+        static_cast<std::uint16_t>(data[14]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[15]) << 8u);
+    decoded.checksum = received_checksum;
+    *values = decoded;
     if (error != nullptr) {
         error->clear();
     }

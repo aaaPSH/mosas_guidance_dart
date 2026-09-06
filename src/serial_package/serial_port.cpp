@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <poll.h>
 #include <sstream>
 #include <termios.h>
@@ -168,6 +169,24 @@ ssize_t SerialPort::read(void* buffer, size_t size, int timeout_ms) {
         set_error(errno_message("read serial port"));
     }
     return count;
+}
+
+ssize_t SerialPort::input_bytes_available() {
+    if (!is_open()) {
+        set_error("serial port is not open");
+        return -1;
+    }
+
+    int bytes = 0;
+    if (::ioctl(fd_, FIONREAD, &bytes) != 0) {
+        set_error(errno_message("query serial input bytes"));
+        return -1;
+    }
+    if (bytes < 0) {
+        set_error("serial input byte count is negative");
+        return -1;
+    }
+    return static_cast<ssize_t>(bytes);
 }
 
 ssize_t SerialPort::write(const void* data, size_t size, int timeout_ms) {

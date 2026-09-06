@@ -157,6 +157,7 @@ add_library(mosas_app STATIC
     src/app/host_adapters.cpp
     src/app/nori_camera_sdk.cpp
     src/app/nori_camera_source.cpp
+    src/app/serial_imu_source.cpp
 )
 configure_mosas_target(mosas_app)
 target_include_directories(mosas_app

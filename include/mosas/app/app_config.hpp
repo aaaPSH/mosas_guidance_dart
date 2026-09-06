@@ -56,10 +56,12 @@ struct CameraAppConfig {
 
 enum class ImuMode {
     simulated,
+    serial,
 };
 
 struct ImuAppConfig {
     ImuMode mode = ImuMode::simulated;
+    // IMU 实际发送频率，同时作为串口接收 watchdog 的周期基准。
     double sample_rate_hz = 200.0;
     // 测试模式：使用假基准跳过 IMU 静止自检。
     bool skip_self_check = false;
