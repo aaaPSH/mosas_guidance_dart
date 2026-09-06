@@ -280,6 +280,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     if (section == "imu") {
         if (key == "mode" && value == "simulated") {
             config->imu.mode = ImuMode::simulated;
+        } else if (key == "mode" && value == "serial") {
+            config->imu.mode = ImuMode::serial;
         } else if (key == "skip_self_check") {
             return parse_bool(value, &config->imu.skip_self_check) || invalid();
         } else if (key == "sample_rate_hz" && parse_double(value, &decimal)) {
@@ -462,17 +464,24 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         !std::isfinite(distortion.k3)) {
         return fail_global(path, "畸变参数无效", error);
     }
-    if (config.imu.mode != ImuMode::simulated ||
-        !std::isfinite(config.imu.sample_rate_hz) ||
+    if (!std::isfinite(config.imu.sample_rate_hz) ||
         config.imu.sample_rate_hz <= 0.0) {
         return fail_global(path, "IMU 参数无效", error);
     }
-    if (config.command.mode == CommandMode::serial &&
+    const bool serial_required =
+        config.imu.mode == ImuMode::serial ||
+        config.command.mode == CommandMode::serial;
+    if (serial_required &&
         (config.serial.device.empty() || config.serial.baud_rate == 0 ||
          config.serial.data_bits < 5 || config.serial.data_bits > 8 ||
          config.serial.read_timeout_ms < 0 ||
          config.serial.write_timeout_ms < 0)) {
         return fail_global(path, "串口参数无效", error);
+    }
+    if (config.imu.mode == ImuMode::serial &&
+        config.serial.read_timeout_ms <= 0) {
+        return fail_global(path, "串口 IMU 模式要求 read_timeout_ms 大于 0",
+                           error);
     }
     const auto& vision = config.guidance.vision_config;
     if (config.guidance.launch_speed_mps <= 0.0 ||

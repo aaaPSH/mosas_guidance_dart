@@ -1,6 +1,7 @@
 #include <mosas/app/app_config.hpp>
 #include <mosas/app/host_adapters.hpp>
 #include <mosas/app/nori_camera_source.hpp>
+#include <mosas/app/serial_imu_source.hpp>
 #include <mosas/runtime/guidance_runtime.hpp>
 
 #if defined(MOSAS_APP_HAS_WIRELESS)
@@ -104,17 +105,30 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, handle_signal);
 
     std::shared_ptr<serial_package::SerialPort> serial_port;
-    if (config.command.mode == mosas::app::CommandMode::serial) {
+    const bool serial_required =
+        config.imu.mode == mosas::app::ImuMode::serial ||
+        config.command.mode == mosas::app::CommandMode::serial;
+    if (serial_required) {
         serial_port = std::make_shared<serial_package::SerialPort>();
         if (!serial_port->open(config.serial)) {
-            std::cerr << "打开下位机串口失败: " << serial_port->last_error()
+            std::cerr << "打开共享下位机串口失败: " << serial_port->last_error()
                       << '\n';
             return 1;
         }
     }
 
-    auto imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
-        config.imu.sample_rate_hz);
+    std::unique_ptr<mosas::runtime::ImuSource> imu_source;
+    if (config.imu.mode == mosas::app::ImuMode::simulated) {
+        imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
+            config.imu.sample_rate_hz);
+    } else if (config.imu.mode == mosas::app::ImuMode::serial) {
+        imu_source = std::make_unique<mosas::app::SerialImuSource>(
+            serial_port, config.imu.sample_rate_hz,
+            config.serial.read_timeout_ms);
+    } else {
+        std::cerr << "未知的 IMU 数据源模式\n";
+        return 2;
+    }
     auto camera_source = std::make_unique<mosas::app::NoriSdkCameraSource>(
         config.camera);
     std::unique_ptr<mosas::runtime::CommandSink> command_sink;

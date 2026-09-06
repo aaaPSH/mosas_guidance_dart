@@ -57,6 +57,9 @@ public:
     // timeout_ms 为负数时使用配置中的 read_timeout_ms。
     ssize_t read(void* buffer, size_t size, int timeout_ms = -1);
 
+    // 查询 Linux 内核输入队列中的字节数；失败返回 -1。
+    ssize_t input_bytes_available();
+
     // 写入一段原始二进制数据。返回实际写入字节数，-1 表示失败。
     // timeout_ms 为负数时使用配置中的 write_timeout_ms。
     ssize_t write(const void* data, size_t size, int timeout_ms = -1);
