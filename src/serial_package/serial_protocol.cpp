@@ -105,11 +105,20 @@ bool encode_control_frame(
 
 std::uint16_t calculate_imu_frame_checksum(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept {
-    std::uint32_t checksum = 0;
+    std::uint16_t checksum = 0xFFFFu;
     for (std::size_t index = 2; index < 16; ++index) {
-        checksum += frame[index];
+        checksum = static_cast<std::uint16_t>(
+            checksum ^ (static_cast<std::uint16_t>(frame[index]) << 8u));
+        for (int bit = 0; bit < 8; ++bit) {
+            if ((checksum & 0x8000u) != 0) {
+                checksum = static_cast<std::uint16_t>(
+                    (checksum << 1u) ^ 0x1021u);
+            } else {
+                checksum = static_cast<std::uint16_t>(checksum << 1u);
+            }
+        }
     }
-    return static_cast<std::uint16_t>(checksum & 0xFFFFu);
+    return checksum;
 }
 
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
