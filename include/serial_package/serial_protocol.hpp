@@ -34,7 +34,7 @@ bool encode_control_frame(
     std::array<std::uint8_t, kControlFrameSize>* frame,
     std::string* error = nullptr);
 
-// 计算 IMU 上行帧 bytes 2..15 的 16 位字节和。
+// 计算 IMU 上行帧 bytes 2..15 的 CRC-16/CCITT-FALSE。
 std::uint16_t calculate_imu_frame_checksum(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept;
 
