@@ -42,16 +42,6 @@ std::string port_error_or(const serial_package::SerialPort& port,
     return error.empty() ? std::string(fallback) : error;
 }
 
-std::int64_t maximum_interval_ns(std::int64_t period_ns) noexcept {
-    const std::int64_t half_period_ns = period_ns / 2;
-    const std::int64_t maximum_value =
-        std::numeric_limits<std::int64_t>::max();
-    if (period_ns > maximum_value - half_period_ns) {
-        return maximum_value;
-    }
-    return period_ns + half_period_ns;
-}
-
 }  // 匿名命名空间结束
 
 SerialImuSource::SerialImuSource(
@@ -159,24 +149,14 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             // 当前读取调用只允许交付这一帧，不能把完整帧留在源内部。
             buffered_size_ = 0;
             const runtime::TimestampNs timestamp_ns = steady_timestamp_ns();
+            runtime::TimestampNs interval_ns = 0;
             if (has_timestamp_) {
-                const auto interval_ns = timestamp_ns - last_timestamp_ns_;
-                const auto minimum_interval = period_.count() / 2;
-                const auto maximum_interval =
-                    maximum_interval_ns(period_.count());
+                interval_ns = timestamp_ns - last_timestamp_ns_;
                 if (interval_ns <= 0) {
                     std::ostringstream message;
                     message << "IMU 时间戳不递增: previous="
                             << last_timestamp_ns_ << ", current="
                             << timestamp_ns;
-                    return fatal_result(message.str());
-                }
-                if (interval_ns < minimum_interval ||
-                    interval_ns > maximum_interval) {
-                    std::ostringstream message;
-                    message << "IMU 采样间隔超限: interval_ns=" << interval_ns
-                            << ", expected=[" << minimum_interval << ','
-                            << maximum_interval << "]";
                     return fatal_result(message.str());
                 }
             }
@@ -209,6 +189,14 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                 return fatal_result(message.str());
             }
 
+            if (has_timestamp_) {
+                std::ostringstream message;
+                message << "IMU 数据帧间隔: interval_ns=" << interval_ns
+                        << ", interval_ms=" << std::fixed
+                        << std::setprecision(3)
+                        << static_cast<double>(interval_ns) / 1e6;
+                log(message.str());
+            }
             sample->timestamp_ns = timestamp_ns;
             sample->acceleration = {values.acceleration_x_mps2,
                                     values.acceleration_y_mps2,
@@ -357,17 +345,6 @@ runtime::SourceResult SerialImuSource::timeout_result() {
         std::ostringstream message;
         message << "IMU 读取 watchdog 超时(累计 " << timeout_count_ << " 次)";
         log(message.str());
-    }
-    if (has_timestamp_) {
-        const runtime::TimestampNs now_ns = steady_timestamp_ns();
-        const auto elapsed_ns = now_ns - last_timestamp_ns_;
-        const auto maximum_interval = maximum_interval_ns(period_.count());
-        if (elapsed_ns > maximum_interval) {
-            std::ostringstream message;
-            message << "IMU 连续超时导致采样间隔超限: elapsed_ns="
-                    << elapsed_ns << ", maximum_ns=" << maximum_interval;
-            return fatal_result(message.str());
-        }
     }
     return {runtime::SourceStatus::timeout, "IMU 读取超时"};
 }
