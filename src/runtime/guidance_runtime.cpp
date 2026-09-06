@@ -572,10 +572,11 @@ void GuidanceRuntime::processing_worker() {
                     return enqueue_result(std::move(result));
                 };
             const TimestampNs timestamp_ns = result.frame.timestamp_ns;
-            result.vision_result = {
-                false, {0, 0, 0, 0, 0, 0.0, 0.0},
-                config_.vision_config.initial_roi,
-                config_.vision_config.min_blob_area};
+            result.vision_result = {};
+            result.vision_result.next_roi =
+                config_.vision_config.initial_roi;
+            result.vision_result.minimum_blob_area =
+                config_.vision_config.min_blob_area;
             result.imu_state = {
                 timestamp_ns, FlightPhase::pre_launch, {}, {}, {}, {}};
             result.guidance = {false, {}, {}, {}, 0.0, 0.0};

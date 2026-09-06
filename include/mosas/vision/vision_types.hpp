@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include <opencv2/core/mat.hpp>
+
 struct VisionRoi {
     int x;
     int y;
@@ -63,6 +65,9 @@ struct VisionResult {
     int candidate_count = 0;
     bool debug_blob_valid = false;
     VisionBlob debug_blob{};
+    bool debug_mask_valid = false;
+    VisionRoi debug_mask_roi{0, 0, 0, 0};
+    cv::Mat debug_mask;
 };
 
 // 可视化面板使用的引导数据，角度单位为弧度，角速度单位为弧度/秒。

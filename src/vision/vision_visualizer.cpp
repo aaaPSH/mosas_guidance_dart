@@ -201,6 +201,45 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
     }
 }
 
+void draw_mask_preview(cv::Mat& frame, const VisionResult& result) {
+    if (!result.debug_mask_valid || result.debug_mask.empty() ||
+        result.debug_mask.type() != CV_8UC1) {
+        return;
+    }
+
+    constexpr int kMaxPreviewWidth = 240;
+    constexpr int kMaxPreviewHeight = 180;
+    const double scale = std::min(
+        static_cast<double>(kMaxPreviewWidth) / result.debug_mask.cols,
+        static_cast<double>(kMaxPreviewHeight) / result.debug_mask.rows);
+    if (!std::isfinite(scale) || scale <= 0.0) {
+        return;
+    }
+
+    const cv::Size preview_size(
+        std::max(1, cvRound(result.debug_mask.cols * scale)),
+        std::max(1, cvRound(result.debug_mask.rows * scale)));
+    cv::Mat mask_bgr;
+    cv::Mat preview;
+    cv::cvtColor(result.debug_mask, mask_bgr, cv::COLOR_GRAY2BGR);
+    cv::resize(mask_bgr, preview, preview_size, 0.0, 0.0,
+               cv::INTER_NEAREST);
+
+    const int x = frame.cols - preview.cols - 8;
+    const int y = 8;
+    if (x < 0 || y < 0 || x + preview.cols > frame.cols ||
+        y + preview.rows > frame.rows) {
+        return;
+    }
+
+    const cv::Rect preview_rect(x, y, preview.cols, preview.rows);
+    cv::rectangle(frame, preview_rect, kDebugColor, 1);
+    preview.copyTo(frame(preview_rect));
+    cv::putText(frame, "MASK", {x + 4, y + 16},
+                cv::FONT_HERSHEY_SIMPLEX, 0.45, kDebugColor, 1,
+                cv::LINE_AA);
+}
+
 const char* debug_stage_name(VisionDebugStage stage) {
     switch (stage) {
         case VisionDebugStage::not_processed:
@@ -227,6 +266,7 @@ void draw_vision_debug_impl(cv::Mat& frame, const VisionResult& result) {
     }
 
     try {
+        draw_mask_preview(frame, result);
         std::ostringstream statistics;
         statistics << "Vision: " << debug_stage_name(result.debug_stage)
                    << " mask=" << result.mask_pixel_count
