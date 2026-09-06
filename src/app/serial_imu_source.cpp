@@ -125,7 +125,7 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
         startup_reported_ = true;
         std::ostringstream message;
         message << "启动输入队列有 " << startup_bytes
-                << " 字节，不执行 flush，保留下位机初始化 g 数据";
+                << " 字节；若发现启动积压，将清理旧数据并等待新 IMU 帧";
         log(message.str());
     }
 
@@ -188,6 +188,21 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             }
             if (pending_bytes >=
                 static_cast<ssize_t>(serial_package::kImuFrameSize)) {
+                if (!has_timestamp_) {
+                    remember_initialization_g(values.initialization_g_raw);
+                    std::ostringstream message;
+                    message << "检测到启动阶段串口输入积压 " << pending_bytes
+                            << " 字节，清理旧数据并等待新的 IMU 帧";
+                    log(message.str());
+                    if (!port_->flush_input()) {
+                        return fatal_result("清理启动阶段串口输入队列失败: " +
+                                            port_error_or(
+                                                *port_, "未知串口错误"));
+                    }
+                    // 当前候选帧已经被消费，但它属于启动旧数据。
+                    buffered_size_ = 0;
+                    continue;
+                }
                 std::ostringstream message;
                 message << "串口输入积压 " << pending_bytes
                         << " 字节，至少有一个完整 IMU 帧未处理，拒绝继续积分";
@@ -201,20 +216,7 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             sample->angular_velocity = {values.angular_velocity_x_rad_s,
                                         values.angular_velocity_y_rad_s,
                                         values.angular_velocity_z_rad_s};
-            if (values.initialization_g_raw != 0) {
-                std::uint16_t expected_initialization_g = 0;
-                if (initialization_g_raw_.compare_exchange_strong(
-                        expected_initialization_g,
-                        values.initialization_g_raw)) {
-                    std::ostringstream message;
-                    message << "捕获下位机初始化 g raw=0x" << std::hex
-                            << std::uppercase << std::setfill('0')
-                            << std::setw(4)
-                            << static_cast<unsigned int>(
-                                   values.initialization_g_raw);
-                    log(message.str());
-                }
-            }
+            remember_initialization_g(values.initialization_g_raw);
             last_timestamp_ns_ = timestamp_ns;
             has_timestamp_ = true;
             if (had_parse_error) {
@@ -257,6 +259,21 @@ void SerialImuSource::cancel() noexcept {
 
 std::uint16_t SerialImuSource::initialization_g_raw() const noexcept {
     return initialization_g_raw_.load();
+}
+
+void SerialImuSource::remember_initialization_g(std::uint16_t raw_value) {
+    if (raw_value == 0) {
+        return;
+    }
+    std::uint16_t expected_initialization_g = 0;
+    if (initialization_g_raw_.compare_exchange_strong(expected_initialization_g,
+                                                       raw_value)) {
+        std::ostringstream message;
+        message << "捕获下位机初始化 g raw=0x" << std::hex << std::uppercase
+                << std::setfill('0') << std::setw(4)
+                << static_cast<unsigned int>(raw_value);
+        log(message.str());
+    }
 }
 
 void SerialImuSource::align_buffer() {
