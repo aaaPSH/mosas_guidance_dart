@@ -100,18 +100,28 @@ bool RtspFrameSink::publish_impl(
     }
 
     try {
-        if (config_.draw_visualization) {
-            frame.image.copyTo(annotated_bgr_frame_);
-            if (overlay != nullptr) {
-                VisionVisualizer::draw_result(
-                    annotated_bgr_frame_, vision_result,
-                    line_of_sight_reference_point_);
-                VisionVisualizer::draw_guidance_overlay(annotated_bgr_frame_,
-                                                        *overlay);
+        if (config_.enable_wireless_stream) {
+            if (config_.draw_visualization || config_.draw_vision_debug) {
+                frame.image.copyTo(annotated_bgr_frame_);
+                if (config_.draw_visualization) {
+                    if (overlay != nullptr) {
+                        VisionVisualizer::draw_result(
+                            annotated_bgr_frame_, vision_result,
+                            line_of_sight_reference_point_);
+                        VisionVisualizer::draw_guidance_overlay(
+                            annotated_bgr_frame_, *overlay);
+                    } else {
+                        VisionVisualizer::draw_result(
+                            annotated_bgr_frame_, vision_result,
+                            line_of_sight_reference_point_);
+                    }
+                }
+                if (config_.draw_vision_debug) {
+                    VisionVisualizer::draw_vision_debug(annotated_bgr_frame_,
+                                                        vision_result);
+                }
             } else {
-                VisionVisualizer::draw_result(
-                    annotated_bgr_frame_, vision_result,
-                    line_of_sight_reference_point_);
+                frame.image.copyTo(annotated_bgr_frame_);
             }
             if (annotated_bgr_frame_.cols != config_.stream.width ||
                 annotated_bgr_frame_.rows != config_.stream.height) {
@@ -122,14 +132,6 @@ bool RtspFrameSink::publish_impl(
             } else {
                 annotated_bgr_frame_.copyTo(bgr_frame_);
             }
-        } else if (frame.image.cols != config_.stream.width ||
-                   frame.image.rows != config_.stream.height) {
-            cv::resize(frame.image, resized_bgr_frame_,
-                       cv::Size(config_.stream.width, config_.stream.height),
-                       0.0, 0.0, cv::INTER_LINEAR);
-            resized_bgr_frame_.copyTo(bgr_frame_);
-        } else {
-            frame.image.copyTo(bgr_frame_);
         }
 
         if (config_.enable_wireless_stream && !wireless_stream_failed_) {
@@ -171,12 +173,21 @@ bool RtspFrameSink::publish_impl(
                     return false;
                 }
             }
-            if (bgr_frame_.size() !=
+            if (frame.image.cols != config_.stream.width ||
+                frame.image.rows != config_.stream.height) {
+                cv::resize(frame.image, recording_bgr_frame_,
+                            cv::Size(config_.stream.width,
+                                     config_.stream.height),
+                            0.0, 0.0, cv::INTER_LINEAR);
+            } else {
+                frame.image.copyTo(recording_bgr_frame_);
+            }
+            if (recording_bgr_frame_.size() !=
                 cv::Size(config_.stream.width, config_.stream.height)) {
                 last_error_ = "recording frame size does not match configured output size";
                 return false;
             }
-            recording_writer_.write(bgr_frame_);
+            recording_writer_.write(recording_bgr_frame_);
             // VideoWriter::write() 没有返回值，只能检查 writer 是否仍保持打开；
             // 后端抛出的 OpenCV 异常会由外层捕获并报告为发布失败。
             if (!recording_writer_.isOpened()) {

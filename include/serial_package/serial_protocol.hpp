@@ -25,7 +25,7 @@ struct ImuFrameValues {
     double angular_velocity_y_rad_s = 0.0;
     double angular_velocity_z_rad_s = 0.0;
     std::uint16_t initialization_g_raw = 0;
-    std::uint16_t checksum = 0;
+    std::uint16_t crc = 0;
 };
 
 // 将下行控制量编码为固定长度的二进制控制帧。
@@ -35,7 +35,7 @@ bool encode_control_frame(
     std::string* error = nullptr);
 
 // 计算 IMU 上行帧 bytes 2..15 的 CRC-16/CCITT-FALSE。
-std::uint16_t calculate_imu_frame_checksum(
+std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept;
 
 // 校验并解码一帧 IMU 上行数据。

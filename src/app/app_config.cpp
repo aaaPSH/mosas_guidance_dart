@@ -422,6 +422,7 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "recording_path") { config->wireless.recording_path = value; return true; }
         if (key == "recording_fps") return set_double(&config->wireless.recording_fps) || invalid();
         if (key == "draw_visualization") return parse_bool(value, &config->wireless.draw_visualization) || invalid();
+        if (key == "draw_vision_debug") return parse_bool(value, &config->wireless.draw_vision_debug) || invalid();
         if (key == "rtsp_url") { config->wireless.stream.rtsp_url = value; return true; }
         if (key == "rtsp_transport") { config->wireless.stream.rtsp_transport = value; return true; }
         if (key == "width") return set_int(&config->wireless.stream.width) || invalid();

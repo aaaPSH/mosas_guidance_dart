@@ -103,22 +103,21 @@ bool encode_control_frame(
     return true;
 }
 
-std::uint16_t calculate_imu_frame_checksum(
+std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept {
-    std::uint16_t checksum = 0xFFFFu;
+    std::uint16_t crc = 0xFFFFu;
     for (std::size_t index = 2; index < 16; ++index) {
-        checksum = static_cast<std::uint16_t>(
-            checksum ^ (static_cast<std::uint16_t>(frame[index]) << 8u));
+        crc = static_cast<std::uint16_t>(
+            crc ^ (static_cast<std::uint16_t>(frame[index]) << 8u));
         for (int bit = 0; bit < 8; ++bit) {
-            if ((checksum & 0x8000u) != 0) {
-                checksum = static_cast<std::uint16_t>(
-                    (checksum << 1u) ^ 0x1021u);
+            if ((crc & 0x8000u) != 0) {
+                crc = static_cast<std::uint16_t>((crc << 1u) ^ 0x1021u);
             } else {
-                checksum = static_cast<std::uint16_t>(checksum << 1u);
+                crc = static_cast<std::uint16_t>(crc << 1u);
             }
         }
     }
-    return checksum;
+    return crc;
 }
 
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
@@ -155,14 +154,14 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
 
     std::array<std::uint8_t, kImuFrameSize> frame{};
     std::copy(data, data + kImuFrameSize, frame.begin());
-    const std::uint16_t expected_checksum = calculate_imu_frame_checksum(frame);
-    const std::uint16_t received_checksum =
+    const std::uint16_t expected_crc = calculate_imu_frame_crc(frame);
+    const std::uint16_t received_crc =
         static_cast<std::uint16_t>(data[16]) |
         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[17]) << 8u);
-    if (received_checksum != expected_checksum) {
+    if (received_crc != expected_crc) {
         std::ostringstream message;
-        message << "IMU CRC 错误: received=" << hex_word(received_checksum)
-                << ", expected=" << hex_word(expected_checksum);
+        message << "IMU CRC 错误: received=" << hex_word(received_crc)
+                << ", expected=" << hex_word(expected_crc);
         set_error(message.str(), error);
         return false;
     }
@@ -183,7 +182,7 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
     decoded.initialization_g_raw =
         static_cast<std::uint16_t>(data[14]) |
         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[15]) << 8u);
-    decoded.checksum = received_checksum;
+    decoded.crc = received_crc;
     *values = decoded;
     if (error != nullptr) {
         error->clear();

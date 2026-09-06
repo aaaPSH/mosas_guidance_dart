@@ -40,12 +40,29 @@ struct VisionConfig {
     double min_fill_ratio;
 };
 
+// 视觉识别流程中最后完成的阶段，用于显示诊断信息。
+enum class VisionDebugStage {
+    not_processed,
+    invalid_frame,
+    invalid_roi,
+    mask_empty,
+    candidate_rejected,
+    found,
+    processing_error,
+};
+
 struct VisionResult {
     bool found;
     VisionBlob blob;
     VisionRoi next_roi;
     // 用于可视化视线角基准点的最小目标面积阈值，单位：像素。
     int minimum_blob_area = 0;
+    VisionDebugStage debug_stage = VisionDebugStage::not_processed;
+    int mask_pixel_count = 0;
+    int component_count = 0;
+    int candidate_count = 0;
+    bool debug_blob_valid = false;
+    VisionBlob debug_blob{};
 };
 
 // 可视化面板使用的引导数据，角度单位为弧度，角速度单位为弧度/秒。

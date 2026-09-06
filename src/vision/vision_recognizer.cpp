@@ -71,6 +71,7 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
     VisionResult result{false, {0, 0, 0, 0, 0, 0.0, 0.0}, current_roi_,
                         config_.min_blob_area};
     if (!is_valid_frame(frame)) {
+        result.debug_stage = VisionDebugStage::invalid_frame;
         return result;
     }
 
@@ -78,6 +79,7 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
     if (!is_valid_roi(roi)) {
         current_roi_ = config_.initial_roi;
         result.next_roi = current_roi_;
+        result.debug_stage = VisionDebugStage::invalid_roi;
         return result;
     }
 
@@ -97,16 +99,20 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
             mask_);
 
         // 无前景时无需生成连通域标签和统计矩阵，直接恢复全局搜索 ROI。
-        if (cv::countNonZero(mask_) == 0) {
+        result.mask_pixel_count = cv::countNonZero(mask_);
+        if (result.mask_pixel_count == 0) {
             current_roi_ = clip_roi(config_.initial_roi, frame.cols, frame.rows);
             result.next_roi = current_roi_;
+            result.debug_stage = VisionDebugStage::mask_empty;
             return result;
         }
 
-        const int component_count = cv::connectedComponentsWithStats(
+        const int label_count = cv::connectedComponentsWithStats(
             mask_, labels_, stats_, centroids_, 8, CV_32S);
+        result.component_count = std::max(label_count - 1, 0);
         VisionBlob best_blob{0, 0, 0, 0, 0, 0.0, 0.0};
-        for (int label = 1; label < component_count; ++label) {
+        VisionBlob largest_blob{0, 0, 0, 0, 0, 0.0, 0.0};
+        for (int label = 1; label < label_count; ++label) {
             const VisionBlob candidate{
                 stats_.at<int>(label, cv::CC_STAT_LEFT) + roi.x,
                 stats_.at<int>(label, cv::CC_STAT_TOP) + roi.y,
@@ -116,23 +122,35 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
                 centroids_.at<double>(label, 0) + roi.x,
                 centroids_.at<double>(label, 1) + roi.y,
             };
-            if (is_candidate(candidate, config_) &&
-                candidate.area > best_blob.area) {
-                best_blob = candidate;
+            if (candidate.area > largest_blob.area) {
+                largest_blob = candidate;
             }
+            if (is_candidate(candidate, config_)) {
+                ++result.candidate_count;
+                if (candidate.area > best_blob.area) {
+                    best_blob = candidate;
+                }
+            }
+        }
+        if (largest_blob.area > 0) {
+            result.debug_blob = largest_blob;
+            result.debug_blob_valid = true;
         }
 
         if (best_blob.area > 0) {
             result.found = true;
             result.blob = best_blob;
+            result.debug_stage = VisionDebugStage::found;
             current_roi_ = expanded_roi(best_blob, config_.found_range_x,
                                          config_.found_range_y, frame.cols,
                                          frame.rows);
         } else {
+            result.debug_stage = VisionDebugStage::candidate_rejected;
             current_roi_ = clip_roi(config_.initial_roi, frame.cols, frame.rows);
         }
         result.next_roi = current_roi_;
     } catch (const cv::Exception&) {
+        result.debug_stage = VisionDebugStage::processing_error;
         return result;
     }
     return result;
