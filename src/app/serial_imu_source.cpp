@@ -135,14 +135,9 @@ SerialImuSource::SerialImuSource(
     }
     period_ = std::chrono::nanoseconds(period_count);
 
-    const auto period_ms_floor = period_.count() / 1'000'000;
-    const auto period_ms_ceil =
-        period_ms_floor + (period_.count() % 1'000'000 == 0 ? 0 : 1);
-    const auto bounded_period_ms = std::min<std::int64_t>(
-        std::numeric_limits<int>::max(), std::max<std::int64_t>(1,
-                                                                 period_ms_ceil));
-    watchdog_timeout_ms_ = std::min(
-        read_timeout_ms, static_cast<int>(bounded_period_ms));
+    // watchdog 是等待一帧完整数据的窗口，不能用采样周期截断。
+    // 采样周期仅用于积压帧的逻辑时间戳重建。
+    watchdog_timeout_ms_ = read_timeout_ms;
 }
 
 runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
