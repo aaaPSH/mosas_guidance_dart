@@ -43,7 +43,7 @@ public:
     // 返回首次捕获的下位机初始化 g raw 值；后续 0 不会覆盖它。
     std::uint16_t initialization_g_raw() const noexcept;
 
-    // 返回有效 IMU 帧在主机侧交付时间之间的统计值；调用方应在读取线程停止后调用。
+    // 返回有效 IMU 帧逻辑时间轴的间隔统计值；调用方应在读取线程停止后调用。
     SerialImuIntervalStatistics interval_statistics() const noexcept;
 
 private:
@@ -53,6 +53,9 @@ private:
     void align_buffer();
     void discard_prefix(std::size_t count, const std::string& reason);
     void remember_initialization_g(std::uint16_t raw_value);
+    runtime::TimestampNs timestamp_for_frame(
+        runtime::TimestampNs received_timestamp_ns,
+        std::size_t pending_frame_count) const;
     void log(const std::string& message);
     runtime::SourceResult fatal_result(const std::string& message);
     int remaining_timeout_ms(Clock::time_point deadline) const;
