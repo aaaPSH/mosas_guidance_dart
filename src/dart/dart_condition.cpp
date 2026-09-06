@@ -234,26 +234,51 @@ EulerAngles DartCondition::update(const Vector3& acceleration,
         return angles_;
     }
 
-    Quaternion delta{};
-    if (!QuaternionMath::from_angular_velocity(angular_velocity, dt, &delta)) {
-        return angles_;
-    }
-    const Quaternion updated = QuaternionMath::multiply(current, delta);
-    if (!QuaternionMath::is_finite(updated)) {
-        return angles_;
-    }
-    const Quaternion normalized_updated = QuaternionMath::normalized(updated);
-    if (!QuaternionMath::is_finite(normalized_updated)) {
+    if (!integrate_orientation(angular_velocity, dt)) {
         return angles_;
     }
     velocity_ = updated_velocity;
+    return angles_;
+}
+
+EulerAngles DartCondition::update_attitude(const Vector3& angular_velocity,
+                                           double dt) {
+    if (state_ == State::Uninitialized) {
+        return angles_;
+    }
+    integrate_orientation(angular_velocity, dt);
+    return angles_;
+}
+
+bool DartCondition::integrate_orientation(const Vector3& angular_velocity,
+                                          double dt) {
+    if (state_ == State::Uninitialized || !is_finite_vector(angular_velocity) ||
+        !std::isfinite(dt) || dt <= 0.0) {
+        return false;
+    }
+
+    const Quaternion current{
+        orientation_w_, orientation_x_, orientation_y_, orientation_z_};
+    Quaternion delta{};
+    if (!QuaternionMath::from_angular_velocity(angular_velocity, dt, &delta)) {
+        return false;
+    }
+    const Quaternion updated = QuaternionMath::multiply(current, delta);
+    if (!QuaternionMath::is_finite(updated)) {
+        return false;
+    }
+    const Quaternion normalized_updated = QuaternionMath::normalized(updated);
+    if (!QuaternionMath::is_finite(normalized_updated)) {
+        return false;
+    }
+
     orientation_w_ = normalized_updated.w;
     orientation_x_ = normalized_updated.x;
     orientation_y_ = normalized_updated.y;
     orientation_z_ = normalized_updated.z;
     angles_ = QuaternionMath::to_euler(
         {orientation_w_, orientation_x_, orientation_y_, orientation_z_});
-    return angles_;
+    return true;
 }
 
 EulerAngles DartCondition::attitude() const {

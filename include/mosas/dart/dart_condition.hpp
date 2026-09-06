@@ -33,12 +33,17 @@ public:
                        const Vector3& angular_velocity,
                        double dt);
 
+    // 只使用角速度推进姿态；Ready 和 Flying 状态均可调用。
+    EulerAngles update_attitude(const Vector3& angular_velocity, double dt);
+
     EulerAngles attitude() const;
     Vector3 velocity() const;
     bool initialized() const;
     bool flying() const;
 
 private:
+    bool integrate_orientation(const Vector3& angular_velocity, double dt);
+
     enum class State {
         Uninitialized,
         Ready,
