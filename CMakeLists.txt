@@ -85,6 +85,13 @@ function(configure_mosas_target target)
     )
 endfunction()
 
+add_library(serial_package STATIC
+    src/serial_package/serial_port.cpp
+    src/serial_package/serial_protocol.cpp
+)
+configure_mosas_target(serial_package)
+target_link_libraries(serial_package PUBLIC Threads::Threads)
+
 add_library(mosas_dart STATIC
     src/dart/dart_condition.cpp
 )
@@ -159,6 +166,7 @@ target_include_directories(mosas_app
 target_link_libraries(mosas_app
     PUBLIC
         mosas_runtime
+        serial_package
         mosas_camera_sdk
         ${OpenCV_LIBS}
 )
@@ -176,6 +184,7 @@ if(MOSAS_BUILD_WIRELESS)
 endif()
 
 set(MOSAS_INSTALL_TARGETS
+    serial_package
     mosas_dart
     mosas_vision
     mosas_guidance

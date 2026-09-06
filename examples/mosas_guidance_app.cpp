@@ -103,11 +103,30 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
+    std::shared_ptr<serial_package::SerialPort> serial_port;
+    if (config.command.mode == mosas::app::CommandMode::serial) {
+        serial_port = std::make_shared<serial_package::SerialPort>();
+        if (!serial_port->open(config.serial)) {
+            std::cerr << "打开下位机串口失败: " << serial_port->last_error()
+                      << '\n';
+            return 1;
+        }
+    }
+
     auto imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
         config.imu.sample_rate_hz);
     auto camera_source = std::make_unique<mosas::app::NoriSdkCameraSource>(
         config.camera);
-    auto command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
+    std::unique_ptr<mosas::runtime::CommandSink> command_sink;
+    if (config.command.mode == mosas::app::CommandMode::log) {
+        command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
+    } else if (config.command.mode == mosas::app::CommandMode::serial) {
+        command_sink = std::make_unique<mosas::app::SerialCommandSink>(
+            serial_port);
+    } else {
+        std::cerr << "未知的指令输出模式\n";
+        return 2;
+    }
 
     std::unique_ptr<mosas::runtime::FrameSink> frame_sink;
 #if defined(MOSAS_APP_HAS_WIRELESS)
