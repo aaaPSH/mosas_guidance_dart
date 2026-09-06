@@ -320,6 +320,9 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
                    parse_int(value, &config->serial.read_timeout_ms)) {
         } else if (key == "write_timeout_ms" &&
                    parse_int(value, &config->serial.write_timeout_ms)) {
+        } else if (key == "enable_interval_statistics") {
+            return parse_bool(value, &config->enable_serial_interval_statistics) ||
+                   invalid();
         } else {
             return invalid();
         }
