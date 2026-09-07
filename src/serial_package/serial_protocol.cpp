@@ -32,6 +32,23 @@ std::string hex_word(std::uint16_t value) {
     return stream.str();
 }
 
+std::uint16_t calculate_crc16_ccitt_false(const std::uint8_t* data,
+                                          std::size_t size) noexcept {
+    std::uint16_t crc = 0xFFFFu;
+    for (std::size_t index = 0; index < size; ++index) {
+        crc = static_cast<std::uint16_t>(
+            crc ^ (static_cast<std::uint16_t>(data[index]) << 8u));
+        for (int bit = 0; bit < 8; ++bit) {
+            if ((crc & 0x8000u) != 0) {
+                crc = static_cast<std::uint16_t>((crc << 1u) ^ 0x1021u);
+            } else {
+                crc = static_cast<std::uint16_t>(crc << 1u);
+            }
+        }
+    }
+    return crc;
+}
+
 std::int16_t read_int16_le(const std::uint8_t* data) noexcept {
     const std::uint16_t encoded =
         static_cast<std::uint16_t>(data[0]) |
@@ -89,12 +106,10 @@ bool encode_control_frame(
         return false;
     }
 
-    std::uint16_t checksum = 0;
-    for (std::size_t index = 2; index < 10; ++index) {
-        checksum = static_cast<std::uint16_t>(checksum + (*frame)[index]);
-    }
-    (*frame)[10] = static_cast<std::uint8_t>(checksum & 0xFFu);
-    (*frame)[11] = static_cast<std::uint8_t>((checksum >> 8u) & 0xFFu);
+    const std::uint16_t crc =
+        calculate_crc16_ccitt_false(frame->data() + 2, 8);
+    (*frame)[10] = static_cast<std::uint8_t>(crc & 0xFFu);
+    (*frame)[11] = static_cast<std::uint8_t>((crc >> 8u) & 0xFFu);
     (*frame)[12] = 0x0D;
     (*frame)[13] = 0x0A;
     if (error != nullptr) {
@@ -105,19 +120,7 @@ bool encode_control_frame(
 
 std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept {
-    std::uint16_t crc = 0xFFFFu;
-    for (std::size_t index = 2; index < 16; ++index) {
-        crc = static_cast<std::uint16_t>(
-            crc ^ (static_cast<std::uint16_t>(frame[index]) << 8u));
-        for (int bit = 0; bit < 8; ++bit) {
-            if ((crc & 0x8000u) != 0) {
-                crc = static_cast<std::uint16_t>((crc << 1u) ^ 0x1021u);
-            } else {
-                crc = static_cast<std::uint16_t>(crc << 1u);
-            }
-        }
-    }
-    return crc;
+    return calculate_crc16_ccitt_false(frame.data() + 2, 14);
 }
 
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,

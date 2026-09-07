@@ -7,6 +7,7 @@ namespace {
 
 constexpr double kEpsilon = 1e-12;
 constexpr double kRotationTolerance = 1e-6;
+constexpr double kMaximumCommandOverload = 1.0;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
 
@@ -409,11 +410,11 @@ PngGuidanceOutput PngGuidance::calculate(
     const double cos_theta =
         std::hypot(dart_velocity.x, dart_velocity.z) / speed;
     const double speed_over_gravity = speed / config.gravity;
-    const double vertical_overload =
+    double vertical_overload =
         config.navigation_constant_y * angular_velocity.q_y *
             speed_over_gravity +
         cos_theta;
-    const double lateral_overload =
+    double lateral_overload =
         -config.navigation_constant_z * angular_velocity.q_z *
         speed_over_gravity * cos_theta;
     if (!is_finite(cos_theta) || !is_finite(vertical_overload) ||
@@ -421,8 +422,20 @@ PngGuidanceOutput PngGuidance::calculate(
         return invalid_output;
     }
 
-    const double command_overload =
+    double command_overload =
         std::hypot(vertical_overload, lateral_overload);
+    if (!is_finite(command_overload)) {
+        return invalid_output;
+    }
+
+    if (command_overload > kMaximumCommandOverload) {
+        // 对导航系 Y/Z 合成指令限幅，保持指令方向不变。
+        const double scale = kMaximumCommandOverload / command_overload;
+        vertical_overload *= scale;
+        lateral_overload *= scale;
+        command_overload = std::hypot(vertical_overload, lateral_overload);
+    }
+
     const double command_phase =
         std::atan2(lateral_overload, vertical_overload);
     if (!is_finite(command_overload) || !is_finite(command_phase)) {
