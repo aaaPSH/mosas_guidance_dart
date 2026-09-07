@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <iostream>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -73,6 +75,63 @@ std::string format_source_error(const char* source_name,
     return message;
 }
 
+const char* flight_phase_name(FlightPhase phase) noexcept {
+    switch (phase) {
+        case FlightPhase::pre_launch:
+            return "pre_launch";
+        case FlightPhase::ejection:
+            return "ejection";
+        case FlightPhase::free_flight:
+            return "free_flight";
+    }
+    return "unknown";
+}
+
+const char* vision_debug_stage_name(VisionDebugStage stage) noexcept {
+    switch (stage) {
+        case VisionDebugStage::not_processed:
+            return "not_processed";
+        case VisionDebugStage::invalid_frame:
+            return "invalid_frame";
+        case VisionDebugStage::invalid_roi:
+            return "invalid_roi";
+        case VisionDebugStage::mask_empty:
+            return "mask_empty";
+        case VisionDebugStage::candidate_rejected:
+            return "candidate_rejected";
+        case VisionDebugStage::found:
+            return "found";
+        case VisionDebugStage::processing_error:
+            return "processing_error";
+    }
+    return "unknown";
+}
+
+std::string format_imu_source_diagnostics(
+    const ImuSourceDiagnostics& diagnostics) {
+    if (!diagnostics.available) {
+        return "imu_source_diagnostics=unavailable";
+    }
+
+    std::ostringstream message;
+    message << "imu_source={pending_bytes=";
+    if (diagnostics.pending_bytes_valid) {
+        message << diagnostics.pending_bytes << ", pending_frames="
+                << diagnostics.pending_frame_count;
+    } else {
+        message << "N/A, pending_frames=N/A";
+    }
+    message << ", buffered_bytes=" << diagnostics.buffered_bytes
+            << ", latest_sample_timestamp_ns="
+            << diagnostics.latest_sample_timestamp_ns
+            << ", delivered_frames=" << diagnostics.delivered_sample_count
+            << ", timeout_count=" << diagnostics.timeout_count
+            << ", parse_error_count=" << diagnostics.parse_error_count
+            << ", backlog_event_count=" << diagnostics.backlog_event_count
+            << "}";
+    return message.str();
+}
+
 bool valid_detector_config(const FlightPhaseDetectorConfig& config) {
     return config.min_static_samples > 0 &&
            config.min_static_duration_ns >= 0 &&
@@ -119,11 +178,22 @@ GuidanceRuntime::GuidanceRuntime(
     std::unique_ptr<CameraSource> camera_source,
     std::unique_ptr<CommandSink> command_sink,
     const GuidanceRuntimeConfig& config, std::unique_ptr<FrameSink> frame_sink)
+    : GuidanceRuntime(std::move(imu_source), std::move(camera_source),
+                      std::move(command_sink), config, std::move(frame_sink),
+                      std::cerr) {}
+
+GuidanceRuntime::GuidanceRuntime(
+    std::unique_ptr<ImuSource> imu_source,
+    std::unique_ptr<CameraSource> camera_source,
+    std::unique_ptr<CommandSink> command_sink,
+    const GuidanceRuntimeConfig& config, std::unique_ptr<FrameSink> frame_sink,
+    std::ostream& output)
     : imu_source_(std::move(imu_source)),
       camera_source_(std::move(camera_source)),
       command_sink_(std::move(command_sink)),
       frame_sink_(std::move(frame_sink)),
       config_(config),
+      output_(&output),
       capture_queue_(config_.capture_queue_capacity),
       output_queue_(config_.output_queue_capacity),
       phase_detector_(config_.phase_detector),
@@ -323,9 +393,19 @@ void GuidanceRuntime::record_timing(
         accumulator->maximum_ns, static_cast<std::uint64_t>(duration_ns));
 }
 
+void GuidanceRuntime::log(const std::string& message) {
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    if (output_ != nullptr) {
+        *output_ << "[运行时] " << message << '\n';
+    }
+}
+
 void GuidanceRuntime::set_error(const std::string& message) {
-    std::lock_guard<std::mutex> lock(error_mutex_);
-    last_error_ = message;
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        last_error_ = message;
+    }
+    log("错误: " + message);
 }
 
 void GuidanceRuntime::set_fault(const std::string& message) {
@@ -361,17 +441,50 @@ void GuidanceRuntime::imu_worker() {
     bool has_previous_timestamp = false;
     TimestampNs previous_timestamp_ns = 0;
     TimestampNs previous_attitude_timestamp_ns = 0;
+    std::uint64_t timeout_count = 0;
+    bool timeout_active = false;
+    std::chrono::steady_clock::time_point next_timeout_log{};
     while (!stop_requested_.load()) {
         ImuSample sample{};
         const SourceResult source_result = imu_source_->read(&sample);
         switch (source_result.status) {
             case SourceStatus::ok:
+                if (timeout_active) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_timeout_log) {
+                        std::ostringstream message;
+                        message << "IMU 数据源读取已恢复: latest_sample_timestamp_ns="
+                                << sample.timestamp_ns << ", "
+                                << format_imu_source_diagnostics(
+                                       imu_source_->diagnostics());
+                        log(message.str());
+                        next_timeout_log = now + std::chrono::seconds(1);
+                    }
+                    timeout_active = false;
+                }
                 break;
-            case SourceStatus::timeout:
+            case SourceStatus::timeout: {
+                ++timeout_count;
+                timeout_active = true;
+                const auto now = std::chrono::steady_clock::now();
+                if (timeout_count == 1 || now >= next_timeout_log) {
+                    std::ostringstream message;
+                    message << "警告: IMU 读取超时(累计 " << timeout_count
+                            << " 次)";
+                    if (!source_result.message.empty()) {
+                        message << ": " << source_result.message;
+                    }
+                    message << ", "
+                            << format_imu_source_diagnostics(
+                                   imu_source_->diagnostics());
+                    log(message.str());
+                    next_timeout_log = now + std::chrono::seconds(1);
+                }
                 if (!stop_requested_.load()) {
                     std::this_thread::yield();
                 }
                 continue;
+            }
             case SourceStatus::cancelled:
                 if (stop_requested_.load()) {
                     return;
@@ -528,6 +641,27 @@ void GuidanceRuntime::processing_worker() {
         LineOfSightRateEstimator rate_estimator(config_.los_rate_filter);
         bool has_frame_timestamp = false;
         TimestampNs previous_frame_timestamp_ns = 0;
+        std::uint64_t imu_match_failure_count = 0;
+        bool imu_match_failure_active = false;
+        std::chrono::steady_clock::time_point next_imu_match_log{};
+        std::uint64_t output_diagnostic_count = 0;
+        std::chrono::steady_clock::time_point next_output_diagnostic_log{};
+
+        const auto log_output_diagnostic =
+            [this, &output_diagnostic_count, &next_output_diagnostic_log](
+                const std::string& reason, const std::string& details) {
+                ++output_diagnostic_count;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next_output_diagnostic_log) {
+                    std::ostringstream message;
+                    message << "警告: 视觉/引导输出存在 N/A(累计 "
+                            << output_diagnostic_count << " 次): 原因="
+                            << reason << ", " << details;
+                    log(message.str());
+                    next_output_diagnostic_log = now +
+                                                  std::chrono::seconds(1);
+                }
+            };
 
         const auto enqueue_result = [this](ProcessedFrame result) {
             if (frame_sink_ == nullptr) {
@@ -584,6 +718,11 @@ void GuidanceRuntime::processing_worker() {
 
             if ((has_frame_timestamp &&
                  timestamp_ns <= previous_frame_timestamp_ns)) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", previous_camera_timestamp_ns="
+                        << previous_frame_timestamp_ns;
+                log_output_diagnostic("相机帧时间戳不递增", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -594,14 +733,88 @@ void GuidanceRuntime::processing_worker() {
             }
 
             const auto state = state_history_.find_at_or_before(timestamp_ns);
-            if (!state.has_value() ||
-                timestamp_ns - state->timestamp_ns > config_.max_imu_age_ns ||
-                state->phase != FlightPhase::free_flight) {
+            const auto state_age_ns =
+                state.has_value() && timestamp_ns >= state->timestamp_ns
+                    ? timestamp_ns - state->timestamp_ns
+                    : 0;
+            const bool state_is_too_old =
+                state.has_value() && state_age_ns > config_.max_imu_age_ns;
+            const bool state_is_wrong_phase =
+                state.has_value() && state->phase != FlightPhase::free_flight;
+            if (!state.has_value() || state_is_too_old ||
+                state_is_wrong_phase) {
+                const auto latest = latest_state();
+                std::string reason;
+                if (!state.has_value()) {
+                    if (!latest.has_value()) {
+                        reason = "IMU 状态历史为空";
+                    } else if (latest->timestamp_ns > timestamp_ns) {
+                        reason = "没有不晚于相机时间戳的 IMU 状态";
+                    } else {
+                        reason = "IMU 状态历史中没有可匹配状态";
+                    }
+                } else if (state_is_too_old) {
+                    reason = "IMU 状态过旧";
+                    if (state_is_wrong_phase) {
+                        reason += "且 phase=";
+                        reason += flight_phase_name(state->phase);
+                        reason += "（需要 free_flight）";
+                    }
+                } else {
+                    reason = std::string("IMU 状态 phase=") +
+                             flight_phase_name(state->phase) +
+                             "，需要 free_flight";
+                }
+
+                ++imu_match_failure_count;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next_imu_match_log) {
+                    std::ostringstream message;
+                    message << "警告: 相机帧无法匹配可用 IMU 状态(累计 "
+                            << imu_match_failure_count << " 次): 原因="
+                            << reason << ", camera_timestamp_ns="
+                            << timestamp_ns;
+                    if (state.has_value()) {
+                        message << ", selected_imu_timestamp_ns="
+                                << state->timestamp_ns << ", imu_age_ms="
+                                << static_cast<double>(state_age_ns) / 1e6;
+                    } else if (latest.has_value()) {
+                        message << ", latest_imu_timestamp_ns="
+                                << latest->timestamp_ns;
+                    } else {
+                        message << ", latest_imu_timestamp_ns=N/A";
+                    }
+                    message << ", max_imu_age_ms="
+                            << static_cast<double>(config_.max_imu_age_ns) /
+                                   1e6
+                            << ", history_size=" << state_history_.size()
+                            << ", "
+                            << format_imu_source_diagnostics(
+                                   imu_source_->diagnostics())
+                            << "；视觉/引导 overlay 将保持 N/A";
+                    log(message.str());
+                    next_imu_match_log = now + std::chrono::seconds(1);
+                }
+                imu_match_failure_active = true;
                 if (!enqueue_processed_frame()) {
                     return;
                 }
                 result = ProcessedFrame{};
                 continue;
+            }
+
+            if (imu_match_failure_active) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next_imu_match_log) {
+                    std::ostringstream message;
+                    message << "IMU 状态匹配已恢复: camera_timestamp_ns="
+                            << timestamp_ns << ", imu_timestamp_ns="
+                            << state->timestamp_ns << ", imu_age_ms="
+                            << static_cast<double>(state_age_ns) / 1e6;
+                    log(message.str());
+                    next_imu_match_log = now + std::chrono::seconds(1);
+                }
+                imu_match_failure_active = false;
             }
 
             result.imu_state = *state;
@@ -619,6 +832,18 @@ void GuidanceRuntime::processing_worker() {
             record_timing(TimingStage::vision,
                           std::chrono::steady_clock::now() - vision_started);
             if (!result.vision_result.found) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", debug_stage="
+                        << vision_debug_stage_name(
+                               result.vision_result.debug_stage)
+                        << ", mask_pixel_count="
+                        << result.vision_result.mask_pixel_count
+                        << ", component_count="
+                        << result.vision_result.component_count
+                        << ", candidate_count="
+                        << result.vision_result.candidate_count;
+                log_output_diagnostic("视觉未找到目标", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -637,6 +862,12 @@ void GuidanceRuntime::processing_worker() {
                 TimingStage::line_of_sight,
                 std::chrono::steady_clock::now() - line_of_sight_started);
             if (!line_of_sight.valid) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", vision_debug_stage="
+                        << vision_debug_stage_name(
+                               result.vision_result.debug_stage);
+                log_output_diagnostic("视线角计算无效", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -651,7 +882,15 @@ void GuidanceRuntime::processing_worker() {
 
             if (!has_frame_timestamp) {
                 rate_estimator.reset();
-                rate_estimator.update(line_of_sight, 1.0);
+                const LineOfSightAngularVelocity initial_angular_velocity =
+                    rate_estimator.update(line_of_sight, 1.0);
+                if (!initial_angular_velocity.valid) {
+                    std::ostringstream details;
+                    details << "camera_timestamp_ns=" << timestamp_ns
+                            << ", dt_seconds=1.0";
+                    log_output_diagnostic("首帧视线角速度暂不可用",
+                                          details.str());
+                }
                 previous_frame_timestamp_ns = timestamp_ns;
                 has_frame_timestamp = true;
                 if (!enqueue_processed_frame()) {
@@ -661,12 +900,19 @@ void GuidanceRuntime::processing_worker() {
                 continue;
             }
 
+            const TimestampNs previous_timestamp_ns =
+                previous_frame_timestamp_ns;
             const double dt_seconds = static_cast<double>(
                                           timestamp_ns -
-                                          previous_frame_timestamp_ns) *
+                                          previous_timestamp_ns) *
                                       1e-9;
-            previous_frame_timestamp_ns = timestamp_ns;
             if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", previous_camera_timestamp_ns="
+                        << previous_timestamp_ns
+                        << ", dt_seconds=" << dt_seconds;
+                log_output_diagnostic("视线角速度时间步长无效", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -675,10 +921,15 @@ void GuidanceRuntime::processing_worker() {
                 result = ProcessedFrame{};
                 continue;
             }
+            previous_frame_timestamp_ns = timestamp_ns;
 
             const LineOfSightAngularVelocity angular_velocity =
                 rate_estimator.update(line_of_sight, dt_seconds);
             if (!angular_velocity.valid) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", dt_seconds=" << dt_seconds;
+                log_output_diagnostic("视线角速度暂不可用", details.str());
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -695,6 +946,14 @@ void GuidanceRuntime::processing_worker() {
                 state->attitude, config_.png_guidance);
             record_timing(TimingStage::guidance,
                           std::chrono::steady_clock::now() - guidance_started);
+            if (!result.guidance.valid) {
+                std::ostringstream details;
+                details << "camera_timestamp_ns=" << timestamp_ns
+                        << ", imu_timestamp_ns=" << state->timestamp_ns
+                        << ", imu_age_ms="
+                        << static_cast<double>(state_age_ns) / 1e6;
+                log_output_diagnostic("PNG 引导输出无效", details.str());
+            }
             if (result.guidance.valid && !faulted_.load() &&
                 !stop_requested_.load()) {
                 result.overlay.body_overload_valid = true;

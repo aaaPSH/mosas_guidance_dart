@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <iosfwd>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -71,6 +72,12 @@ public:
                     std::unique_ptr<CommandSink> command_sink,
                     const GuidanceRuntimeConfig& config,
                     std::unique_ptr<FrameSink> frame_sink = nullptr);
+    GuidanceRuntime(std::unique_ptr<ImuSource> imu_source,
+                    std::unique_ptr<CameraSource> camera_source,
+                    std::unique_ptr<CommandSink> command_sink,
+                    const GuidanceRuntimeConfig& config,
+                    std::unique_ptr<FrameSink> frame_sink,
+                    std::ostream& output);
     ~GuidanceRuntime();
 
     GuidanceRuntime(const GuidanceRuntime&) = delete;
@@ -119,6 +126,7 @@ private:
 
     void record_timing(TimingStage stage,
                        std::chrono::steady_clock::duration duration) noexcept;
+    void log(const std::string& message);
     void set_error(const std::string& message);
     void set_fault(const std::string& message);
     void cancel_sources() noexcept;
@@ -128,6 +136,7 @@ private:
     std::unique_ptr<CommandSink> command_sink_;
     std::unique_ptr<FrameSink> frame_sink_;
     GuidanceRuntimeConfig config_;
+    std::ostream* output_ = nullptr;
     LatestFrameQueue<CameraFrame> capture_queue_;
     LatestFrameQueue<ProcessedFrame> output_queue_;
     FlightPhaseDetector phase_detector_;
@@ -159,6 +168,7 @@ private:
     TimingAccumulator output_timing_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
+    mutable std::mutex log_mutex_;
 };
 
 }  // namespace mosas::runtime

@@ -4,6 +4,8 @@
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/vision/vision_types.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace mosas::runtime {
@@ -18,6 +20,20 @@ enum class SourceStatus {
 struct SourceResult {
     SourceStatus status = SourceStatus::fatal;
     std::string message;
+};
+
+// IMU 数据源的可选接收诊断快照；不可提供该信息的数据源返回 available=false。
+struct ImuSourceDiagnostics {
+    bool available = false;
+    TimestampNs latest_sample_timestamp_ns = -1;
+    bool pending_bytes_valid = false;
+    std::size_t pending_bytes = 0;
+    std::size_t pending_frame_count = 0;
+    std::size_t buffered_bytes = 0;
+    std::uint64_t delivered_sample_count = 0;
+    std::uint64_t timeout_count = 0;
+    std::uint64_t parse_error_count = 0;
+    std::uint64_t backlog_event_count = 0;
 };
 
 inline const char* source_status_name(SourceStatus status) noexcept {
@@ -40,6 +56,9 @@ public:
 
     virtual SourceResult read(ImuSample* sample) = 0;
     virtual void cancel() noexcept = 0;
+
+    // 返回线程安全的接收诊断；通用或模拟数据源默认不提供该信息。
+    virtual ImuSourceDiagnostics diagnostics() const noexcept { return {}; }
 };
 
 enum class CameraCaptureMode {
