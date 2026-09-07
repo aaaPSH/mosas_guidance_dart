@@ -93,6 +93,10 @@ private:
     std::uint64_t discarded_noise_count_ = 0;
     bool startup_reported_ = false;
     bool backlog_active_ = false;
+    bool backlog_warned_ = false;
+    std::size_t backlog_consecutive_observations_ = 0;
+    std::size_t backlog_max_pending_bytes_ = 0;
+    Clock::time_point backlog_started_at_{};
     Clock::time_point next_backlog_log_{};
     Clock::time_point next_timeout_log_{};
     mutable std::mutex log_mutex_;
