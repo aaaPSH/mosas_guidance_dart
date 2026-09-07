@@ -157,13 +157,21 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
     if (!startup_reported_) {
         const ssize_t startup_bytes = port_->input_bytes_available();
         if (startup_bytes < 0) {
+            invalidate_pending_bytes();
             return fatal_result("查询启动时串口输入队列失败: " +
                                 port_error_or(*port_, "未知串口错误"));
         }
+        remember_pending_bytes(static_cast<std::size_t>(startup_bytes));
         startup_reported_ = true;
         std::ostringstream message;
         message << "启动输入队列有 " << startup_bytes
-                << " 字节；若发现启动积压，将清理旧数据并等待新 IMU 帧";
+                << " 字节（完整帧 "
+                << static_cast<std::size_t>(startup_bytes) /
+                       serial_package::kImuFrameSize
+                << "，余 "
+                << static_cast<std::size_t>(startup_bytes) %
+                       serial_package::kImuFrameSize
+                << "）；若发现启动积压，将清理旧数据并等待新 IMU 帧";
         log(message.str());
     }
 
@@ -179,12 +187,13 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             if (!serial_package::decode_imu_frame(
                     raw_buffer_.data(), serial_package::kImuFrameSize, &values,
                     &decode_error)) {
-                ++parse_error_count_;
+                const auto parse_error_count =
+                    parse_error_count_.fetch_add(1) + 1;
                 had_parse_error = true;
-                if (parse_error_count_ == 1 ||
-                    parse_error_count_ % 100 == 0) {
+                if (parse_error_count == 1 ||
+                    parse_error_count % 100 == 0) {
                     std::ostringstream message;
-                    message << "候选帧解析失败(累计 " << parse_error_count_
+                    message << "候选帧解析失败(累计 " << parse_error_count
                             << " 次): " << decode_error << ", data="
                             << hex_dump(raw_buffer_.data(),
                                         serial_package::kImuFrameSize);
@@ -196,18 +205,27 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
 
             // 当前读取调用只交付这一帧，后续完整帧留给下一次读取。
             buffered_size_ = 0;
+            buffered_bytes_.store(0);
             const ssize_t pending_bytes = port_->input_bytes_available();
             if (pending_bytes < 0) {
+                invalidate_pending_bytes();
                 return fatal_result("查询串口输入积压失败: " +
                                     port_error_or(*port_, "未知串口错误"));
             }
+            const auto pending_bytes_value =
+                static_cast<std::size_t>(pending_bytes);
+            remember_pending_bytes(pending_bytes_value);
+            const auto pending_frame_count =
+                pending_bytes_value / serial_package::kImuFrameSize;
             if (!has_timestamp_ &&
-                pending_bytes >=
-                    static_cast<ssize_t>(serial_package::kImuFrameSize)) {
+                pending_frame_count != 0) {
                 remember_initialization_g(values.initialization_g_raw);
                 std::ostringstream message;
                 message << "检测到启动阶段串口输入积压 " << pending_bytes
-                        << " 字节，清理旧数据并等待新的 IMU 帧";
+                        << " 字节（完整帧 " << pending_frame_count
+                        << "，余 "
+                        << pending_bytes_value % serial_package::kImuFrameSize
+                        << "），清理旧数据并等待新的 IMU 帧";
                 log(message.str());
                 if (!port_->flush_input()) {
                     return fatal_result("清理启动阶段串口输入队列失败: " +
@@ -215,12 +233,12 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                 }
                 // 当前候选帧已经被消费，但它属于启动旧数据。
                 buffered_size_ = 0;
+                buffered_bytes_.store(0);
+                remember_pending_bytes(0);
                 continue;
             }
 
-            const auto pending_frame_count =
-                static_cast<std::size_t>(pending_bytes) /
-                serial_package::kImuFrameSize;
+            report_runtime_backlog(pending_bytes_value);
             const runtime::TimestampNs timestamp_ns = timestamp_for_frame(
                 steady_timestamp_ns(), pending_frame_count);
             runtime::TimestampNs interval_ns = 0;
@@ -261,6 +279,8 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             remember_initialization_g(values.initialization_g_raw);
             last_timestamp_ns_ = timestamp_ns;
             has_timestamp_ = true;
+            last_sample_timestamp_ns_.store(timestamp_ns);
+            delivered_sample_count_.fetch_add(1);
             if (had_parse_error) {
                 log("已从非法 IMU 帧中恢复并交付合法帧");
             }
@@ -287,6 +307,7 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             break;
         }
         buffered_size_ += static_cast<std::size_t>(count);
+        buffered_bytes_.store(buffered_size_);
     }
 
     if (cancelled_.load()) {
@@ -308,6 +329,22 @@ SerialImuSource::interval_statistics() const noexcept {
     return interval_statistics_;
 }
 
+runtime::ImuSourceDiagnostics SerialImuSource::diagnostics() const noexcept {
+    runtime::ImuSourceDiagnostics diagnostics;
+    diagnostics.available = true;
+    diagnostics.latest_sample_timestamp_ns = last_sample_timestamp_ns_.load();
+    diagnostics.pending_bytes_valid = pending_bytes_valid_.load();
+    diagnostics.pending_bytes = pending_bytes_.load();
+    diagnostics.pending_frame_count =
+        diagnostics.pending_bytes / serial_package::kImuFrameSize;
+    diagnostics.buffered_bytes = buffered_bytes_.load();
+    diagnostics.delivered_sample_count = delivered_sample_count_.load();
+    diagnostics.timeout_count = timeout_count_.load();
+    diagnostics.parse_error_count = parse_error_count_.load();
+    diagnostics.backlog_event_count = backlog_event_count_.load();
+    return diagnostics;
+}
+
 void SerialImuSource::remember_initialization_g(std::uint16_t raw_value) {
     if (raw_value == 0) {
         return;
@@ -321,6 +358,48 @@ void SerialImuSource::remember_initialization_g(std::uint16_t raw_value) {
                 << static_cast<unsigned int>(raw_value);
         log(message.str());
     }
+}
+
+void SerialImuSource::remember_pending_bytes(
+    std::size_t pending_bytes) noexcept {
+    pending_bytes_.store(pending_bytes);
+    pending_bytes_valid_.store(true);
+}
+
+void SerialImuSource::invalidate_pending_bytes() noexcept {
+    pending_bytes_valid_.store(false);
+}
+
+void SerialImuSource::report_runtime_backlog(std::size_t pending_bytes) {
+    const auto pending_frame_count =
+        pending_bytes / serial_package::kImuFrameSize;
+    const auto now = Clock::now();
+    if (pending_frame_count == 0) {
+        if (backlog_active_ && now >= next_backlog_log_) {
+            log("运行阶段串口输入积压已清空");
+            next_backlog_log_ = now + std::chrono::seconds(1);
+        }
+        if (backlog_active_) {
+            backlog_active_ = false;
+        }
+        return;
+    }
+
+    const auto event_count = backlog_event_count_.fetch_add(1) + 1;
+    if (now >= next_backlog_log_) {
+        std::ostringstream message;
+        message << "警告: 检测到运行阶段串口输入积压: pending_bytes="
+                << pending_bytes << ", pending_frames="
+                << pending_frame_count << ", remainder_bytes="
+                << pending_bytes % serial_package::kImuFrameSize
+                << ", expected_period_ns=" << period_.count()
+                << "，可能是下位机发送频率超过接收线程处理能力（包括发送超频）、"
+                   "串口波特率不足或线程调度延迟"
+                << "（累计观测 " << event_count << " 次）";
+        log(message.str());
+        next_backlog_log_ = now + std::chrono::seconds(1);
+    }
+    backlog_active_ = true;
 }
 
 runtime::TimestampNs SerialImuSource::timestamp_for_frame(
@@ -386,6 +465,7 @@ void SerialImuSource::discard_prefix(std::size_t count,
         std::memmove(raw_buffer_.data(), raw_buffer_.data() + count, remaining);
     }
     buffered_size_ = remaining;
+    buffered_bytes_.store(remaining);
 }
 
 void SerialImuSource::log(const std::string& message) {
@@ -415,11 +495,36 @@ int SerialImuSource::remaining_timeout_ms(Clock::time_point deadline) const {
 }
 
 runtime::SourceResult SerialImuSource::timeout_result() {
-    ++timeout_count_;
-    if (timeout_count_ == 1 || timeout_count_ % 100 == 0) {
+    const ssize_t pending_bytes = port_->input_bytes_available();
+    if (pending_bytes >= 0) {
+        const auto pending_bytes_value =
+            static_cast<std::size_t>(pending_bytes);
+        remember_pending_bytes(pending_bytes_value);
+        if (has_timestamp_) {
+            report_runtime_backlog(pending_bytes_value);
+        }
+    } else {
+        invalidate_pending_bytes();
+    }
+
+    const auto timeout_count = timeout_count_.fetch_add(1) + 1;
+    const auto now = Clock::now();
+    if (timeout_count == 1 || now >= next_timeout_log_) {
         std::ostringstream message;
-        message << "IMU 读取 watchdog 超时(累计 " << timeout_count_ << " 次)";
+        message << "警告: IMU 读取 watchdog 超时(累计 " << timeout_count
+                << " 次), buffered_bytes=" << buffered_size_;
+        if (pending_bytes >= 0) {
+            const auto pending_bytes_value =
+                static_cast<std::size_t>(pending_bytes);
+            message << ", pending_bytes=" << pending_bytes_value
+                    << ", pending_frames="
+                    << pending_bytes_value / serial_package::kImuFrameSize;
+        } else {
+            message << ", pending_bytes=N/A（查询失败: "
+                    << port_error_or(*port_, "未知串口错误") << ")";
+        }
         log(message.str());
+        next_timeout_log_ = now + std::chrono::seconds(1);
     }
     return {runtime::SourceStatus::timeout, "IMU 读取超时"};
 }
