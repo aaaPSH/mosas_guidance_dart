@@ -42,6 +42,9 @@ std::string port_error_or(const serial_package::SerialPort& port,
     return error.empty() ? std::string(fallback) : error;
 }
 
+constexpr std::size_t kBacklogWarningConsecutiveObservations = 3;
+constexpr auto kBacklogWarningDuration = std::chrono::milliseconds(15);
+
 runtime::TimestampNs saturating_add(runtime::TimestampNs lhs,
                                     runtime::TimestampNs rhs) noexcept {
     const auto maximum = std::numeric_limits<runtime::TimestampNs>::max();
@@ -375,31 +378,81 @@ void SerialImuSource::report_runtime_backlog(std::size_t pending_bytes) {
         pending_bytes / serial_package::kImuFrameSize;
     const auto now = Clock::now();
     if (pending_frame_count == 0) {
-        if (backlog_active_ && now >= next_backlog_log_) {
-            log("运行阶段串口输入积压已清空");
-            next_backlog_log_ = now + std::chrono::seconds(1);
-        }
         if (backlog_active_) {
+            if (backlog_warned_) {
+                const auto backlog_duration_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - backlog_started_at_)
+                        .count();
+                std::ostringstream message;
+                message << "运行阶段串口输入积压已清空: max_pending_bytes="
+                        << backlog_max_pending_bytes_
+                        << ", max_pending_frames="
+                        << backlog_max_pending_bytes_ /
+                               serial_package::kImuFrameSize
+                        << ", backlog_duration_ms=" << backlog_duration_ms;
+                log(message.str());
+            }
             backlog_active_ = false;
+            backlog_warned_ = false;
+            backlog_consecutive_observations_ = 0;
+            backlog_max_pending_bytes_ = 0;
+            backlog_started_at_ = {};
+            next_backlog_log_ = {};
         }
         return;
     }
 
-    const auto event_count = backlog_event_count_.fetch_add(1) + 1;
-    if (now >= next_backlog_log_) {
+    if (!backlog_active_) {
+        backlog_active_ = true;
+        backlog_warned_ = false;
+        backlog_consecutive_observations_ = 0;
+        backlog_max_pending_bytes_ = 0;
+        backlog_started_at_ = now;
+        next_backlog_log_ = {};
+    }
+    ++backlog_consecutive_observations_;
+    backlog_max_pending_bytes_ =
+        std::max(backlog_max_pending_bytes_, pending_bytes);
+
+    const auto backlog_duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - backlog_started_at_)
+            .count();
+    const bool has_large_backlog = pending_frame_count >= 2;
+    const bool has_sustained_backlog =
+        backlog_consecutive_observations_ >=
+            kBacklogWarningConsecutiveObservations &&
+        now - backlog_started_at_ >= kBacklogWarningDuration;
+    if (!has_large_backlog && !has_sustained_backlog) {
+        return;
+    }
+
+    if (!backlog_warned_ || now >= next_backlog_log_) {
+        if (!backlog_warned_) {
+            backlog_event_count_.fetch_add(1);
+            backlog_warned_ = true;
+        }
         std::ostringstream message;
         message << "警告: 检测到运行阶段串口输入积压: pending_bytes="
                 << pending_bytes << ", pending_frames="
                 << pending_frame_count << ", remainder_bytes="
                 << pending_bytes % serial_package::kImuFrameSize
                 << ", expected_period_ns=" << period_.count()
+                << ", consecutive_observations="
+                << backlog_consecutive_observations_
+                << ", max_pending_bytes=" << backlog_max_pending_bytes_
+                << ", max_pending_frames="
+                << backlog_max_pending_bytes_ /
+                       serial_package::kImuFrameSize
+                << ", backlog_duration_ms=" << backlog_duration_ms
                 << "，可能是下位机发送频率超过接收线程处理能力（包括发送超频）、"
                    "串口波特率不足或线程调度延迟"
-                << "（累计观测 " << event_count << " 次）";
+                << "（累计告警事件 " << backlog_event_count_.load()
+                << " 次）";
         log(message.str());
         next_backlog_log_ = now + std::chrono::seconds(1);
     }
-    backlog_active_ = true;
 }
 
 runtime::TimestampNs SerialImuSource::timestamp_for_frame(
