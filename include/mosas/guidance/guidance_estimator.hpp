@@ -49,7 +49,7 @@ struct PngGuidanceOutput {
     Vector3 navigation_acceleration;
     Vector3 body_acceleration;
     Vector3 body_overload;
-    double command_overload;  // 导航系 y-z 平面指令过载 Γc，单位为 g。
+    double command_overload;  // 导航系 y-z 平面合成指令过载 Γc，单位为 g，最大为 1。
     double command_phase;     // 导航系 y-z 平面指令相位 φc，单位为弧度。
 };
 
