@@ -5,7 +5,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <utility>
 
 namespace mosas::app {
@@ -15,6 +17,18 @@ runtime::TimestampNs steady_timestamp_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
+}
+
+std::string hex_dump(const std::uint8_t* data, std::size_t size) {
+    std::ostringstream stream;
+    stream << std::hex << std::uppercase << std::setfill('0');
+    for (std::size_t index = 0; index < size; ++index) {
+        if (index != 0) {
+            stream << ' ';
+        }
+        stream << std::setw(2) << static_cast<unsigned int>(data[index]);
+    }
+    return stream.str();
 }
 
 }  // 匿名命名空间结束
@@ -107,6 +121,14 @@ bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
         return fail(port_error.empty() ? "控制帧发送失败" : port_error);
     }
 
+    if (output_ != nullptr) {
+        *output_ << "[INFO][串口][控制][发送] bytes="
+                 << hex_dump(frame.data(), frame.size())
+                 << " timestamp_ns=" << command.timestamp_ns
+                 << " roll_overload_g=" << values.roll_overload_g
+                 << " yaw_overload_g=" << values.yaw_overload_g
+                 << " pitch_overload_g=" << values.pitch_overload_g << '\n';
+    }
     last_error_.clear();
     return true;
 }

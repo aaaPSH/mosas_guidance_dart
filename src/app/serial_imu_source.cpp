@@ -206,6 +206,23 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
                 continue;
             }
 
+            std::ostringstream info;
+            info << "bytes="
+                 << hex_dump(raw_buffer_.data(),
+                             serial_package::kImuFrameSize)
+                 << " acceleration_mps2=(" << values.acceleration_x_mps2
+                 << "," << values.acceleration_y_mps2 << ","
+                 << values.acceleration_z_mps2 << ") angular_velocity_rad_s=("
+                 << values.angular_velocity_x_rad_s << ","
+                 << values.angular_velocity_y_rad_s << ","
+                 << values.angular_velocity_z_rad_s << ") g_bytes=0x"
+                 << std::hex << std::uppercase << std::setfill('0')
+                 << std::setw(4)
+                 << static_cast<unsigned int>(values.initialization_g_raw)
+                 << " crc=0x" << std::setw(4)
+                 << static_cast<unsigned int>(values.crc);
+            log_info(info.str());
+
             // 当前读取调用只交付这一帧，后续完整帧留给下一次读取。
             buffered_size_ = 0;
             buffered_bytes_.store(0);
@@ -525,6 +542,13 @@ void SerialImuSource::log(const std::string& message) {
     std::lock_guard<std::mutex> lock(log_mutex_);
     if (output_ != nullptr) {
         *output_ << "[串口接收] " << message << '\n';
+    }
+}
+
+void SerialImuSource::log_info(const std::string& message) {
+    std::lock_guard<std::mutex> lock(log_mutex_);
+    if (output_ != nullptr) {
+        *output_ << "[INFO][串口][IMU][接收] " << message << '\n';
     }
 }
 

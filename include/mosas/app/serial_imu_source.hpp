@@ -63,6 +63,7 @@ private:
         runtime::TimestampNs received_timestamp_ns,
         std::size_t pending_frame_count) const;
     void log(const std::string& message);
+    void log_info(const std::string& message);
     runtime::SourceResult fatal_result(const std::string& message);
     int remaining_timeout_ms(Clock::time_point deadline) const;
     runtime::SourceResult timeout_result();
