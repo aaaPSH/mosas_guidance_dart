@@ -30,6 +30,7 @@ public:
         const runtime::CameraCaptureConfig& config) override;
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;
     double capture_fps() const noexcept override;
+    std::uint64_t dropped_frame_count() const noexcept override;
     runtime::SourceResult prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
     void stop() noexcept override;
@@ -96,6 +97,7 @@ private:
     bool video_started_ = false;
     bool configured_ = false;
     std::atomic<double> sdk_capture_fps_{0.0};
+    std::atomic<std::uint64_t> dropped_frame_count_{0};
 
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex capture_mutex_;

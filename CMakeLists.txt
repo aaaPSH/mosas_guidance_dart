@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(mosas_guidance LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CTest)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 
@@ -182,6 +183,24 @@ configure_mosas_target(mosas_guidance_app)
 target_link_libraries(mosas_guidance_app PRIVATE mosas_app)
 if(MOSAS_BUILD_WIRELESS)
     target_compile_definitions(mosas_guidance_app PRIVATE MOSAS_APP_HAS_WIRELESS=1)
+endif()
+
+if(BUILD_TESTING AND EXISTS "${PROJECT_SOURCE_DIR}/tests/runtime_control_tests.cpp")
+    add_executable(mosas_runtime_tests
+        tests/runtime_control_tests.cpp
+    )
+    configure_mosas_target(mosas_runtime_tests)
+    target_compile_definitions(mosas_runtime_tests
+        PRIVATE MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(mosas_runtime_tests
+        PRIVATE
+            mosas_runtime
+            mosas_app
+            Threads::Threads
+            ${OpenCV_LIBS}
+    )
+    add_test(NAME mosas_runtime_tests COMMAND mosas_runtime_tests)
 endif()
 
 set(MOSAS_INSTALL_TARGETS

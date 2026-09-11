@@ -1,6 +1,7 @@
 #ifndef MOSAS_LATEST_FRAME_QUEUE_HPP
 #define MOSAS_LATEST_FRAME_QUEUE_HPP
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -30,6 +31,7 @@ public:
                 items_.pop_front();
             }
             items_.push_back(std::move(value));
+            high_water_mark_ = std::max(high_water_mark_, items_.size());
         }
         condition_.notify_one();
         return true;
@@ -65,6 +67,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         items_.clear();
         dropped_count_ = 0;
+        high_water_mark_ = 0;
         closed_ = false;
     }
 
@@ -73,12 +76,23 @@ public:
         return dropped_count_;
     }
 
+    std::size_t depth() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return items_.size();
+    }
+
+    std::size_t high_water_mark() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return high_water_mark_;
+    }
+
 private:
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     const std::size_t capacity_;
     std::deque<T> items_;
     std::size_t dropped_count_ = 0;
+    std::size_t high_water_mark_ = 0;
     bool closed_ = false;
 };
 

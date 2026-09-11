@@ -179,6 +179,16 @@ bool parse_timestamp_ms(const std::string& text, runtime::TimestampNs* value) {
     return true;
 }
 
+bool parse_nonnegative_timestamp_ms(const std::string& text,
+                                    runtime::TimestampNs* value) {
+    int parsed = 0;
+    if (!parse_int(text, &parsed) || parsed < 0) {
+        return false;
+    }
+    *value = static_cast<runtime::TimestampNs>(parsed) * 1'000'000;
+    return true;
+}
+
 bool parse_mode(const std::string& text, runtime::CameraCaptureMode* value) {
     if (text == "free_run") {
         *value = runtime::CameraCaptureMode::free_run;
@@ -347,6 +357,9 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "launch_speed_mps") return set_double(&config->guidance.launch_speed_mps) || invalid();
         if (key == "history_capacity") return set_size(&config->guidance.history_capacity) || invalid();
         if (key == "max_imu_age_ms") return parse_timestamp_ms(value, &config->guidance.max_imu_age_ns) || invalid();
+        if (key == "max_command_age_ms") return parse_nonnegative_timestamp_ms(value, &config->guidance.max_command_age_ns) || invalid();
+        if (key == "control_watchdog_timeout_ms") return parse_nonnegative_timestamp_ms(value, &config->guidance.control_watchdog_timeout_ns) || invalid();
+        if (key == "processing_deadline_ms") return parse_nonnegative_timestamp_ms(value, &config->guidance.processing_deadline_ns) || invalid();
         if (key == "capture_queue_capacity") return set_size(&config->guidance.capture_queue_capacity) || invalid();
         if (key == "output_queue_capacity") return set_size(&config->guidance.output_queue_capacity) || invalid();
         if (key == "initial_roi_x") return set_int(&config->guidance.vision_config.initial_roi.x) || invalid();
@@ -491,6 +504,9 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     if (config.guidance.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
+        config.guidance.max_command_age_ns < 0 ||
+        config.guidance.control_watchdog_timeout_ns < 0 ||
+        config.guidance.processing_deadline_ns < 0 ||
         config.guidance.capture_queue_capacity == 0 ||
         config.guidance.output_queue_capacity == 0 ||
         vision.initial_roi.width <= 0 || vision.initial_roi.height <= 0 ||

@@ -41,9 +41,13 @@ void print_usage(const char* program) {
 void print_timing_stage(
     const char* name,
     const mosas::runtime::GuidanceRuntimeTimingStage& stage) {
-    std::cout << "[TIMING] " << name << " samples=" << stage.samples
+    std::cout << "[TIMING] " << name << " count=" << stage.samples
               << " avg_ms=" << stage.average_ms
-              << " max_ms=" << stage.maximum_ms << '\n';
+              << " p95_ms=" << stage.p95_ms
+              << " p99_ms=" << stage.p99_ms
+              << " max_ms=" << stage.maximum_ms
+              << " deadline_miss_count=" << stage.deadline_miss_count
+              << '\n';
 }
 
 void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
@@ -55,6 +59,40 @@ void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
     print_timing_stage("command", timing.command);
     print_timing_stage("processing_total", timing.processing_total);
     print_timing_stage("output", timing.output);
+}
+
+void print_runtime_observability(
+    const mosas::runtime::GuidanceRuntimeStatistics& statistics,
+    const mosas::runtime::GuidanceRuntimeControlStatus& control_status) {
+    std::cout << "[RUNTIME] processing_queue_depth="
+              << statistics.processing_queue_depth
+              << " processing_queue_high_water_mark="
+              << statistics.processing_queue_high_water_mark
+              << " frame_drop_count=" << statistics.frame_drop_count
+              << " control_generated="
+              << statistics.control_command_generated_count
+              << " control_sent=" << statistics.control_command_sent_count
+              << " control_superseded="
+              << statistics.control_command_superseded_count
+              << " control_stale=" << statistics.stale_command_count
+              << " send_failure_count=" << statistics.send_failure_count
+              << '\n';
+    std::cout << "[CONTROL] state="
+              << mosas::runtime::control_watchdog_state_name(
+                     control_status.state)
+              << " last_generated_sequence="
+              << control_status.last_generated_sequence
+              << " last_sent_sequence=" << control_status.last_sent_sequence
+              << " last_generated_time_ns="
+              << control_status.last_generated_time_ns
+              << " last_sent_time_ns=" << control_status.last_sent_time_ns
+              << " consecutive_send_failures="
+              << control_status.consecutive_send_failures
+              << " consecutive_stale_commands="
+              << control_status.consecutive_stale_commands
+              << " last_stale_sequence=" << control_status.last_stale_sequence
+              << " last_stale_age_ns=" << control_status.last_stale_age_ns
+              << '\n';
 }
 
 void print_serial_imu_interval_statistics(
@@ -219,6 +257,8 @@ int main(int argc, char** argv) {
     }
     if (options.show_timing) {
         print_timing(runtime.timing());
+        print_runtime_observability(runtime.statistics(),
+                                     runtime.control_status());
     }
     return faulted ? 1 : 0;
 }

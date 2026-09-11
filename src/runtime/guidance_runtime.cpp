@@ -14,6 +14,12 @@
 namespace mosas::runtime {
 namespace {
 
+TimestampNs monotonic_now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 bool is_finite(double value) {
     return std::isfinite(value);
 }
@@ -209,6 +215,9 @@ bool GuidanceRuntime::validate_config() const {
            command_sink_ != nullptr && valid_detector_config(config_.phase_detector) &&
            is_finite(config_.launch_speed_mps) && config_.launch_speed_mps >= 0.0 &&
            config_.history_capacity > 0 && config_.max_imu_age_ns > 0 &&
+           config_.max_command_age_ns >= 0 &&
+           config_.control_watchdog_timeout_ns >= 0 &&
+           config_.processing_deadline_ns >= 0 &&
            valid_vision_config(config_.vision_config) &&
            is_finite(config_.camera_intrinsics) &&
            config_.camera_intrinsics.fx > 0.0 &&
@@ -245,6 +254,7 @@ bool GuidanceRuntime::start() {
     }
     capture_queue_.reset();
     output_queue_.reset();
+    control_mailbox_.reset();
     state_history_.clear();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -256,9 +266,33 @@ bool GuidanceRuntime::start() {
     }
     phase_detector_ = FlightPhaseDetector(config_.phase_detector);
     dart_condition_.reset();
+    capture_timing_.reset();
+    prepare_timing_.reset();
+    vision_timing_.reset();
+    line_of_sight_timing_.reset();
+    guidance_timing_.reset();
+    command_timing_.reset();
+    processing_total_timing_.reset();
+    output_timing_.reset();
+    control_command_generated_count_.store(0, std::memory_order_relaxed);
+    control_command_sent_count_.store(0, std::memory_order_relaxed);
+    stale_command_count_.store(0, std::memory_order_relaxed);
+    send_failure_count_.store(0, std::memory_order_relaxed);
+    control_watchdog_state_.store(ControlWatchdogState::no_command,
+                                  std::memory_order_relaxed);
+    last_generated_sequence_.store(0, std::memory_order_relaxed);
+    last_sent_sequence_.store(0, std::memory_order_relaxed);
+    last_generated_time_ns_.store(-1, std::memory_order_relaxed);
+    last_sent_time_ns_.store(-1, std::memory_order_relaxed);
+    consecutive_send_failures_.store(0, std::memory_order_relaxed);
+    consecutive_stale_commands_.store(0, std::memory_order_relaxed);
+    last_stale_sequence_.store(0, std::memory_order_relaxed);
+    last_stale_age_ns_.store(0, std::memory_order_relaxed);
 
     running_.store(true);
     try {
+        control_thread_ =
+            std::thread(&GuidanceRuntime::control_output_worker, this);
         imu_thread_ = std::thread(&GuidanceRuntime::imu_worker, this);
         capture_thread_ = std::thread(&GuidanceRuntime::capture_worker, this);
         processing_thread_ =
@@ -282,6 +316,7 @@ void GuidanceRuntime::stop() noexcept {
         frame_sink_->cancel();
     }
     cancel_sources();
+    control_mailbox_.close();
     if (capture_thread_.joinable()) {
         capture_thread_.join();
     }
@@ -295,6 +330,9 @@ void GuidanceRuntime::stop() noexcept {
     }
     if (processing_thread_.joinable()) {
         processing_thread_.join();
+    }
+    if (control_thread_.joinable()) {
+        control_thread_.join();
     }
     output_queue_.close();
     if (output_thread_.joinable()) {
@@ -329,26 +367,50 @@ GuidanceRuntimeStatistics GuidanceRuntime::statistics() const {
             capture_fps = source_capture_fps;
         }
     }
-    return {capture_fps, processing_fps_meter_.snapshot(),
-            output_fps_meter_.snapshot()};
+    const std::uint64_t runtime_queue_drop_count =
+        static_cast<std::uint64_t>(capture_queue_.dropped_count()) +
+        static_cast<std::uint64_t>(output_queue_.dropped_count());
+    const std::uint64_t camera_source_drop_count =
+        camera_source_ == nullptr ? 0 : camera_source_->dropped_frame_count();
+    return {capture_fps,
+            processing_fps_meter_.snapshot(),
+            output_fps_meter_.snapshot(),
+            capture_queue_.depth(),
+            capture_queue_.high_water_mark(),
+            camera_source_drop_count + runtime_queue_drop_count,
+            control_command_generated_count_.load(std::memory_order_relaxed),
+            control_command_sent_count_.load(std::memory_order_relaxed),
+            control_mailbox_.superseded_count(),
+            stale_command_count_.load(std::memory_order_relaxed),
+            send_failure_count_.load(std::memory_order_relaxed)};
 }
 
 GuidanceRuntimeTiming GuidanceRuntime::timing() const {
-    std::lock_guard<std::mutex> lock(timing_mutex_);
-    const auto to_stage = [](const TimingAccumulator& accumulator) {
-        if (accumulator.samples == 0) {
-            return GuidanceRuntimeTimingStage{};
-        }
-        return GuidanceRuntimeTimingStage{
-            accumulator.samples,
-            static_cast<double>(accumulator.total_ns) /
-                static_cast<double>(accumulator.samples) / 1e6,
-            static_cast<double>(accumulator.maximum_ns) / 1e6};
+    const auto to_stage = [](const RuntimeTimingAccumulator& accumulator) {
+        const auto snapshot = accumulator.snapshot();
+        return GuidanceRuntimeTimingStage{snapshot.samples,
+                                          snapshot.average_ms,
+                                          snapshot.p95_ms,
+                                          snapshot.p99_ms,
+                                          snapshot.maximum_ms,
+                                          snapshot.deadline_miss_count};
     };
     return {to_stage(capture_timing_), to_stage(prepare_timing_),
             to_stage(vision_timing_), to_stage(line_of_sight_timing_),
             to_stage(guidance_timing_), to_stage(command_timing_),
             to_stage(processing_total_timing_), to_stage(output_timing_)};
+}
+
+GuidanceRuntimeControlStatus GuidanceRuntime::control_status() const {
+    return {control_watchdog_state_.load(std::memory_order_acquire),
+            last_generated_sequence_.load(std::memory_order_relaxed),
+            last_sent_sequence_.load(std::memory_order_relaxed),
+            last_generated_time_ns_.load(std::memory_order_relaxed),
+            last_sent_time_ns_.load(std::memory_order_relaxed),
+            consecutive_send_failures_.load(std::memory_order_relaxed),
+            consecutive_stale_commands_.load(std::memory_order_relaxed),
+            last_stale_sequence_.load(std::memory_order_relaxed),
+            last_stale_age_ns_.load(std::memory_order_relaxed)};
 }
 
 void GuidanceRuntime::record_timing(
@@ -359,8 +421,7 @@ void GuidanceRuntime::record_timing(
         return;
     }
 
-    std::lock_guard<std::mutex> lock(timing_mutex_);
-    TimingAccumulator* accumulator = nullptr;
+    RuntimeTimingAccumulator* accumulator = nullptr;
     switch (stage) {
         case TimingStage::capture:
             accumulator = &capture_timing_;
@@ -387,10 +448,11 @@ void GuidanceRuntime::record_timing(
             accumulator = &output_timing_;
             break;
     }
-    ++accumulator->samples;
-    accumulator->total_ns += static_cast<std::uint64_t>(duration_ns);
-    accumulator->maximum_ns = std::max(
-        accumulator->maximum_ns, static_cast<std::uint64_t>(duration_ns));
+    const std::uint64_t deadline_ns =
+        stage == TimingStage::processing_total
+            ? static_cast<std::uint64_t>(config_.processing_deadline_ns)
+            : 0;
+    accumulator->record(static_cast<std::uint64_t>(duration_ns), deadline_ns);
 }
 
 void GuidanceRuntime::log(const std::string& message) {
@@ -419,6 +481,7 @@ void GuidanceRuntime::set_fault(const std::string& message) {
     cancel_sources();
     capture_queue_.close();
     output_queue_.close();
+    control_mailbox_.close();
 }
 
 void GuidanceRuntime::cancel_sources() noexcept {
@@ -646,6 +709,7 @@ void GuidanceRuntime::processing_worker() {
         std::chrono::steady_clock::time_point next_imu_match_log{};
         std::uint64_t output_diagnostic_count = 0;
         std::chrono::steady_clock::time_point next_output_diagnostic_log{};
+        std::uint64_t next_control_sequence = 0;
 
         const auto log_output_diagnostic =
             [this, &output_diagnostic_count, &next_output_diagnostic_log](
@@ -963,13 +1027,23 @@ void GuidanceRuntime::processing_worker() {
                     result.guidance.body_overload.y;
                 result.overlay.body_overload_z_g =
                     result.guidance.body_overload.z;
-                const auto command_started = std::chrono::steady_clock::now();
-                const bool sent =
-                    command_sink_->send({timestamp_ns, result.guidance});
-                record_timing(TimingStage::command,
-                              std::chrono::steady_clock::now() - command_started);
-                if (!sent) {
-                    set_fault("guidance command send failed");
+                const ControlCommand command{
+                    ++next_control_sequence,
+                    timestamp_ns,
+                    static_cast<float>(result.guidance.body_overload.y),
+                    static_cast<float>(result.guidance.body_overload.z),
+                    kControlCommandValid};
+                const TimestampNs generated_time_ns = monotonic_now_ns();
+                control_command_generated_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                last_generated_sequence_.store(command.sequence,
+                                               std::memory_order_relaxed);
+                last_generated_time_ns_.store(generated_time_ns,
+                                              std::memory_order_relaxed);
+                if (!control_mailbox_.submit(command)) {
+                    if (!stop_requested_.load()) {
+                        set_fault("control command mailbox submit failed");
+                    }
                     return;
                 }
             }
@@ -982,6 +1056,123 @@ void GuidanceRuntime::processing_worker() {
         set_fault(exception.what());
     } catch (...) {
         set_fault("unknown exception in processing worker");
+    }
+}
+
+void GuidanceRuntime::control_output_worker() {
+    try {
+        constexpr auto kMailboxPollPeriod = std::chrono::milliseconds(1);
+        while (!stop_requested_.load(std::memory_order_acquire)) {
+            const bool update_available =
+                control_mailbox_.wait_for_update(kMailboxPollPeriod);
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                break;
+            }
+
+            if (!update_available) {
+                if (config_.control_watchdog_timeout_ns > 0) {
+                    const TimestampNs now = monotonic_now_ns();
+                    const TimestampNs last_generated =
+                        last_generated_time_ns_.load(
+                            std::memory_order_relaxed);
+                    if (last_generated < 0 ||
+                        (now > last_generated &&
+                         now - last_generated >
+                             config_.control_watchdog_timeout_ns)) {
+                        control_watchdog_state_.store(
+                            ControlWatchdogState::no_command,
+                            std::memory_order_release);
+                    }
+                }
+                continue;
+            }
+
+            ControlCommand command{};
+            const auto receive_result =
+                control_mailbox_.receive_latest(&command);
+            if (receive_result == ControlMailbox::ReceiveResult::closed) {
+                break;
+            }
+            if (receive_result != ControlMailbox::ReceiveResult::command ||
+                stop_requested_.load(std::memory_order_acquire)) {
+                continue;
+            }
+
+            const TimestampNs now = monotonic_now_ns();
+            const TimestampNs age_ns =
+                command.timestamp_ns >= 0 && now > command.timestamp_ns
+                    ? now - command.timestamp_ns
+                    : 0;
+            if (config_.max_command_age_ns > 0 &&
+                age_ns > config_.max_command_age_ns) {
+                stale_command_count_.fetch_add(1, std::memory_order_relaxed);
+                last_stale_sequence_.store(command.sequence,
+                                           std::memory_order_relaxed);
+                last_stale_age_ns_.store(age_ns, std::memory_order_relaxed);
+                consecutive_stale_commands_.fetch_add(
+                    1, std::memory_order_relaxed);
+                control_watchdog_state_.store(
+                    ControlWatchdogState::stale_command,
+                    std::memory_order_release);
+                continue;
+            }
+
+            consecutive_stale_commands_.store(0, std::memory_order_relaxed);
+            const auto command_started = std::chrono::steady_clock::now();
+            const bool sent = command_sink_->send(command);
+            record_timing(TimingStage::command,
+                          std::chrono::steady_clock::now() - command_started);
+            if (!sent) {
+                send_failure_count_.fetch_add(1, std::memory_order_relaxed);
+                consecutive_send_failures_.fetch_add(
+                    1, std::memory_order_relaxed);
+                const bool device_connected =
+                    command_sink_->device_connected();
+                const auto state = device_connected
+                                       ? ControlWatchdogState::send_failure
+                                       : ControlWatchdogState::device_disconnected;
+                control_watchdog_state_.store(state,
+                                              std::memory_order_release);
+                std::string message = device_connected
+                                          ? "guidance command send failed"
+                                          : "control device disconnected";
+                const std::string sink_error = command_sink_->last_error();
+                if (!sink_error.empty()) {
+                    message += ": ";
+                    message += sink_error;
+                }
+                set_fault(message);
+                return;
+            }
+
+            control_command_sent_count_.fetch_add(1,
+                                                  std::memory_order_relaxed);
+            last_sent_sequence_.store(command.sequence,
+                                      std::memory_order_relaxed);
+            last_sent_time_ns_.store(monotonic_now_ns(),
+                                     std::memory_order_relaxed);
+            consecutive_send_failures_.store(0, std::memory_order_relaxed);
+            control_watchdog_state_.store(ControlWatchdogState::healthy,
+                                          std::memory_order_release);
+        }
+
+        if (!faulted_.load(std::memory_order_acquire)) {
+            const auto state =
+                control_watchdog_state_.load(std::memory_order_acquire);
+            if (state == ControlWatchdogState::no_command ||
+                state == ControlWatchdogState::healthy) {
+                control_watchdog_state_.store(ControlWatchdogState::shutdown,
+                                              std::memory_order_release);
+            }
+        }
+    } catch (const std::exception& exception) {
+        control_watchdog_state_.store(ControlWatchdogState::send_failure,
+                                      std::memory_order_release);
+        set_fault(exception.what());
+    } catch (...) {
+        control_watchdog_state_.store(ControlWatchdogState::send_failure,
+                                      std::memory_order_release);
+        set_fault("unknown exception in control output worker");
     }
 }
 

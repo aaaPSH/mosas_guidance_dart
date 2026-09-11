@@ -1,6 +1,7 @@
 #ifndef MOSAS_RUNTIME_INTERFACES_HPP
 #define MOSAS_RUNTIME_INTERFACES_HPP
 
+#include <mosas/runtime/control_command.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/vision/vision_types.hpp>
 
@@ -80,6 +81,9 @@ public:
     // 返回相机源报告的采集帧率；没有源报告时返回 0，运行时使用本地统计回退。
     virtual double capture_fps() const noexcept { return 0.0; }
 
+    // 返回相机源内部缓存丢弃的帧数；通用或模拟数据源默认不提供丢帧。
+    virtual std::uint64_t dropped_frame_count() const noexcept { return 0; }
+
     // 在处理线程完成颜色转换、缩放和去畸变等帧预处理。
     virtual SourceResult prepare(CameraFrame* frame) {
         if (frame == nullptr || frame->image.empty() ||
@@ -99,7 +103,28 @@ class CommandSink {
 public:
     virtual ~CommandSink() = default;
 
-    virtual bool send(const GuidanceCommand& command) = 0;
+    // This interface is for continuous control setpoints only. Reliable
+    // one-shot events need a separate bounded event channel.
+    virtual bool send(const ControlCommand& command) = 0;
+
+    // The runtime uses this only to distinguish an unavailable device from a
+    // generic send failure. The default is appropriate for non-device sinks.
+    virtual bool device_connected() const noexcept { return true; }
+
+    virtual std::string last_error() const { return {}; }
+
+    // The lower-level protocol must define safe behavior. The current runtime
+    // intentionally does not assume that a zero command is safe or send one.
+    enum class SafeCommandPolicy {
+        not_defined,
+        sink_defined,
+    };
+
+    virtual SafeCommandPolicy safe_command_policy() const noexcept {
+        return SafeCommandPolicy::not_defined;
+    }
+
+    virtual bool send_safe_command() { return false; }
 };
 
 class FrameSink {

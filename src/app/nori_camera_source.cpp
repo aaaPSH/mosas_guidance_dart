@@ -100,6 +100,7 @@ runtime::SourceResult NoriSdkCameraSource::configure(
     }
     set_error("");
     sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
+    dropped_frame_count_.store(0, std::memory_order_relaxed);
 
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
@@ -477,6 +478,10 @@ double NoriSdkCameraSource::capture_fps() const noexcept {
     return sdk_capture_fps_.load(std::memory_order_relaxed);
 }
 
+std::uint64_t NoriSdkCameraSource::dropped_frame_count() const noexcept {
+    return dropped_frame_count_.load(std::memory_order_relaxed);
+}
+
 runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
     if (frame == nullptr || frame->image.empty() ||
         frame->image.type() != CV_8UC3) {
@@ -689,6 +694,7 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
         }
         if (pending_frames_.size() >= config_.callback_queue_capacity) {
             pending_frames_.pop_front();
+            dropped_frame_count_.fetch_add(1, std::memory_order_relaxed);
         }
         pending_frames_.push_back(std::move(pending));
     }

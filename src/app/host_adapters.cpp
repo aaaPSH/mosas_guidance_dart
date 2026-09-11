@@ -78,14 +78,15 @@ LoggingCommandSink::LoggingCommandSink() : output_(&std::cout) {}
 
 LoggingCommandSink::LoggingCommandSink(std::ostream& output) : output_(&output) {}
 
-bool LoggingCommandSink::send(const runtime::GuidanceCommand& command) {
+bool LoggingCommandSink::send(const runtime::ControlCommand& command) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (output_ == nullptr) {
         return false;
     }
-    *output_ << "[日志] timestamp_ns=" << command.timestamp_ns
-             << " valid=" << (command.output.valid ? "true" : "false")
-             << " command_overload=" << command.output.command_overload << '\n';
+    *output_ << "[日志] sequence=" << command.sequence
+             << " timestamp_ns=" << command.timestamp_ns
+             << " overload_y=" << command.overload_y
+             << " overload_z=" << command.overload_z << '\n';
     return static_cast<bool>(*output_);
 }
 
@@ -97,7 +98,7 @@ SerialCommandSink::SerialCommandSink(
     std::shared_ptr<serial_package::SerialPort> port, std::ostream& output)
     : port_(std::move(port)), output_(&output) {}
 
-bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
+bool SerialCommandSink::send(const runtime::ControlCommand& command) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (port_ == nullptr) {
         return fail("串口对象为空");
@@ -110,8 +111,8 @@ bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
     std::string error;
     const serial_package::ControlFrameValues values{
         0.0,
-        command.output.body_overload.z,
-        command.output.body_overload.y,
+        static_cast<double>(command.overload_z),
+        static_cast<double>(command.overload_y),
     };
     if (!serial_package::encode_control_frame(values, &frame, &error)) {
         return fail(error.empty() ? "控制帧编码失败" : error);
@@ -124,6 +125,7 @@ bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
     if (output_ != nullptr) {
         *output_ << "[INFO][串口][控制][发送] bytes="
                  << hex_dump(frame.data(), frame.size())
+                 << " sequence=" << command.sequence
                  << " timestamp_ns=" << command.timestamp_ns
                  << " roll_overload_g=" << values.roll_overload_g
                  << " yaw_overload_g=" << values.yaw_overload_g
@@ -131,6 +133,10 @@ bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
     }
     last_error_.clear();
     return true;
+}
+
+bool SerialCommandSink::device_connected() const noexcept {
+    return port_ != nullptr && port_->is_open();
 }
 
 std::string SerialCommandSink::last_error() const {

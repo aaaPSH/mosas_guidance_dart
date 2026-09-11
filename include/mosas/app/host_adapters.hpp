@@ -35,7 +35,7 @@ public:
     LoggingCommandSink();
     explicit LoggingCommandSink(std::ostream& output);
 
-    bool send(const runtime::GuidanceCommand& command) override;
+    bool send(const runtime::ControlCommand& command) override;
 
 private:
     std::ostream* output_;
@@ -49,9 +49,11 @@ public:
     SerialCommandSink(std::shared_ptr<serial_package::SerialPort> port,
                       std::ostream& output);
 
-    bool send(const runtime::GuidanceCommand& command) override;
+    bool send(const runtime::ControlCommand& command) override;
 
-    std::string last_error() const;
+    bool device_connected() const noexcept override;
+
+    std::string last_error() const override;
 
 private:
     bool fail(const std::string& message);
