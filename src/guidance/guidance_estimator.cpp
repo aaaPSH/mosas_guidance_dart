@@ -7,7 +7,6 @@ namespace {
 
 constexpr double kEpsilon = 1e-12;
 constexpr double kRotationTolerance = 1e-6;
-constexpr double kMaximumCommandOverload = 1.0;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
 
@@ -36,10 +35,18 @@ bool is_valid_rate_filter_config(const LineOfSightRateFilterConfig& config) {
 }
 
 bool is_valid_png_config(const PngGuidanceConfig& config) {
+    const bool maximum_acceleration_valid =
+        (is_finite(config.maximum_command_acceleration) &&
+         config.maximum_command_acceleration >= 0.0) ||
+        (std::isinf(config.maximum_command_acceleration) &&
+         config.maximum_command_acceleration > 0.0);
     return is_finite(config.navigation_constant_y) &&
            is_finite(config.navigation_constant_z) &&
            is_finite(config.gravity) && config.navigation_constant_y > 0.0 &&
-           config.navigation_constant_z > 0.0 && config.gravity > 0.0;
+           config.navigation_constant_z > 0.0 && config.gravity > 0.0 &&
+           is_finite(config.maximum_command_overload) &&
+           config.maximum_command_overload >= 0.0 &&
+           maximum_acceleration_valid;
 }
 
 double normalize_angle(double angle) {
@@ -114,6 +121,23 @@ Vector3 multiply(const RotationMatrix3& matrix, const Vector3& value) {
     };
 }
 
+Vector3 multiply_transpose(const RotationMatrix3& matrix,
+                           const Vector3& value) {
+    return {
+        matrix.m00 * value.x + matrix.m10 * value.y + matrix.m20 * value.z,
+        matrix.m01 * value.x + matrix.m11 * value.y + matrix.m21 * value.z,
+        matrix.m02 * value.x + matrix.m12 * value.y + matrix.m22 * value.z,
+    };
+}
+
+Vector3 cross_product(const Vector3& lhs, const Vector3& rhs) {
+    return {
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x,
+    };
+}
+
 RotationMatrix3 identity_rotation() {
     return {1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
@@ -133,6 +157,36 @@ RotationMatrix3 rotation_from_euler(const EulerAngles& angles) {
         cy * cp, -cy * sp * cr + sy * sr, cy * sp * sr + sy * cr,
         sp,      cp * cr,                 -cp * sr,
         -sy * cp, sy * sp * cr + cy * sr, -sy * sp * sr + cy * cr,
+    };
+}
+
+RotationMatrix3 ballistic_to_navigation_rotation(const Vector3& velocity) {
+    const double speed = vector_norm(velocity);
+    const double horizontal_speed = std::hypot(velocity.x, velocity.z);
+    const double cos_theta = horizontal_speed / speed;
+    const double sin_theta = velocity.y / speed;
+
+    // 航向角采用与 DartCondition 相同的约定：导航系 +z 为右侧，
+    // 绕导航系 +y 轴的正角度将弹道系 +x 轴转向导航系 -z 轴。
+    double cos_heading = 1.0;
+    double sin_heading = 0.0;
+    if (horizontal_speed >= kEpsilon) {
+        cos_heading = velocity.x / horizontal_speed;
+        sin_heading = -velocity.z / horizontal_speed;
+    }
+
+    // 由弹道系到导航系的旋转矩阵，弹道系 +x 沿速度方向，
+    // +y 位于速度和导航系竖直方向构成的平面内，+z 用右手系补齐。
+    return {
+        cos_heading * cos_theta,
+        -cos_heading * sin_theta,
+        sin_heading,
+        sin_theta,
+        cos_theta,
+        0.0,
+        -sin_heading * cos_theta,
+        sin_heading * sin_theta,
+        cos_heading,
     };
 }
 
@@ -406,17 +460,51 @@ PngGuidanceOutput PngGuidance::calculate(
         return invalid_output;
     }
 
+    // q_y/q_z 是导航系球面 LOS 角及其角速度。先求 LOS 单位向量导数，
+    // 再由 omega_LOS = u_LOS x u_dot_LOS 得到空间角速度，避免将导航系
+    // 球面角速度直接当成弹道系 Y/Z 量。
+    const double sin_elevation = std::sin(line_of_sight.q_y);
+    const double cos_elevation = std::cos(line_of_sight.q_y);
+    const double sin_azimuth = std::sin(line_of_sight.q_z);
+    const double cos_azimuth = std::cos(line_of_sight.q_z);
+    const Vector3 line_of_sight_unit{
+        cos_elevation * cos_azimuth,
+        sin_elevation,
+        cos_elevation * sin_azimuth,
+    };
+    const Vector3 line_of_sight_unit_rate{
+        -sin_elevation * cos_azimuth * angular_velocity.q_y -
+            cos_elevation * sin_azimuth * angular_velocity.q_z,
+        cos_elevation * angular_velocity.q_y,
+        -sin_elevation * sin_azimuth * angular_velocity.q_y +
+            cos_elevation * cos_azimuth * angular_velocity.q_z,
+    };
+    const Vector3 los_angular_velocity =
+        cross_product(line_of_sight_unit, line_of_sight_unit_rate);
+
     // theta 为飞镖速度矢量的弹道俯仰角，v 为速度模长。
     const double cos_theta =
         std::hypot(dart_velocity.x, dart_velocity.z) / speed;
     const double speed_over_gravity = speed / config.gravity;
+    const Vector3 velocity_unit{
+        dart_velocity.x / speed,
+        dart_velocity.y / speed,
+        dart_velocity.z / speed,
+    };
+    const Vector3 normal_acceleration_direction =
+        cross_product(los_angular_velocity, velocity_unit);
+    const RotationMatrix3 ballistic_to_navigation =
+        ballistic_to_navigation_rotation(dart_velocity);
+    const Vector3 ballistic_normal_direction = multiply_transpose(
+        ballistic_to_navigation, normal_acceleration_direction);
+
     double vertical_overload =
-        config.navigation_constant_y * angular_velocity.q_y *
+        config.navigation_constant_y * ballistic_normal_direction.y *
             speed_over_gravity +
         cos_theta;
     double lateral_overload =
-        -config.navigation_constant_z * angular_velocity.q_z *
-        speed_over_gravity * cos_theta;
+        config.navigation_constant_z * ballistic_normal_direction.z *
+        speed_over_gravity;
     if (!is_finite(cos_theta) || !is_finite(vertical_overload) ||
         !is_finite(lateral_overload)) {
         return invalid_output;
@@ -428,9 +516,10 @@ PngGuidanceOutput PngGuidance::calculate(
         return invalid_output;
     }
 
-    if (command_overload > kMaximumCommandOverload) {
-        // 对导航系 Y/Z 合成指令限幅，保持指令方向不变。
-        const double scale = kMaximumCommandOverload / command_overload;
+    if (command_overload > config.maximum_command_overload) {
+        // 对弹道系 Y/Z 合成指令限幅，保持指令方向不变。
+        const double scale =
+            config.maximum_command_overload / command_overload;
         vertical_overload *= scale;
         lateral_overload *= scale;
         command_overload = std::hypot(vertical_overload, lateral_overload);
@@ -442,28 +531,42 @@ PngGuidanceOutput PngGuidance::calculate(
         return invalid_output;
     }
 
-    // 二维解耦：纵向和横向通道分别生成导航系 y/z 过载，x 轴不产生指令。
-    const Vector3 navigation_acceleration{
+    // 二维解耦：纵向和横向通道先在弹道系 y/z 方向生成过载，x 轴不产生指令。
+    Vector3 ballistic_acceleration{
         0.0,
         config.gravity * vertical_overload,
         config.gravity * lateral_overload,
     };
+    if (!is_valid_vector(ballistic_acceleration)) {
+        return invalid_output;
+    }
+
+    Vector3 navigation_acceleration =
+        multiply(ballistic_to_navigation, ballistic_acceleration);
     if (!is_valid_vector(navigation_acceleration)) {
         return invalid_output;
     }
 
+    const double command_acceleration = vector_norm(navigation_acceleration);
+    if (!is_finite(command_acceleration)) {
+        return invalid_output;
+    }
+    if (is_finite(config.maximum_command_acceleration) &&
+        command_acceleration > config.maximum_command_acceleration) {
+        const double scale = config.maximum_command_acceleration /
+                             command_acceleration;
+        ballistic_acceleration.x *= scale;
+        ballistic_acceleration.y *= scale;
+        ballistic_acceleration.z *= scale;
+        navigation_acceleration.x *= scale;
+        navigation_acceleration.y *= scale;
+        navigation_acceleration.z *= scale;
+        command_overload *= scale;
+    }
+
     const RotationMatrix3 body_to_navigation = rotation_from_euler(attitude);
-    const Vector3 body_acceleration{
-        body_to_navigation.m00 * navigation_acceleration.x +
-            body_to_navigation.m10 * navigation_acceleration.y +
-            body_to_navigation.m20 * navigation_acceleration.z,
-        body_to_navigation.m01 * navigation_acceleration.x +
-            body_to_navigation.m11 * navigation_acceleration.y +
-            body_to_navigation.m21 * navigation_acceleration.z,
-        body_to_navigation.m02 * navigation_acceleration.x +
-            body_to_navigation.m12 * navigation_acceleration.y +
-            body_to_navigation.m22 * navigation_acceleration.z,
-    };
+    const Vector3 body_acceleration =
+        multiply_transpose(body_to_navigation, navigation_acceleration);
     if (!is_valid_vector(body_acceleration)) {
         return invalid_output;
     }

@@ -4,6 +4,8 @@
 #include <mosas/dart/dart_condition.hpp>
 #include <mosas/vision/vision_types.hpp>
 
+#include <limits>
+
 struct CameraIntrinsics {
     double fx;
     double fy;
@@ -36,21 +38,27 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²。
+// PNG 律参数。弹道系 Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²；
+// maximum_command_overload 是弹道系 Y/Z 合成过载上限（单位 g），
+// maximum_command_acceleration 是导航系指令加速度模长上限（单位 m/s²）。
 struct PngGuidanceConfig {
     double navigation_constant_y = 3.0;
     double navigation_constant_z = 3.0;
     double gravity = 9.80665;
+    double maximum_command_overload = 1.0;
+    double maximum_command_acceleration =
+        std::numeric_limits<double>::infinity();
 };
 
-// 二维解耦 PNG 律输出。加速度在导航系和弹体系中均保留，过载为弹体系分量除以重力加速度。
+// 二维解耦 PNG 律输出。过载先在弹道系计算，再转换到导航系和弹体系；
+// 输出保留转换后的加速度，过载为弹体系分量除以重力加速度。
 struct PngGuidanceOutput {
     bool valid;
     Vector3 navigation_acceleration;
     Vector3 body_acceleration;
     Vector3 body_overload;
-    double command_overload;  // 导航系 y-z 平面合成指令过载 Γc，单位为 g，最大为 1。
-    double command_phase;     // 导航系 y-z 平面指令相位 φc，单位为弧度。
+    double command_overload;  // 弹道系 y-z 平面合成指令过载 Γc，单位为 g。
+    double command_phase;     // 弹道系 y-z 平面指令相位 φc，单位为弧度。
 };
 
 // 保存一次视线估计的原始角度、未滤波角速度和最终输出，便于记录和对比。
@@ -142,10 +150,12 @@ private:
     LineOfSightRateSample sample_{};
 };
 
-// 使用二维解耦 PNG 律，根据视线角速度和飞镖速度计算纵向/横向过载。
+// 使用二维解耦 PNG 律，在弹道系计算纵向/横向过载，再转换到镖体系。
 class PngGuidance {
 public:
     // line_of_sight、angular_velocity 和 dart_velocity 必须在同一导航坐标系中。
+    // q_y/q_z 是导航系球面视线角速率；先还原 LOS 空间角速度并投影到
+    // 弹道系，再生成 Y/Z 过载。
     // 输出 body_overload 的 x/y/z 分量为弹体系过载倍数。
     // 速度模长为零时返回无效输出。
     static PngGuidanceOutput calculate(

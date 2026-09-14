@@ -375,6 +375,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "png_navigation_constant_y") return set_double(&config->guidance.png_guidance.navigation_constant_y) || invalid();
         if (key == "png_navigation_constant_z") return set_double(&config->guidance.png_guidance.navigation_constant_z) || invalid();
         if (key == "png_gravity") return set_double(&config->guidance.png_guidance.gravity) || invalid();
+        if (key == "png_maximum_command_overload") return set_double(&config->guidance.png_guidance.maximum_command_overload) || invalid();
+        if (key == "png_maximum_command_acceleration") return set_double(&config->guidance.png_guidance.maximum_command_acceleration) || invalid();
         if (key == "phase_min_static_samples") return set_int(&config->guidance.phase_detector.min_static_samples) || invalid();
         if (key == "phase_min_static_duration_ms") return parse_timestamp_ms(value, &config->guidance.phase_detector.min_static_duration_ns) || invalid();
         if (key == "phase_max_static_axis_variation") return set_double(&config->guidance.phase_detector.max_static_axis_variation) || invalid();
@@ -502,7 +504,10 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.guidance.los_rate_filter.measurement_noise <= 0.0 ||
         config.guidance.png_guidance.navigation_constant_y <= 0.0 ||
         config.guidance.png_guidance.navigation_constant_z <= 0.0 ||
-        config.guidance.png_guidance.gravity <= 0.0) {
+        config.guidance.png_guidance.gravity <= 0.0 ||
+        config.guidance.png_guidance.maximum_command_overload < 0.0 ||
+        std::isnan(config.guidance.png_guidance.maximum_command_acceleration) ||
+        config.guidance.png_guidance.maximum_command_acceleration < 0.0) {
         return fail_global(path, "制导参数无效", error);
     }
     if (config.wireless.enable_recording &&

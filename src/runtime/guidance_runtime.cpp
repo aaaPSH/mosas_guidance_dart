@@ -168,7 +168,11 @@ bool valid_png_config(const PngGuidanceConfig& config) {
     return is_finite(config.navigation_constant_y) &&
            is_finite(config.navigation_constant_z) &&
            is_finite(config.gravity) && config.navigation_constant_y > 0.0 &&
-           config.navigation_constant_z > 0.0 && config.gravity > 0.0;
+           config.navigation_constant_z > 0.0 && config.gravity > 0.0 &&
+           is_finite(config.maximum_command_overload) &&
+           config.maximum_command_overload >= 0.0 &&
+           !std::isnan(config.maximum_command_acceleration) &&
+           config.maximum_command_acceleration >= 0.0;
 }
 
 }  // namespace
