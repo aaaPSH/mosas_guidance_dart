@@ -367,6 +367,36 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         return true;
     }
 
+    if (section == "threads") {
+        if (key == "serial_receive_cpu_affinity") {
+            return parse_int(value,
+                             &config->imu.receive_thread.cpu_affinity) ||
+                   invalid();
+        } else if (key == "imu_cpu_affinity") {
+            return parse_int(value, &config->guidance.imu_cpu_affinity) ||
+                   invalid();
+        } else if (key == "capture_cpu_affinity") {
+            return parse_int(value, &config->guidance.capture_cpu_affinity) ||
+                   invalid();
+        } else if (key == "processing_cpu_affinity") {
+            return parse_int(
+                       value, &config->guidance.processing_cpu_affinity) ||
+                   invalid();
+        } else if (key == "output_cpu_affinity") {
+            return parse_int(value, &config->guidance.output_cpu_affinity) ||
+                   invalid();
+        } else if (key == "require_cpu_affinity") {
+            bool required = false;
+            if (!parse_bool(value, &required)) {
+                return invalid();
+            }
+            config->guidance.require_cpu_affinity = required;
+            config->imu.receive_thread.require_cpu_affinity = required;
+            return true;
+        }
+        return invalid();
+    }
+
     if (section == "guidance") {
         auto set_int = [&](int* destination) {
             if (!parse_int(value, &integer)) return false;
@@ -530,6 +560,10 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.guidance.max_camera_age_ns <= 0 ||
         config.guidance.capture_queue_capacity == 0 ||
         config.guidance.output_queue_capacity == 0 ||
+        config.guidance.imu_cpu_affinity < -1 ||
+        config.guidance.capture_cpu_affinity < -1 ||
+        config.guidance.processing_cpu_affinity < -1 ||
+        config.guidance.output_cpu_affinity < -1 ||
         vision.initial_roi.width <= 0 || vision.initial_roi.height <= 0 ||
         vision.found_range_x <= 0 || vision.found_range_y <= 0 ||
         vision.min_blob_area <= 0 || vision.min_aspect_ratio <= 0.0 ||
@@ -592,6 +626,7 @@ bool AppConfigLoader::load(const std::filesystem::path& path, AppConfig* config,
             if (section.empty() ||
                 (section != "camera" && section != "imu" &&
                  section != "command" && section != "serial" &&
+                 section != "threads" &&
                  section != "guidance" &&
                  section != "wireless")) {
                 return fail(path, line_number, "未知配置节: " + section, error);
