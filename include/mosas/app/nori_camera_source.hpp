@@ -89,8 +89,6 @@ private:
     void stop_locked() noexcept;
 
     CameraAppConfig config_;
-    cv::Mat undistort_map_x_;
-    cv::Mat undistort_map_y_;
     std::shared_ptr<NoriSdkApi> sdk_;
     NoriSdkSession session_;
     uint32_t device_id_ = 0;

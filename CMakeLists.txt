@@ -52,7 +52,7 @@ set_target_properties(mosas_camera_sdk PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${MOSAS_CAMERA_SDK_INCLUDE_DIR}"
 )
 
-set(MOSAS_OPENCV_COMPONENTS core imgproc videoio calib3d)
+set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
 if(MOSAS_BUILD_WIRELESS)
     list(APPEND MOSAS_OPENCV_COMPONENTS imgcodecs)
 endif()

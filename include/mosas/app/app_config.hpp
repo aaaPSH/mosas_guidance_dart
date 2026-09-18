@@ -24,14 +24,6 @@ struct CameraMatrix3 {
     double m22 = 1.0;
 };
 
-struct DistortionCoefficients {
-    double k1 = 0.0;
-    double k2 = 0.0;
-    double p1 = 0.0;
-    double p2 = 0.0;
-    double k3 = 0.0;
-};
-
 struct CameraAppConfig {
     std::string device = "/dev/video0";
     // Nori SDK 设备索引；示例程序默认使用 0。
@@ -51,9 +43,7 @@ struct CameraAppConfig {
         runtime::CameraTimestampDomain::realtime;
     // 对 SDK 采集时刻到曝光参考时刻的固定修正，单位纳秒。
     runtime::TimestampNs camera_timestamp_bias_ns = 0;
-    bool undistort = false;
     CameraMatrix3 camera_matrix{};
-    DistortionCoefficients distortion{};
     bool camera_matrix_configured = false;
     runtime::CameraCaptureMode capture_mode =
         runtime::CameraCaptureMode::free_run;

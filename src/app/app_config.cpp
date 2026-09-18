@@ -271,18 +271,6 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         } else if (key == "camera_timestamp_bias_ns" &&
                    parse_timestamp_ns(value,
                                       &config->camera.camera_timestamp_bias_ns)) {
-        } else if (key == "undistort" &&
-                   parse_bool(value, &config->camera.undistort)) {
-        } else if (key == "distortion_k1" && parse_double(value, &decimal)) {
-            config->camera.distortion.k1 = decimal;
-        } else if (key == "distortion_k2" && parse_double(value, &decimal)) {
-            config->camera.distortion.k2 = decimal;
-        } else if (key == "distortion_p1" && parse_double(value, &decimal)) {
-            config->camera.distortion.p1 = decimal;
-        } else if (key == "distortion_p2" && parse_double(value, &decimal)) {
-            config->camera.distortion.p2 = decimal;
-        } else if (key == "distortion_k3" && parse_double(value, &decimal)) {
-            config->camera.distortion.k3 = decimal;
         } else if (key == "mode" && parse_mode(value, &config->camera.capture_mode)) {
         } else if (key.rfind("matrix_m", 0) == 0 && key.size() == 10) {
             const int row = key[8] - '0';
@@ -519,12 +507,6 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         !std::isfinite(matrix.m21) || !std::isfinite(matrix.m22) ||
         matrix.m00 <= 0.0 || matrix.m11 <= 0.0 || matrix.m22 == 0.0) {
         return fail_global(path, "摄像头参数无效", error);
-    }
-    const auto& distortion = config.camera.distortion;
-    if (!std::isfinite(distortion.k1) || !std::isfinite(distortion.k2) ||
-        !std::isfinite(distortion.p1) || !std::isfinite(distortion.p2) ||
-        !std::isfinite(distortion.k3)) {
-        return fail_global(path, "畸变参数无效", error);
     }
     if (!std::isfinite(config.imu.sample_rate_hz) ||
         config.imu.sample_rate_hz <= 0.0 ||
