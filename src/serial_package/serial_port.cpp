@@ -1,11 +1,15 @@
 #include <serial_package/serial_port.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <poll.h>
+#include <sched.h>
 #include <sstream>
 #include <termios.h>
 #include <unistd.h>
@@ -96,6 +100,49 @@ std::string errno_message(const char* operation) {
     return message.str();
 }
 
+std::int64_t monotonic_timestamp_ns() noexcept {
+    timespec timestamp{};
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0 ||
+        timestamp.tv_sec < 0 || timestamp.tv_nsec < 0 ||
+        timestamp.tv_nsec >= 1'000'000'000 ||
+        timestamp.tv_sec >
+            std::numeric_limits<std::int64_t>::max() / 1'000'000'000) {
+        return -1;
+    }
+    const auto seconds_ns = static_cast<std::int64_t>(timestamp.tv_sec) *
+                            1'000'000'000;
+    if (seconds_ns > std::numeric_limits<std::int64_t>::max() -
+                         timestamp.tv_nsec) {
+        return -1;
+    }
+    return seconds_ns + timestamp.tv_nsec;
+}
+
+std::int64_t wire_byte_period_ns(const SerialPortConfig& config) noexcept {
+    const std::int64_t parity_bits = config.parity == Parity::none ? 0 : 1;
+    const std::int64_t stop_bits = config.stop_bits == StopBits::two ? 2 : 1;
+    const std::int64_t bits_per_byte =
+        1 + static_cast<std::int64_t>(config.data_bits) + parity_bits +
+        stop_bits;
+    const std::int64_t numerator = bits_per_byte * 1'000'000'000LL;
+    const std::int64_t baud = static_cast<std::int64_t>(config.baud_rate);
+    return (numerator + baud - 1) / baud;
+}
+
+std::int64_t subtract_wire_delay(std::int64_t timestamp_ns,
+                                 std::size_t bytes,
+                                 std::int64_t byte_period_ns) noexcept {
+    if (timestamp_ns < 0 || bytes == 0 || byte_period_ns <= 0) {
+        return timestamp_ns;
+    }
+    const auto maximum = std::numeric_limits<std::int64_t>::max();
+    if (bytes > static_cast<std::size_t>(maximum / byte_period_ns)) {
+        return 0;
+    }
+    const auto delay = byte_period_ns * static_cast<std::int64_t>(bytes);
+    return delay >= timestamp_ns ? 0 : timestamp_ns - delay;
+}
+
 }  // namespace
 
 SerialPort::~SerialPort() {
@@ -132,6 +179,7 @@ bool SerialPort::open(const SerialPortConfig& config) {
 }
 
 void SerialPort::close() noexcept {
+    stop_receive();
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;
@@ -249,6 +297,156 @@ bool SerialPort::write_all(const void* data, size_t size, int timeout_ms) {
         written += static_cast<size_t>(count);
     }
     return true;
+}
+
+bool SerialPort::start_receive(ReceiveCallback callback, void* context,
+                               const ReceiveThreadConfig& config) {
+    if (callback == nullptr) {
+        set_error("receive callback is null");
+        return false;
+    }
+    if (!is_open()) {
+        set_error("serial port is not open");
+        return false;
+    }
+    if (config.read_chunk_size == 0) {
+        set_error("receive chunk size must be positive");
+        return false;
+    }
+    if (config.realtime_priority < 0 || config.realtime_priority > 99) {
+        set_error("receive realtime priority is out of range");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(receive_mutex_);
+    if (receive_thread_.joinable()) {
+        set_error("serial receive thread is already running");
+        return false;
+    }
+
+    receive_callback_ = callback;
+    receive_context_ = context;
+    receive_config_ = config;
+    receive_stop_requested_.store(false, std::memory_order_release);
+    receive_running_.store(true, std::memory_order_release);
+    try {
+        receive_thread_ = std::thread(&SerialPort::receive_loop, this);
+    } catch (...) {
+        receive_running_.store(false, std::memory_order_release);
+        receive_callback_ = nullptr;
+        receive_context_ = nullptr;
+        set_error("failed to start serial receive thread");
+        return false;
+    }
+    return true;
+}
+
+void SerialPort::stop_receive() noexcept {
+    std::thread receive_thread;
+    {
+        std::lock_guard<std::mutex> lock(receive_mutex_);
+        receive_stop_requested_.store(true, std::memory_order_release);
+        receive_thread.swap(receive_thread_);
+    }
+    if (receive_thread.joinable()) {
+        receive_thread.join();
+    }
+    receive_running_.store(false, std::memory_order_release);
+    receive_callback_ = nullptr;
+    receive_context_ = nullptr;
+}
+
+bool SerialPort::receive_running() const noexcept {
+    return receive_running_.load(std::memory_order_acquire);
+}
+
+bool SerialPort::configure_receive_thread(
+    const ReceiveThreadConfig& config) noexcept {
+    (void)pthread_setname_np(pthread_self(), "mosas-serial-rx");
+
+    if (config.realtime_priority > 0) {
+        sched_param parameters{};
+        parameters.sched_priority = config.realtime_priority;
+        const int result = pthread_setschedparam(
+            pthread_self(), SCHED_FIFO, &parameters);
+        if (result != 0 && config.require_realtime_priority) {
+            set_error("failed to set serial receive realtime priority");
+            return false;
+        }
+    }
+
+#ifdef __linux__
+    if (config.cpu_affinity >= 0) {
+        cpu_set_t cpu_set;
+        CPU_ZERO(&cpu_set);
+        CPU_SET(config.cpu_affinity, &cpu_set);
+        const int result = pthread_setaffinity_np(
+            pthread_self(), sizeof(cpu_set), &cpu_set);
+        if (result != 0 && config.require_realtime_priority) {
+            set_error("failed to set serial receive CPU affinity");
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+void SerialPort::receive_loop() noexcept {
+    const ReceiveThreadConfig receive_config = receive_config_;
+    const ReceiveCallback callback = receive_callback_;
+    void* const context = receive_context_;
+    const std::size_t chunk_size = std::min<std::size_t>(
+        receive_config.read_chunk_size, std::size_t{256});
+    const std::int64_t byte_period_ns = wire_byte_period_ns(config_);
+    std::array<std::uint8_t, 256> buffer{};
+
+    if (!configure_receive_thread(receive_config)) {
+        receive_running_.store(false, std::memory_order_release);
+        return;
+    }
+
+    while (!receive_stop_requested_.load(std::memory_order_acquire)) {
+        bool timed_out = false;
+        if (!wait_for(POLLIN, config_.read_timeout_ms, &timed_out)) {
+            if (receive_stop_requested_.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (timed_out) {
+                continue;
+            }
+            break;
+        }
+
+        const std::int64_t read_start_ns = monotonic_timestamp_ns();
+        if (read_start_ns < 0) {
+            set_error("failed to read monotonic timestamp for serial input");
+            break;
+        }
+        const ssize_t pending_bytes = input_bytes_available();
+        if (pending_bytes < 0) {
+            break;
+        }
+
+        const ssize_t count = ::read(fd_, buffer.data(), chunk_size);
+        if (count < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            set_error(errno_message("read serial port"));
+            break;
+        }
+        if (count == 0) {
+            continue;
+        }
+
+        const std::int64_t first_byte_ns = subtract_wire_delay(
+            read_start_ns, static_cast<std::size_t>(pending_bytes),
+            byte_period_ns);
+        callback(context, buffer.data(), static_cast<std::size_t>(count),
+                 first_byte_ns);
+    }
+
+    receive_running_.store(false, std::memory_order_release);
 }
 
 bool SerialPort::flush_input() {

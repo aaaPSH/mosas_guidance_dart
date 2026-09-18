@@ -3,9 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
+#include <array>
 #include <mutex>
 #include <string>
 #include <sys/types.h>
+#include <thread>
 
 namespace serial_package {
 
@@ -35,6 +38,17 @@ struct SerialPortConfig {
     FlowControl flow_control = FlowControl::none;
     int read_timeout_ms = 100;
     int write_timeout_ms = 100;
+};
+
+using ReceiveCallback = void (*)(
+    void* context, const std::uint8_t* data, std::size_t size,
+    std::int64_t first_byte_timestamp_ns) noexcept;
+
+struct ReceiveThreadConfig {
+    std::size_t read_chunk_size = 256;
+    int realtime_priority = 0;
+    bool require_realtime_priority = false;
+    int cpu_affinity = -1;
 };
 
 class SerialPort {
@@ -67,6 +81,17 @@ public:
     // 持续写入直到全部数据发送完成、超时或失败。
     bool write_all(const void* data, size_t size, int timeout_ms = -1);
 
+    // 启动只负责读取原始字节的异步线程；回调必须立即复制 data。
+    bool start_receive(ReceiveCallback callback, void* context,
+                       const ReceiveThreadConfig& config = {});
+
+    // 请求停止并等待异步读取线程退出。
+    void stop_receive() noexcept;
+
+    bool receive_running() const noexcept;
+
+    const SerialPortConfig& config() const noexcept { return config_; }
+
     bool flush_input();
     bool flush_output();
 
@@ -80,12 +105,21 @@ private:
     bool configure(const SerialPortConfig& config);
     bool wait_for(short events, int timeout_ms, bool* timed_out);
     void set_error(const std::string& message);
+    void receive_loop() noexcept;
+    bool configure_receive_thread(const ReceiveThreadConfig& config) noexcept;
 
     int fd_ = -1;
     SerialPortConfig config_;
     mutable std::mutex error_mutex_;
     mutable std::mutex write_mutex_;
+    mutable std::mutex receive_mutex_;
     std::string last_error_;
+    ReceiveCallback receive_callback_ = nullptr;
+    void* receive_context_ = nullptr;
+    ReceiveThreadConfig receive_config_{};
+    std::thread receive_thread_;
+    std::atomic<bool> receive_stop_requested_{false};
+    std::atomic<bool> receive_running_{false};
 };
 
 }  // namespace serial_package

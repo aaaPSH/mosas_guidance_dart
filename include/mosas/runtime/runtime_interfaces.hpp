@@ -2,6 +2,7 @@
 #define MOSAS_RUNTIME_INTERFACES_HPP
 
 #include <mosas/runtime/runtime_types.hpp>
+#include <mosas/runtime/imu_angular_velocity.hpp>
 #include <mosas/vision/vision_types.hpp>
 
 #include <cstddef>
@@ -34,6 +35,13 @@ struct ImuSourceDiagnostics {
     std::uint64_t timeout_count = 0;
     std::uint64_t parse_error_count = 0;
     std::uint64_t backlog_event_count = 0;
+    std::uint64_t received_chunk_count = 0;
+    std::uint64_t dropped_chunk_count = 0;
+    std::uint64_t sequence_gap_count = 0;
+    std::uint64_t timestamp_rollback_count = 0;
+    std::uint64_t dropped_sample_count = 0;
+    std::size_t queued_chunk_count = 0;
+    std::size_t chunk_queue_capacity = 0;
 };
 
 inline const char* source_status_name(SourceStatus status) noexcept {
@@ -54,6 +62,15 @@ class ImuSource {
 public:
     virtual ~ImuSource() = default;
 
+    // 新的异步接口：源只负责提供时间戳角速度样本，调用线程不得阻塞等待。
+    virtual SourceResult start() { return {SourceStatus::ok, {}}; }
+    virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept {
+        (void)sample;
+        return false;
+    }
+    virtual void stop() noexcept {}
+
+    // 保留旧接口以兼容现有外部数据源；运行时主路径使用上面的异步接口。
     virtual SourceResult read(ImuSample* sample) = 0;
     virtual void cancel() noexcept = 0;
 
@@ -99,7 +116,30 @@ class CommandSink {
 public:
     virtual ~CommandSink() = default;
 
-    virtual bool send(const GuidanceCommand& command) = 0;
+    virtual bool start() { return true; }
+
+    // 只提交最新控制量；实现不得在调用线程执行串口/文件写入。
+    virtual bool try_submit(const GuidanceCommand& command) noexcept {
+        return send(command);
+    }
+
+    // 兼容旧的同步数据源；新的运行时路径不直接调用该接口。
+    virtual bool send(const GuidanceCommand& command) {
+        (void)command;
+        return false;
+    }
+
+    virtual void cancel() noexcept {}
+    virtual void stop() noexcept {}
+
+    struct Diagnostics {
+        bool available = false;
+        std::uint64_t submitted_count = 0;
+        std::uint64_t dropped_count = 0;
+        std::uint64_t send_failure_count = 0;
+    };
+
+    virtual Diagnostics diagnostics() const noexcept { return {}; }
 };
 
 class FrameSink {
