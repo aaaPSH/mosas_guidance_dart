@@ -442,9 +442,20 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "los_measurement_noise") return set_double(&config->guidance.los_rate_filter.measurement_noise) || invalid();
         if (key == "los_initial_covariance") return set_double(&config->guidance.los_rate_filter.initial_covariance) || invalid();
         if (key == "los_enable_filter") return parse_bool(value, &config->guidance.los_rate_filter.enable_filter) || invalid();
+        if (key == "attitude_acceleration_filter_alpha") return set_double(&config->guidance.attitude.acceleration_filter_alpha) || invalid();
+        if (key == "launch_ax_threshold_mps2") return set_double(&config->guidance.attitude.launch_ax_threshold_mps2) || invalid();
+        if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &config->guidance.attitude.launch_confirm_ns) || invalid();
+        if (key == "accelerometer_specific_force") return parse_bool(value, &config->guidance.attitude.accelerometer_specific_force) || invalid();
         if (key == "png_navigation_constant_y") return set_double(&config->guidance.png_guidance.navigation_constant_y) || invalid();
         if (key == "png_navigation_constant_z") return set_double(&config->guidance.png_guidance.navigation_constant_z) || invalid();
-        if (key == "png_gravity") return set_double(&config->guidance.png_guidance.gravity) || invalid();
+        if (key == "png_gravity") {
+            if (!set_double(&config->guidance.png_guidance.gravity)) {
+                return invalid();
+            }
+            config->guidance.attitude.gravity_mps2 =
+                config->guidance.png_guidance.gravity;
+            return true;
+        }
         if (key == "png_maximum_command_overload") return set_double(&config->guidance.png_guidance.maximum_command_overload) || invalid();
         if (key == "png_maximum_command_acceleration") return set_double(&config->guidance.png_guidance.maximum_command_acceleration) || invalid();
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
@@ -571,6 +582,11 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.guidance.camera_intrinsics.fx <= 0.0 ||
         config.guidance.camera_intrinsics.fy <= 0.0 ||
         config.guidance.los_rate_filter.measurement_noise <= 0.0 ||
+        config.guidance.attitude.gravity_mps2 <= 0.0 ||
+        config.guidance.attitude.acceleration_filter_alpha <= 0.0 ||
+        config.guidance.attitude.acceleration_filter_alpha > 1.0 ||
+        config.guidance.attitude.launch_ax_threshold_mps2 <= 0.0 ||
+        config.guidance.attitude.launch_confirm_ns <= 0 ||
         config.guidance.png_guidance.navigation_constant_y <= 0.0 ||
         config.guidance.png_guidance.navigation_constant_z <= 0.0 ||
         config.guidance.png_guidance.gravity <= 0.0 ||

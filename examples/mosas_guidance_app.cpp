@@ -141,7 +141,8 @@ int main(int argc, char** argv) {
     mosas::app::SerialImuSource* serial_imu_source = nullptr;
     if (config.imu.mode == mosas::app::ImuMode::simulated) {
         imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
-            config.imu.sample_rate_hz);
+            config.imu.sample_rate_hz, config.guidance.attitude.gravity_mps2,
+            config.guidance.attitude.accelerometer_specific_force);
     } else if (config.imu.mode == mosas::app::ImuMode::serial) {
         auto source = std::make_unique<mosas::app::SerialImuSource>(
             serial_port, config.imu.sample_rate_hz,

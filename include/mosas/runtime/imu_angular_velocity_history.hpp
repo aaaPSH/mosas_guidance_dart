@@ -19,7 +19,7 @@ struct ImuAngularVelocityLookup {
     TimestampNs upper_timestamp_ns = -1;
 };
 
-// 单写入者、多读取者的固定容量角速度历史；写入后不分配、不加锁。
+// 单写入者、多读取者的固定容量 IMU 运动样本历史；写入后不分配、不加锁。
 class ImuAngularVelocityHistory final {
 public:
     explicit ImuAngularVelocityHistory(std::size_t capacity)
@@ -52,6 +52,9 @@ private:
     struct Slot {
         std::atomic<std::uint64_t> sequence{0};
         std::atomic<TimestampNs> timestamp_ns{-1};
+        std::atomic<std::uint64_t> acceleration_x_bits{0};
+        std::atomic<std::uint64_t> acceleration_y_bits{0};
+        std::atomic<std::uint64_t> acceleration_z_bits{0};
         std::atomic<std::uint64_t> angular_velocity_x_bits{0};
         std::atomic<std::uint64_t> angular_velocity_y_bits{0};
         std::atomic<std::uint64_t> angular_velocity_z_bits{0};

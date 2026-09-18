@@ -14,7 +14,9 @@ constexpr mosas::runtime::TimestampNs kBytePeriodNs = 100;
 
 std::array<std::uint8_t, serial_package::kImuFrameSize> make_frame(
     std::int16_t angular_x, std::int16_t angular_y,
-    std::int16_t angular_z) {
+    std::int16_t angular_z, std::int16_t acceleration_x = 100,
+    std::int16_t acceleration_y = -200,
+    std::int16_t acceleration_z = 300) {
     std::array<std::uint8_t, serial_package::kImuFrameSize> frame{};
     frame[0] = 0x55;
     frame[1] = 0xAA;
@@ -23,6 +25,9 @@ std::array<std::uint8_t, serial_package::kImuFrameSize> make_frame(
         frame[offset] = static_cast<std::uint8_t>(encoded & 0xFFU);
         frame[offset + 1] = static_cast<std::uint8_t>(encoded >> 8U);
     };
+    write_int16(2, acceleration_x);
+    write_int16(4, acceleration_y);
+    write_int16(6, acceleration_z);
     write_int16(8, angular_x);
     write_int16(10, angular_y);
     write_int16(12, angular_z);
@@ -62,6 +67,9 @@ void test_split_frame_preserves_frame_start_timestamp() {
     assert(std::abs(sample.angular_velocity.x - 1.0) < 1e-12);
     assert(std::abs(sample.angular_velocity.y + 2.0) < 1e-12);
     assert(std::abs(sample.angular_velocity.z - 3.0) < 1e-12);
+    assert(std::abs(sample.acceleration.x - 1.0) < 1e-12);
+    assert(std::abs(sample.acceleration.y + 2.0) < 1e-12);
+    assert(std::abs(sample.acceleration.z - 3.0) < 1e-12);
 }
 
 void test_sequence_gap_discards_partial_frame_before_resynchronizing() {

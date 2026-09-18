@@ -48,6 +48,33 @@
 
 以上结论是代码层面的时间戳审查结果。没有完成硬件时钟域确认、串口端到端延迟标定和满载测试前，不应把纳秒级时间对齐视为已完成的实机指标。
 
+## 2026-09-18 姿态维护与 PNG 导引复审
+
+本次功能复审确认姿态和视线角速度的职责已经分离：
+
+```text
+IMU 三轴加速度、三轴角速度
+          ↓
+    AttitudeEstimator
+    ├─ 未起飞：低通加速度估计 roll/pitch，不积分陀螺
+    └─ 起飞锁存后：积分三轴机体系角速度，维护 R_navigation_from_body
+          ↓
+    姿态历史（按相机时间插值）
+          ├─ pitch → PNG 重力补偿
+          └─ 矩阵 → 对齐后的状态快照和诊断输出
+
+视觉 LOS 角 + 固定 camera_to_body
+          ↓
+    LineOfSightRateEstimator
+    └─ 角度差分 + IMU 机体角速度补偿；不读取动态姿态矩阵
+          ↓
+    PngGuidance
+    ├─ η_yc = K_y · θ_dot_q · v/g + cos(pitch)
+    └─ η_zc = K_z · ψ_dot_q · v/g · cos(pitch)
+```
+
+起飞由 `a_x` 相对启动基线的正向增量连续超过阈值确认并锁存；时间戳断流会清除候选计时。`png_navigation_constant_y` 与 `png_navigation_constant_z` 独立配置，Z 方向不再附加负号。姿态矩阵不参与 LOS 角速度计算，避免把重力姿态维护误接入视觉角速度补偿链路。
+
 > 说明：本文后续“第一部分”及更早章节是 2026-09-11 的改造前基线记录。其中关于 `FlightPhaseDetector`、`DartCondition`、姿态/速度状态和同步输出的描述不代表本次改造后的运行时主路径；当前判断以本节及最新源码为准。
 
 ## 结论摘要

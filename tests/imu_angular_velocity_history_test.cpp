@@ -7,19 +7,24 @@
 namespace {
 
 mosas::runtime::ImuAngularVelocitySample sample(
-    mosas::runtime::TimestampNs timestamp, double x, double y, double z) {
-    return {timestamp, {x, y, z}};
+    mosas::runtime::TimestampNs timestamp, double x, double y, double z,
+    double acceleration_x = 0.0, double acceleration_y = 0.0,
+    double acceleration_z = 0.0) {
+    return {timestamp,
+            {acceleration_x, acceleration_y, acceleration_z},
+            {x, y, z}};
 }
 
 void test_history_interpolates_without_extrapolation() {
     mosas::runtime::ImuAngularVelocityHistory history(4);
-    assert(history.push(sample(10, 1.0, 2.0, 3.0)));
-    assert(history.push(sample(20, 3.0, 6.0, 9.0)));
+    assert(history.push(sample(10, 1.0, 2.0, 3.0, 10.0, 20.0, 30.0)));
+    assert(history.push(sample(20, 3.0, 6.0, 9.0, 30.0, 60.0, 90.0)));
 
     const auto exact = history.find_interpolated(10);
     assert(exact.has_value());
     assert(!exact->interpolated);
     assert(exact->sample.angular_velocity.x == 1.0);
+    assert(exact->sample.acceleration.x == 10.0);
 
     const auto midpoint = history.find_interpolated(15);
     assert(midpoint.has_value());
@@ -29,6 +34,9 @@ void test_history_interpolates_without_extrapolation() {
     assert(std::abs(midpoint->sample.angular_velocity.x - 2.0) < 1e-12);
     assert(std::abs(midpoint->sample.angular_velocity.y - 4.0) < 1e-12);
     assert(std::abs(midpoint->sample.angular_velocity.z - 6.0) < 1e-12);
+    assert(std::abs(midpoint->sample.acceleration.x - 20.0) < 1e-12);
+    assert(std::abs(midpoint->sample.acceleration.y - 40.0) < 1e-12);
+    assert(std::abs(midpoint->sample.acceleration.z - 60.0) < 1e-12);
 
     assert(!history.find_interpolated(9).has_value());
     assert(!history.find_interpolated(21).has_value());

@@ -64,7 +64,7 @@ class ImuSource {
 public:
     virtual ~ImuSource() = default;
 
-    // 新的异步接口：源只负责提供时间戳角速度样本，调用线程不得阻塞等待。
+    // 新的异步接口：源只负责提供带加速度和角速度的时间戳样本，调用线程不得阻塞等待。
     virtual SourceResult start() { return {SourceStatus::ok, {}}; }
     virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept {
         (void)sample;

@@ -38,7 +38,8 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。镖体系 Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²；
+// PNG 律参数。镖体系 Y/Z 方向导航系数独立配置且无量纲，重力加速度单位为
+// m/s²；
 // maximum_command_overload 是镖体系 Y/Z 合成过载上限（单位 g），
 // maximum_command_acceleration 是镖体系指令加速度模长上限（单位 m/s²）。
 struct PngGuidanceConfig {
@@ -141,12 +142,12 @@ private:
 // 使用二维解耦 PNG 律，在恒速度、小攻角假设下直接在镖体系计算过载。
 class PngGuidance {
 public:
-    // 速度方向固定为镖体系 +x；输出的 navigation/body 字段均为镖体系数值，
-    // 不进行姿态或速度向量旋转。
+    // 速度方向固定为镖体系 +x；pitch_rad 是姿态维护得到的俯仰角，
+    // 输出的 navigation/body 字段均为镖体系数值，不进行姿态矩阵旋转。
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,
-        double speed_mps,
+        double speed_mps, double pitch_rad,
         const PngGuidanceConfig& config = {});
 };
 

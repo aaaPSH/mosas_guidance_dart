@@ -3,6 +3,8 @@
 
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/async_info_logger.hpp>
+#include <mosas/runtime/attitude_estimator.hpp>
+#include <mosas/runtime/attitude_history.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
 #include <mosas/runtime/imu_angular_velocity_history.hpp>
 #include <mosas/runtime/latest_frame_queue.hpp>
@@ -60,6 +62,7 @@ struct GuidanceRuntimeConfig {
         0.0, 0.0, 1.0};
     LineOfSightRateFilterConfig los_rate_filter{};
     PngGuidanceConfig png_guidance{};
+    AttitudeEstimatorConfig attitude{};
     CameraCaptureConfig camera_capture{};
     std::size_t capture_queue_capacity = 1;
     std::size_t output_queue_capacity = 1;
@@ -153,6 +156,8 @@ private:
     LatestFrameQueue<CameraFrame> capture_queue_;
     LatestFrameQueue<ProcessedFrame> output_queue_;
     ImuAngularVelocityHistory angular_velocity_history_;
+    AttitudeHistory attitude_history_;
+    AttitudeEstimator attitude_estimator_;
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};

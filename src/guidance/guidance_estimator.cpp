@@ -348,38 +348,26 @@ LineOfSightRateSample LineOfSightRateEstimator::sample() const {
 PngGuidanceOutput PngGuidance::calculate(
     const LineOfSight& line_of_sight,
     const LineOfSightAngularVelocity& angular_velocity, double speed_mps,
-    const PngGuidanceConfig& config) {
+    double pitch_rad, const PngGuidanceConfig& config) {
     const PngGuidanceOutput invalid_output{
         false, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 0.0,
         0.0};
     if (!is_valid_line_of_sight(line_of_sight) || !angular_velocity.valid ||
         !is_finite(angular_velocity.q_y) ||
         !is_finite(angular_velocity.q_z) || !is_finite(speed_mps) ||
-        speed_mps <= kEpsilon || !is_valid_png_config(config)) {
+        speed_mps <= kEpsilon || !is_finite(pitch_rad) ||
+        !is_valid_png_config(config)) {
         return invalid_output;
     }
 
-    const Vector3 unit = line_of_sight_unit(line_of_sight);
-    const double sin_elevation = std::sin(line_of_sight.q_y);
-    const double cos_elevation = std::cos(line_of_sight.q_y);
-    const double sin_azimuth = std::sin(line_of_sight.q_z);
-    const double cos_azimuth = std::cos(line_of_sight.q_z);
-    const Vector3 unit_rate{
-        -sin_elevation * cos_azimuth * angular_velocity.q_y -
-            cos_elevation * sin_azimuth * angular_velocity.q_z,
-        cos_elevation * angular_velocity.q_y,
-        -sin_elevation * sin_azimuth * angular_velocity.q_y +
-            cos_elevation * cos_azimuth * angular_velocity.q_z};
-    const Vector3 los_angular_velocity = cross_product(unit, unit_rate);
-    const Vector3 velocity_unit{1.0, 0.0, 0.0};
-    const Vector3 normal_direction =
-        cross_product(los_angular_velocity, velocity_unit);
+    const double cos_pitch = std::cos(pitch_rad);
     const double speed_over_gravity = speed_mps / config.gravity;
     double vertical_overload =
-        config.navigation_constant_y * normal_direction.y *
-            speed_over_gravity + 1.0;
+        config.navigation_constant_y * angular_velocity.q_y *
+            speed_over_gravity + cos_pitch;
     double lateral_overload =
-        config.navigation_constant_z * normal_direction.z * speed_over_gravity;
+        config.navigation_constant_z * angular_velocity.q_z *
+        speed_over_gravity * cos_pitch;
     if (!is_finite(vertical_overload) || !is_finite(lateral_overload)) {
         return invalid_output;
     }

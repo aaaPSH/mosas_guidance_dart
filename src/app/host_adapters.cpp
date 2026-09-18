@@ -10,9 +10,15 @@
 
 namespace mosas::app {
 
-SimulatedImuSource::SimulatedImuSource(double sample_rate_hz)
+SimulatedImuSource::SimulatedImuSource(double sample_rate_hz,
+                                       double gravity_mps2,
+                                       bool accelerometer_specific_force)
     : period_(std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::duration<double>(1.0 / sample_rate_hz))) {
+          std::chrono::duration<double>(1.0 / sample_rate_hz))),
+      gravity_mps2_(std::isfinite(gravity_mps2) && gravity_mps2 > 0.0
+                        ? gravity_mps2
+                        : 9.80665),
+      accelerometer_specific_force_(accelerometer_specific_force) {
     if (sample_rate_hz <= 0.0 || !std::isfinite(sample_rate_hz) ||
         period_.count() <= 0) {
         period_ = std::chrono::nanoseconds(1);
@@ -46,6 +52,10 @@ bool SimulatedImuSource::try_pop(
     if (sample->timestamp_ns < 0) {
         return false;
     }
+    sample->acceleration = {
+        0.0,
+        accelerometer_specific_force_ ? gravity_mps2_ : -gravity_mps2_,
+        0.0};
     sample->angular_velocity = {0.0, 0.0, 0.0};
     next_deadline_ = now + period_;
     return true;
@@ -70,7 +80,7 @@ runtime::SourceResult SimulatedImuSource::read(runtime::ImuSample* sample) {
         runtime::ImuAngularVelocitySample angular_velocity{};
         if (try_pop(&angular_velocity)) {
             sample->timestamp_ns = angular_velocity.timestamp_ns;
-            sample->acceleration = {0.0, 0.0, 0.0};
+            sample->acceleration = angular_velocity.acceleration;
             sample->angular_velocity = angular_velocity.angular_velocity;
             return {runtime::SourceStatus::ok, {}};
         }
