@@ -35,16 +35,9 @@ std::optional<TimestampNs> convert_camera_timeval(
             monotonic_ns = source_ns;
             break;
         case CameraTimestampDomain::realtime: {
-            if (mapping.realtime_now_ns < 0 ||
-                mapping.monotonic_now_ns < 0) {
-                return std::nullopt;
-            }
-            const auto offset = checked_add(
-                mapping.monotonic_now_ns, -mapping.realtime_now_ns);
-            if (!offset.has_value()) {
-                return std::nullopt;
-            }
-            monotonic_ns = checked_add(*source_ns, *offset);
+            monotonic_ns = realtime_to_monotonic(
+                *source_ns, mapping.realtime_now_ns,
+                mapping.monotonic_now_ns);
             break;
         }
         case CameraTimestampDomain::unknown:

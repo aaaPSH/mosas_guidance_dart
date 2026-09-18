@@ -2,9 +2,10 @@
 #define MOSAS_GUIDANCE_RUNTIME_HPP
 
 #include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/runtime/async_info_logger.hpp>
 #include <mosas/runtime/flight_phase_detector.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
-#include <mosas/runtime/imu_state_history.hpp>
+#include <mosas/runtime/imu_angular_velocity_history.hpp>
 #include <mosas/runtime/latest_frame_queue.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 
@@ -44,12 +45,15 @@ struct GuidanceRuntimeTiming {
 };
 
 struct GuidanceRuntimeConfig {
-    // 测试模式：使用假基准跳过 IMU 静止自检。
+    // 兼容旧配置；当前运行时不执行 IMU 静止自检，也不维护飞行阶段。
     bool skip_imu_self_check = false;
+    // 兼容旧配置；当前运行时不实例化或更新该检测器。
     FlightPhaseDetectorConfig phase_detector{};
     double launch_speed_mps = 100.0;
     std::size_t history_capacity = 256;
     TimestampNs max_imu_age_ns = 50000000;
+    TimestampNs max_camera_future_ns = 50000000;
+    TimestampNs max_camera_age_ns = 2000000000;
     VisionConfig vision_config{
         {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
         0.35};
@@ -137,11 +141,10 @@ private:
     std::unique_ptr<FrameSink> frame_sink_;
     GuidanceRuntimeConfig config_;
     std::ostream* output_ = nullptr;
+    AsyncInfoLogger info_logger_;
     LatestFrameQueue<CameraFrame> capture_queue_;
     LatestFrameQueue<ProcessedFrame> output_queue_;
-    FlightPhaseDetector phase_detector_;
-    ImuStateHistory state_history_;
-    DartCondition dart_condition_;
+    ImuAngularVelocityHistory angular_velocity_history_;
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};

@@ -68,7 +68,9 @@ struct ImuAppConfig {
     ImuMode mode = ImuMode::simulated;
     // IMU 实际发送频率，仅用于兼容配置校验；帧时间戳来自串口接收时间轴。
     double sample_rate_hz = 200.0;
-    // 测试模式：使用假基准跳过 IMU 静止自检。
+    // 下位机测量时刻相对串口帧时间的固定延迟，单位纳秒；需由硬件实测。
+    runtime::TimestampNs measurement_latency_ns = 0;
+    // 兼容旧配置；当前运行时不执行 IMU 静止自检。
     bool skip_self_check = false;
 };
 

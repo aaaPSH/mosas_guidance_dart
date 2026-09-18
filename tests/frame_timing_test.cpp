@@ -34,6 +34,10 @@ void test_invalid_domain_and_time_are_rejected() {
                 INT64_MAX, 0, mosas::runtime::CameraTimestampDomain::realtime,
                 mapping, 0)
                 .has_value());
+    assert(!mosas::runtime::convert_camera_timeval(
+                0, 0, mosas::runtime::CameraTimestampDomain::realtime,
+                {INT64_MIN, 2}, 0)
+                .has_value());
 }
 
 void test_timestamp_validation_rejects_future_stale_and_rollback() {

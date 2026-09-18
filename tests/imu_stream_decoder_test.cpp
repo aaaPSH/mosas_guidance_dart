@@ -89,11 +89,24 @@ void test_bad_crc_does_not_reach_angle_rate_output() {
     assert(decoder.parse_error_count() == 1);
 }
 
+void test_measurement_latency_is_removed_from_frame_timestamp() {
+    constexpr mosas::runtime::TimestampNs kMeasurementLatencyNs = 250;
+    mosas::app::ImuStreamDecoder decoder(kBytePeriodNs,
+                                         kMeasurementLatencyNs, 4);
+    const auto frame = make_frame(1, 2, 3);
+    decoder.consume(make_chunk(frame.data(), frame.size(), 10'000, 1));
+
+    mosas::runtime::ImuAngularVelocitySample sample{};
+    assert(decoder.try_pop(&sample));
+    assert(sample.timestamp_ns == 9'750);
+}
+
 }  // namespace
 
 int main() {
     test_split_frame_preserves_frame_start_timestamp();
     test_sequence_gap_discards_partial_frame_before_resynchronizing();
     test_bad_crc_does_not_reach_angle_rate_output();
+    test_measurement_latency_is_removed_from_frame_timestamp();
     return 0;
 }

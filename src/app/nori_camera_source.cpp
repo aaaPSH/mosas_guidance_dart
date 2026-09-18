@@ -1,6 +1,5 @@
 #include <mosas/app/nori_camera_source.hpp>
 
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <exception>
@@ -18,13 +17,6 @@ namespace mosas::app {
 namespace {
 
 constexpr uint32_t kMaxCallbackFrameBytes = 64U * 1024U * 1024U;
-
-runtime::TimestampNs steady_timestamp_ns() {
-    const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now().time_since_epoch())
-                               .count();
-    return timestamp < 0 ? 0 : timestamp;
-}
 
 std::string sdk_error(const char* api, const std::string& device,
                       uint32_t device_id, uint32_t result) {
@@ -706,7 +698,11 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     pending.media_type = frame->PixFormat.u_Format;
     pending.width = frame->PixFormat.u_Width;
     pending.height = frame->PixFormat.u_Height;
-    pending.received_timestamp_ns = steady_timestamp_ns();
+    pending.received_timestamp_ns = runtime::monotonic_timestamp_ns();
+    if (pending.received_timestamp_ns < 0) {
+        dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
+        return NORI_OK;
+    }
     const runtime::CameraTimestampDomain domain = frame_timestamp_domain(
         *frame, config_.frame_timestamp_domain);
     const auto timestamp = runtime::convert_camera_timeval(

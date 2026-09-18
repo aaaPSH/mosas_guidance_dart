@@ -119,8 +119,10 @@ target_link_libraries(mosas_guidance
 )
 
 add_library(mosas_runtime STATIC
-    src/runtime/flight_phase_detector.cpp
-    src/runtime/imu_state_history.cpp
+    src/runtime/clock.cpp
+    src/runtime/frame_timing.cpp
+    src/runtime/imu_angular_velocity_history.cpp
+    src/runtime/async_info_logger.cpp
     src/runtime/guidance_runtime.cpp
 )
 configure_mosas_target(mosas_runtime)
@@ -155,8 +157,10 @@ endif()
 add_library(mosas_app STATIC
     src/app/app_config.cpp
     src/app/host_adapters.cpp
+    src/app/imu_stream_decoder.cpp
     src/app/nori_camera_sdk.cpp
     src/app/nori_camera_source.cpp
+    src/app/raw_imu_receive_buffer.cpp
     src/app/serial_imu_source.cpp
 )
 configure_mosas_target(mosas_app)
@@ -169,6 +173,7 @@ target_link_libraries(mosas_app
         mosas_runtime
         serial_package
         mosas_camera_sdk
+        atomic
         ${OpenCV_LIBS}
 )
 if(MOSAS_BUILD_WIRELESS)

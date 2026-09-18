@@ -121,8 +121,6 @@ int main(int argc, char** argv) {
         std::cerr << "加载配置失败: " << error << '\n';
         return 2;
     }
-    config.guidance.skip_imu_self_check = config.imu.skip_self_check;
-
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
@@ -148,7 +146,8 @@ int main(int argc, char** argv) {
         auto source = std::make_unique<mosas::app::SerialImuSource>(
             serial_port, config.imu.sample_rate_hz,
             config.serial.read_timeout_ms,
-            config.enable_serial_interval_statistics);
+            config.enable_serial_interval_statistics, std::cerr,
+            config.imu.measurement_latency_ns);
         serial_imu_source = source.get();
         imu_source = std::move(source);
     } else {

@@ -12,12 +12,14 @@ namespace mosas::runtime {
 
 using TimestampNs = std::int64_t;
 
+// 旧配置/接口兼容枚举；当前运行时不维护飞行阶段。
 enum class FlightPhase {
     pre_launch,
     ejection,
     free_flight,
 };
 
+// 旧式同步 IMU 接口兼容类型；当前运行时主路径只使用角速度样本。
 struct ImuSample {
     TimestampNs timestamp_ns;
     Vector3 acceleration;

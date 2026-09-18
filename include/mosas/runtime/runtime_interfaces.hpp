@@ -42,6 +42,8 @@ struct ImuSourceDiagnostics {
     std::uint64_t dropped_sample_count = 0;
     std::size_t queued_chunk_count = 0;
     std::size_t chunk_queue_capacity = 0;
+    bool receive_realtime_priority_applied = false;
+    bool receive_priority_error = false;
 };
 
 inline const char* source_status_name(SourceStatus status) noexcept {

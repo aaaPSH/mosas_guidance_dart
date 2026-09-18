@@ -9,15 +9,6 @@
 #include <utility>
 
 namespace mosas::app {
-namespace {
-
-runtime::TimestampNs steady_timestamp_ns() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
-
-}  // 匿名命名空间结束
 
 SimulatedImuSource::SimulatedImuSource(double sample_rate_hz)
     : period_(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -51,7 +42,10 @@ bool SimulatedImuSource::try_pop(
     if (now < next_deadline_) {
         return false;
     }
-    sample->timestamp_ns = steady_timestamp_ns();
+    sample->timestamp_ns = runtime::monotonic_timestamp_ns();
+    if (sample->timestamp_ns < 0) {
+        return false;
+    }
     sample->angular_velocity = {0.0, 0.0, 0.0};
     next_deadline_ = now + period_;
     return true;

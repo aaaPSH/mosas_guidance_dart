@@ -327,6 +327,9 @@ bool SerialPort::start_receive(ReceiveCallback callback, void* context,
     receive_callback_ = callback;
     receive_context_ = context;
     receive_config_ = config;
+    receive_realtime_priority_applied_.store(false,
+                                             std::memory_order_release);
+    receive_priority_error_.store(false, std::memory_order_release);
     receive_stop_requested_.store(false, std::memory_order_release);
     receive_running_.store(true, std::memory_order_release);
     try {
@@ -369,9 +372,15 @@ bool SerialPort::configure_receive_thread(
         parameters.sched_priority = config.realtime_priority;
         const int result = pthread_setschedparam(
             pthread_self(), SCHED_FIFO, &parameters);
-        if (result != 0 && config.require_realtime_priority) {
-            set_error("failed to set serial receive realtime priority");
-            return false;
+        if (result != 0) {
+            receive_priority_error_.store(true, std::memory_order_release);
+            if (config.require_realtime_priority) {
+                set_error("failed to set serial receive realtime priority");
+                return false;
+            }
+        } else {
+            receive_realtime_priority_applied_.store(
+                true, std::memory_order_release);
         }
     }
 
@@ -382,9 +391,12 @@ bool SerialPort::configure_receive_thread(
         CPU_SET(config.cpu_affinity, &cpu_set);
         const int result = pthread_setaffinity_np(
             pthread_self(), sizeof(cpu_set), &cpu_set);
-        if (result != 0 && config.require_realtime_priority) {
-            set_error("failed to set serial receive CPU affinity");
-            return false;
+        if (result != 0) {
+            receive_priority_error_.store(true, std::memory_order_release);
+            if (config.require_realtime_priority) {
+                set_error("failed to set serial receive CPU affinity");
+                return false;
+            }
         }
     }
 #endif

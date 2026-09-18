@@ -75,18 +75,6 @@ std::string format_source_error(const char* source_name,
     return message;
 }
 
-const char* flight_phase_name(FlightPhase phase) noexcept {
-    switch (phase) {
-        case FlightPhase::pre_launch:
-            return "pre_launch";
-        case FlightPhase::ejection:
-            return "ejection";
-        case FlightPhase::free_flight:
-            return "free_flight";
-    }
-    return "unknown";
-}
-
 const char* vision_debug_stage_name(VisionDebugStage stage) noexcept {
     switch (stage) {
         case VisionDebugStage::not_processed:
@@ -128,22 +116,21 @@ std::string format_imu_source_diagnostics(
             << ", timeout_count=" << diagnostics.timeout_count
             << ", parse_error_count=" << diagnostics.parse_error_count
             << ", backlog_event_count=" << diagnostics.backlog_event_count
+            << ", received_chunks=" << diagnostics.received_chunk_count
+            << ", dropped_chunks=" << diagnostics.dropped_chunk_count
+            << ", sequence_gaps=" << diagnostics.sequence_gap_count
+            << ", timestamp_rollbacks="
+            << diagnostics.timestamp_rollback_count
+            << ", dropped_samples=" << diagnostics.dropped_sample_count
+            << ", queued_chunks=" << diagnostics.queued_chunk_count << '/'
+            << diagnostics.chunk_queue_capacity
+            << ", realtime_priority="
+            << (diagnostics.receive_realtime_priority_applied ? "applied"
+                                                               : "not_applied")
+            << ", priority_error="
+            << (diagnostics.receive_priority_error ? "true" : "false")
             << "}";
     return message.str();
-}
-
-bool valid_detector_config(const FlightPhaseDetectorConfig& config) {
-    return config.min_static_samples > 0 &&
-           config.min_static_duration_ns >= 0 &&
-           is_finite(config.max_static_axis_variation) &&
-           config.max_static_axis_variation >= 0.0 &&
-           (config.launch_direction == 1 || config.launch_direction == -1) &&
-           is_finite(config.ejection_start_threshold) &&
-           config.ejection_start_threshold >= 0.0 &&
-           config.ejection_confirm_duration_ns >= 0 &&
-           is_finite(config.free_flight_release_threshold) &&
-           config.free_flight_release_threshold >= 0.0 &&
-           config.free_flight_confirm_duration_ns >= 0;
 }
 
 bool valid_vision_config(const VisionConfig& config) {
@@ -198,11 +185,10 @@ GuidanceRuntime::GuidanceRuntime(
       frame_sink_(std::move(frame_sink)),
       config_(config),
       output_(&output),
+      info_logger_(output),
       capture_queue_(config_.capture_queue_capacity),
       output_queue_(config_.output_queue_capacity),
-      phase_detector_(config_.phase_detector),
-      state_history_(config_.history_capacity),
-      dart_condition_(config_.launch_speed_mps) {}
+      angular_velocity_history_(config_.history_capacity) {}
 
 GuidanceRuntime::~GuidanceRuntime() {
     stop();
@@ -210,9 +196,11 @@ GuidanceRuntime::~GuidanceRuntime() {
 
 bool GuidanceRuntime::validate_config() const {
     return imu_source_ != nullptr && camera_source_ != nullptr &&
-           command_sink_ != nullptr && valid_detector_config(config_.phase_detector) &&
+           command_sink_ != nullptr &&
            is_finite(config_.launch_speed_mps) && config_.launch_speed_mps >= 0.0 &&
            config_.history_capacity > 0 && config_.max_imu_age_ns > 0 &&
+           config_.max_camera_future_ns >= 0 &&
+           config_.max_camera_age_ns > 0 &&
            valid_vision_config(config_.vision_config) &&
            is_finite(config_.camera_intrinsics) &&
            config_.camera_intrinsics.fx > 0.0 &&
@@ -233,11 +221,31 @@ bool GuidanceRuntime::start() {
         set_error("invalid guidance runtime configuration");
         return false;
     }
+    if (!info_logger_.start()) {
+        set_error("failed to start asynchronous runtime logger");
+        return false;
+    }
     const SourceResult configure_result =
         camera_source_->configure(config_.camera_capture);
     if (configure_result.status != SourceStatus::ok) {
         set_fault(format_source_error("camera source", "configure",
                                       configure_result));
+        info_logger_.stop();
+        return false;
+    }
+
+    const SourceResult imu_start_result = imu_source_->start();
+    if (imu_start_result.status != SourceStatus::ok) {
+        set_fault(format_source_error("imu source", "start",
+                                      imu_start_result));
+        info_logger_.stop();
+        return false;
+    }
+    if (!command_sink_->start()) {
+        set_fault("command sink start failed");
+        imu_source_->stop();
+        camera_source_->stop();
+        info_logger_.stop();
         return false;
     }
 
@@ -249,7 +257,7 @@ bool GuidanceRuntime::start() {
     }
     capture_queue_.reset();
     output_queue_.reset();
-    state_history_.clear();
+    angular_velocity_history_.reset();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         latest_state_.reset();
@@ -258,9 +266,6 @@ bool GuidanceRuntime::start() {
         std::lock_guard<std::mutex> lock(error_mutex_);
         last_error_.clear();
     }
-    phase_detector_ = FlightPhaseDetector(config_.phase_detector);
-    dart_condition_.reset();
-
     running_.store(true);
     try {
         imu_thread_ = std::thread(&GuidanceRuntime::imu_worker, this);
@@ -297,6 +302,9 @@ void GuidanceRuntime::stop() noexcept {
     if (imu_thread_.joinable()) {
         imu_thread_.join();
     }
+    if (imu_source_ != nullptr) {
+        imu_source_->stop();
+    }
     if (processing_thread_.joinable()) {
         processing_thread_.join();
     }
@@ -304,6 +312,10 @@ void GuidanceRuntime::stop() noexcept {
     if (output_thread_.joinable()) {
         output_thread_.join();
     }
+    if (command_sink_ != nullptr) {
+        command_sink_->stop();
+    }
+    info_logger_.stop();
     running_.store(false);
 }
 
@@ -398,9 +410,13 @@ void GuidanceRuntime::record_timing(
 }
 
 void GuidanceRuntime::log(const std::string& message) {
+    const std::string formatted = "[运行时] " + message;
+    if (info_logger_.try_submit_text(monotonic_timestamp_ns(), formatted)) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(log_mutex_);
     if (output_ != nullptr) {
-        *output_ << "[运行时] " << message << '\n';
+        *output_ << formatted << '\n';
     }
 }
 
@@ -439,147 +455,27 @@ void GuidanceRuntime::cancel_sources() noexcept {
 
 void GuidanceRuntime::imu_worker() {
     try {
-    bool initialized = false;
-    bool launched = false;
-    bool has_attitude_timestamp = false;
-    bool has_previous_timestamp = false;
-    TimestampNs previous_timestamp_ns = 0;
-    TimestampNs previous_attitude_timestamp_ns = 0;
-    std::uint64_t timeout_count = 0;
-    bool timeout_active = false;
-    std::chrono::steady_clock::time_point next_timeout_log{};
-    while (!stop_requested_.load()) {
-        ImuSample sample{};
-        const SourceResult source_result = imu_source_->read(&sample);
-        switch (source_result.status) {
-            case SourceStatus::ok:
-                if (timeout_active) {
-                    const auto now = std::chrono::steady_clock::now();
-                    if (now >= next_timeout_log) {
-                        std::ostringstream message;
-                        message << "IMU 数据源读取已恢复: latest_sample_timestamp_ns="
-                                << sample.timestamp_ns << ", "
-                                << format_imu_source_diagnostics(
-                                       imu_source_->diagnostics());
-                        log(message.str());
-                        next_timeout_log = now + std::chrono::seconds(1);
-                    }
-                    timeout_active = false;
-                }
-                break;
-            case SourceStatus::timeout: {
-                ++timeout_count;
-                timeout_active = true;
-                const auto now = std::chrono::steady_clock::now();
-                if (timeout_count == 1 || now >= next_timeout_log) {
-                    std::ostringstream message;
-                    message << "警告: IMU 读取超时(累计 " << timeout_count
-                            << " 次)";
-                    if (!source_result.message.empty()) {
-                        message << ": " << source_result.message;
-                    }
-                    message << ", "
-                            << format_imu_source_diagnostics(
-                                   imu_source_->diagnostics());
-                    log(message.str());
-                    next_timeout_log = now + std::chrono::seconds(1);
-                }
-                if (!stop_requested_.load()) {
-                    std::this_thread::yield();
-                }
+        while (!stop_requested_.load()) {
+            ImuAngularVelocitySample sample{};
+            if (!imu_source_->try_pop(&sample)) {
+                std::this_thread::yield();
                 continue;
             }
-            case SourceStatus::cancelled:
-                if (stop_requested_.load()) {
-                    return;
-                }
-                set_fault(format_source_error("imu source", "read",
-                                              source_result));
-                return;
-            case SourceStatus::fatal:
-                set_fault(format_source_error("imu source", "read",
-                                              source_result));
-                return;
-            default:
-                set_fault("imu source read returned unknown status");
-                return;
-        }
-        if (stop_requested_.load()) {
-            return;
-        }
-        if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
-            !is_finite(sample.angular_velocity) ||
-            (has_previous_timestamp &&
-             sample.timestamp_ns <= previous_timestamp_ns)) {
-            set_fault("imu source read returned ok with invalid sample");
-            return;
-        }
-
-        const FlightPhase phase_before = phase_detector_.phase();
-        const FlightPhase phase = config_.skip_imu_self_check
-                                      ? FlightPhase::free_flight
-                                      : phase_detector_.update(sample);
-        has_previous_timestamp = true;
-        previous_timestamp_ns = sample.timestamp_ns;
-
-        if (!initialized &&
-            (config_.skip_imu_self_check || phase_detector_.initialized())) {
-            const Vector3 baseline = config_.skip_imu_self_check
-                                         ? Vector3{0.0, 9.80665, 0.0}
-                                         : phase_detector_.baseline_acceleration();
-            if (!dart_condition_.initialize(
-                    baseline)) {
-                set_fault("failed to initialize dart condition");
+            if (sample.timestamp_ns < 0 || !is_finite(sample.angular_velocity)) {
+                set_fault("imu source returned an invalid angular velocity sample");
                 return;
             }
-            initialized = true;
-            has_attitude_timestamp = true;
-            previous_attitude_timestamp_ns = sample.timestamp_ns;
-        }
-
-        if (initialized && has_attitude_timestamp &&
-            sample.timestamp_ns > previous_attitude_timestamp_ns) {
-            const double dt_seconds = static_cast<double>(
-                                         sample.timestamp_ns -
-                                         previous_attitude_timestamp_ns) *
-                                     1e-9;
-            if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
-                set_fault("imu attitude update received invalid time step");
+            if (!angular_velocity_history_.push(sample)) {
+                set_fault("imu angular velocity timestamp is not increasing");
                 return;
             }
-            if (launched) {
-                dart_condition_.update(sample.acceleration,
-                                       sample.angular_velocity, dt_seconds);
-            } else {
-                dart_condition_.update_attitude(sample.angular_velocity,
-                                                dt_seconds);
+            const ImuStateSnapshot snapshot{sample.timestamp_ns,
+                                            sample.angular_velocity};
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                latest_state_ = snapshot;
             }
-            previous_attitude_timestamp_ns = sample.timestamp_ns;
         }
-
-        if (initialized && !launched &&
-            (config_.skip_imu_self_check ||
-             (phase_before != FlightPhase::ejection &&
-              phase == FlightPhase::ejection))) {
-            dart_condition_.launch();
-            launched = true;
-        }
-
-        const ImuStateSnapshot snapshot{
-            sample.timestamp_ns,
-            phase,
-            dart_condition_.attitude(),
-            dart_condition_.velocity(),
-            sample.acceleration,
-            sample.angular_velocity};
-        if (!state_history_.push(snapshot)) {
-            continue;
-        }
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            latest_state_ = snapshot;
-        }
-    }
     } catch (const std::exception& exception) {
         set_fault(exception.what());
     } catch (...) {
@@ -621,6 +517,15 @@ void GuidanceRuntime::capture_worker() {
             }
             if (frame.timestamp_ns < 0 || frame.image.empty()) {
                 set_fault("camera source capture returned ok with invalid frame");
+                return;
+            }
+            if (frame.received_timestamp_ns >= 0 &&
+                frame.timestamp_source != CameraTimestampSource::unknown &&
+                !validate_camera_timestamp(
+                    frame.timestamp_ns, frame.received_timestamp_ns, -1,
+                    config_.max_camera_future_ns,
+                    config_.max_camera_age_ns)) {
+                set_fault("camera source returned an invalid capture timestamp");
                 return;
             }
 
@@ -715,8 +620,7 @@ void GuidanceRuntime::processing_worker() {
                 config_.vision_config.initial_roi;
             result.vision_result.minimum_blob_area =
                 config_.vision_config.min_blob_area;
-            result.imu_state = {
-                timestamp_ns, FlightPhase::pre_launch, {}, {}, {}, {}};
+            result.imu_state = {timestamp_ns, {0.0, 0.0, 0.0}};
             result.guidance = {false, {}, {}, {}, 0.0, 0.0};
             result.overlay = {};
 
@@ -736,38 +640,33 @@ void GuidanceRuntime::processing_worker() {
                 continue;
             }
 
-            const auto state = state_history_.find_at_or_before(timestamp_ns);
-            const auto state_age_ns =
-                state.has_value() && timestamp_ns >= state->timestamp_ns
-                    ? timestamp_ns - state->timestamp_ns
+            const auto angular_velocity_lookup =
+                angular_velocity_history_.find_interpolated(timestamp_ns);
+            const TimestampNs bracket_age_ns =
+                angular_velocity_lookup.has_value()
+                    ? std::max(timestamp_ns -
+                                   angular_velocity_lookup->lower_timestamp_ns,
+                               angular_velocity_lookup->upper_timestamp_ns -
+                                   timestamp_ns)
                     : 0;
-            const bool state_is_too_old =
-                state.has_value() && state_age_ns > config_.max_imu_age_ns;
-            const bool state_is_wrong_phase =
-                state.has_value() && state->phase != FlightPhase::free_flight;
-            if (!state.has_value() || state_is_too_old ||
-                state_is_wrong_phase) {
+            const bool lookup_is_too_old =
+                angular_velocity_lookup.has_value() &&
+                bracket_age_ns > config_.max_imu_age_ns;
+            if (!angular_velocity_lookup.has_value() || lookup_is_too_old) {
                 const auto latest = latest_state();
                 std::string reason;
-                if (!state.has_value()) {
+                if (!angular_velocity_lookup.has_value()) {
                     if (!latest.has_value()) {
-                        reason = "IMU 状态历史为空";
+                        reason = "IMU 角速度历史为空或没有完整插值区间";
                     } else if (latest->timestamp_ns > timestamp_ns) {
-                        reason = "没有不晚于相机时间戳的 IMU 状态";
+                        reason = "没有覆盖相机曝光时刻的 IMU 角速度前后样本";
                     } else {
-                        reason = "IMU 状态历史中没有可匹配状态";
+                        reason = "IMU 角速度历史中没有可匹配插值区间";
                     }
-                } else if (state_is_too_old) {
-                    reason = "IMU 状态过旧";
-                    if (state_is_wrong_phase) {
-                        reason += "且 phase=";
-                        reason += flight_phase_name(state->phase);
-                        reason += "（需要 free_flight）";
-                    }
+                } else if (lookup_is_too_old) {
+                    reason = "IMU 角速度插值区间过宽";
                 } else {
-                    reason = std::string("IMU 状态 phase=") +
-                             flight_phase_name(state->phase) +
-                             "，需要 free_flight";
+                    reason = "IMU 角速度插值失败";
                 }
 
                 ++imu_match_failure_count;
@@ -778,10 +677,13 @@ void GuidanceRuntime::processing_worker() {
                             << imu_match_failure_count << " 次): 原因="
                             << reason << ", camera_timestamp_ns="
                             << timestamp_ns;
-                    if (state.has_value()) {
-                        message << ", selected_imu_timestamp_ns="
-                                << state->timestamp_ns << ", imu_age_ms="
-                                << static_cast<double>(state_age_ns) / 1e6;
+                    if (angular_velocity_lookup.has_value()) {
+                        message << ", lower_imu_timestamp_ns="
+                                << angular_velocity_lookup->lower_timestamp_ns
+                                << ", upper_imu_timestamp_ns="
+                                << angular_velocity_lookup->upper_timestamp_ns
+                                << ", imu_bracket_age_ms="
+                                << static_cast<double>(bracket_age_ns) / 1e6;
                     } else if (latest.has_value()) {
                         message << ", latest_imu_timestamp_ns="
                                 << latest->timestamp_ns;
@@ -791,7 +693,8 @@ void GuidanceRuntime::processing_worker() {
                     message << ", max_imu_age_ms="
                             << static_cast<double>(config_.max_imu_age_ns) /
                                    1e6
-                            << ", history_size=" << state_history_.size()
+                            << ", history_size="
+                            << angular_velocity_history_.size()
                             << ", "
                             << format_imu_source_diagnostics(
                                    imu_source_->diagnostics())
@@ -811,25 +714,21 @@ void GuidanceRuntime::processing_worker() {
                 const auto now = std::chrono::steady_clock::now();
                 if (now >= next_imu_match_log) {
                     std::ostringstream message;
-                    message << "IMU 状态匹配已恢复: camera_timestamp_ns="
-                            << timestamp_ns << ", imu_timestamp_ns="
-                            << state->timestamp_ns << ", imu_age_ms="
-                            << static_cast<double>(state_age_ns) / 1e6;
+                    message << "IMU 角速度插值匹配已恢复: camera_timestamp_ns="
+                            << timestamp_ns << ", lower_imu_timestamp_ns="
+                            << angular_velocity_lookup->lower_timestamp_ns
+                            << ", upper_imu_timestamp_ns="
+                            << angular_velocity_lookup->upper_timestamp_ns
+                            << ", imu_bracket_age_ms="
+                            << static_cast<double>(bracket_age_ns) / 1e6;
                     log(message.str());
                     next_imu_match_log = now + std::chrono::seconds(1);
                 }
                 imu_match_failure_active = false;
             }
 
-            result.imu_state = *state;
-            result.overlay.attitude_valid = true;
-            result.overlay.attitude_pitch_rad = state->attitude.pitch;
-            result.overlay.attitude_yaw_rad = state->attitude.yaw;
-            result.overlay.attitude_roll_rad = state->attitude.roll;
-            result.overlay.velocity_valid = true;
-            result.overlay.velocity_x_mps = state->velocity.x;
-            result.overlay.velocity_y_mps = state->velocity.y;
-            result.overlay.velocity_z_mps = state->velocity.z;
+            result.imu_state = {
+                timestamp_ns, angular_velocity_lookup->sample.angular_velocity};
 
             const auto vision_started = std::chrono::steady_clock::now();
             result.vision_result = recognizer.process(result.frame.image);
@@ -859,9 +758,9 @@ void GuidanceRuntime::processing_worker() {
 
             const auto line_of_sight_started = std::chrono::steady_clock::now();
             const LineOfSight line_of_sight =
-                GuidanceEstimator::calculate_compensated(
+                GuidanceEstimator::calculate_body(
                     result.vision_result, config_.camera_intrinsics,
-                    state->attitude, config_.camera_to_body);
+                    config_.camera_to_body);
             record_timing(
                 TimingStage::line_of_sight,
                 std::chrono::steady_clock::now() - line_of_sight_started);
@@ -887,7 +786,9 @@ void GuidanceRuntime::processing_worker() {
             if (!has_frame_timestamp) {
                 rate_estimator.reset();
                 const LineOfSightAngularVelocity initial_angular_velocity =
-                    rate_estimator.update(line_of_sight, 1.0);
+                    rate_estimator.update(
+                        line_of_sight,
+                        angular_velocity_lookup->sample.angular_velocity, 1.0);
                 if (!initial_angular_velocity.valid) {
                     std::ostringstream details;
                     details << "camera_timestamp_ns=" << timestamp_ns
@@ -928,7 +829,10 @@ void GuidanceRuntime::processing_worker() {
             previous_frame_timestamp_ns = timestamp_ns;
 
             const LineOfSightAngularVelocity angular_velocity =
-                rate_estimator.update(line_of_sight, dt_seconds);
+                rate_estimator.update(
+                    line_of_sight,
+                    angular_velocity_lookup->sample.angular_velocity,
+                    dt_seconds);
             if (!angular_velocity.valid) {
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
@@ -946,16 +850,19 @@ void GuidanceRuntime::processing_worker() {
 
             const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = PngGuidance::calculate(
-                line_of_sight, angular_velocity, state->velocity,
-                state->attitude, config_.png_guidance);
+                line_of_sight, angular_velocity, config_.launch_speed_mps,
+                config_.png_guidance);
             record_timing(TimingStage::guidance,
                           std::chrono::steady_clock::now() - guidance_started);
             if (!result.guidance.valid) {
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
-                        << ", imu_timestamp_ns=" << state->timestamp_ns
-                        << ", imu_age_ms="
-                        << static_cast<double>(state_age_ns) / 1e6;
+                        << ", imu_lower_timestamp_ns="
+                        << angular_velocity_lookup->lower_timestamp_ns
+                        << ", imu_upper_timestamp_ns="
+                        << angular_velocity_lookup->upper_timestamp_ns
+                        << ", imu_bracket_age_ms="
+                        << static_cast<double>(bracket_age_ns) / 1e6;
                 log_output_diagnostic("PNG 引导输出无效", details.str());
             }
             if (result.guidance.valid && !faulted_.load() &&
@@ -968,12 +875,12 @@ void GuidanceRuntime::processing_worker() {
                 result.overlay.body_overload_z_g =
                     result.guidance.body_overload.z;
                 const auto command_started = std::chrono::steady_clock::now();
-                const bool sent =
-                    command_sink_->send({timestamp_ns, result.guidance});
+                const bool sent = command_sink_->try_submit(
+                    {timestamp_ns, result.guidance});
                 record_timing(TimingStage::command,
                               std::chrono::steady_clock::now() - command_started);
                 if (!sent) {
-                    set_fault("guidance command send failed");
+                    set_fault("guidance command submit failed");
                     return;
                 }
             }

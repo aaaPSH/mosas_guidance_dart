@@ -323,6 +323,10 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             return parse_bool(value, &config->imu.skip_self_check) || invalid();
         } else if (key == "sample_rate_hz" && parse_double(value, &decimal)) {
             config->imu.sample_rate_hz = decimal;
+        } else if (key == "measurement_latency_ns") {
+            return parse_timestamp_ns(value,
+                                      &config->imu.measurement_latency_ns) ||
+                   invalid();
         } else {
             return invalid();
         }
@@ -384,6 +388,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "launch_speed_mps") return set_double(&config->guidance.launch_speed_mps) || invalid();
         if (key == "history_capacity") return set_size(&config->guidance.history_capacity) || invalid();
         if (key == "max_imu_age_ms") return parse_timestamp_ms(value, &config->guidance.max_imu_age_ns) || invalid();
+        if (key == "max_camera_future_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_future_ns) || invalid();
+        if (key == "max_camera_age_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_age_ns) || invalid();
         if (key == "capture_queue_capacity") return set_size(&config->guidance.capture_queue_capacity) || invalid();
         if (key == "output_queue_capacity") return set_size(&config->guidance.output_queue_capacity) || invalid();
         if (key == "initial_roi_x") return set_int(&config->guidance.vision_config.initial_roi.x) || invalid();
@@ -510,7 +516,8 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         return fail_global(path, "畸变参数无效", error);
     }
     if (!std::isfinite(config.imu.sample_rate_hz) ||
-        config.imu.sample_rate_hz <= 0.0) {
+        config.imu.sample_rate_hz <= 0.0 ||
+        config.imu.measurement_latency_ns < 0) {
         return fail_global(path, "IMU 参数无效", error);
     }
     const bool serial_required =
@@ -532,6 +539,8 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     if (config.guidance.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
+        config.guidance.max_camera_future_ns < 0 ||
+        config.guidance.max_camera_age_ns <= 0 ||
         config.guidance.capture_queue_capacity == 0 ||
         config.guidance.output_queue_capacity == 0 ||
         vision.initial_roi.width <= 0 || vision.initial_roi.height <= 0 ||

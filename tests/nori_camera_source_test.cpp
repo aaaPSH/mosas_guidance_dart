@@ -253,7 +253,10 @@ void test_callback_queue_capacity_is_configurable() {
         "mosas_nori_camera_source_test.conf";
     {
         std::ofstream output(path);
-        output << "[camera]\ndevice_id=0\ncallback_queue_capacity=3\n";
+        output << "[camera]\ndevice_id=0\ncallback_queue_capacity=3\n"
+               << "[imu]\nmeasurement_latency_ns=1234\n"
+               << "[guidance]\nmax_camera_future_ms=7\n"
+               << "max_camera_age_ms=800\n";
     }
 
     mosas::app::AppConfig config;
@@ -261,6 +264,9 @@ void test_callback_queue_capacity_is_configurable() {
     assert(mosas::app::AppConfigLoader::load(path, &config, &error));
     assert(config.camera.device_id == 0);
     assert(config.camera.callback_queue_capacity == 3);
+    assert(config.imu.measurement_latency_ns == 1234);
+    assert(config.guidance.max_camera_future_ns == 7'000'000);
+    assert(config.guidance.max_camera_age_ns == 800'000'000);
     std::filesystem::remove(path);
 }
 

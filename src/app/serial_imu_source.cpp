@@ -47,24 +47,33 @@ SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms, std::ostream& output)
     : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms, false,
-                      output) {}
+                      output, 0) {}
 
 SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms, bool enable_interval_statistics)
     : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
-                      enable_interval_statistics, std::cerr) {}
+                      enable_interval_statistics, std::cerr, 0) {}
 
 SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms, bool enable_interval_statistics,
     std::ostream& output)
+    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
+                      enable_interval_statistics, output, 0) {}
+
+SerialImuSource::SerialImuSource(
+    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
+    int read_timeout_ms, bool enable_interval_statistics,
+    std::ostream& output, runtime::TimestampNs measurement_latency_ns)
     : port_(std::move(port)),
       output_(&output),
       read_timeout_ms_(read_timeout_ms),
+      measurement_latency_ns_(measurement_latency_ns),
       interval_statistics_enabled_(enable_interval_statistics),
       raw_receive_buffer_(kRawQueueCapacity),
-      decoder_(source_wire_byte_period(port_), 0, kDecodedQueueCapacity) {
+      decoder_(source_wire_byte_period(port_), measurement_latency_ns,
+               kDecodedQueueCapacity) {
     if (port_ == nullptr) {
         configuration_error_ = "串口对象为空";
         return;
@@ -75,6 +84,10 @@ SerialImuSource::SerialImuSource(
     }
     if (read_timeout_ms_ <= 0) {
         configuration_error_ = "串口 IMU read_timeout_ms 必须大于 0";
+        return;
+    }
+    if (measurement_latency_ns_ < 0) {
+        configuration_error_ = "IMU 测量延迟不能为负数";
         return;
     }
 
@@ -201,6 +214,10 @@ runtime::ImuSourceDiagnostics SerialImuSource::diagnostics() const noexcept {
     diagnostics.dropped_sample_count = decoder_.dropped_sample_count();
     diagnostics.queued_chunk_count = raw_receive_buffer_.queued_chunk_count();
     diagnostics.chunk_queue_capacity = raw_receive_buffer_.queue_capacity();
+    diagnostics.receive_realtime_priority_applied =
+        port_ != nullptr && port_->receive_realtime_priority_applied();
+    diagnostics.receive_priority_error =
+        port_ != nullptr && port_->receive_priority_error();
     return diagnostics;
 }
 

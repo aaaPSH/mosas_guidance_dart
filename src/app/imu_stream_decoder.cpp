@@ -94,6 +94,11 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
 
         runtime::TimestampNs timestamp = buffer_first_timestamp_ns_;
         timestamp = saturating_subtract(timestamp, measurement_latency_ns_);
+        if (timestamp < 0) {
+            parse_error_count_.fetch_add(1, std::memory_order_relaxed);
+            discard_prefix(serial_package::kImuFrameSize);
+            continue;
+        }
         if (has_timestamp_ && timestamp <= last_timestamp_ns_) {
             timestamp_rollback_count_.fetch_add(1, std::memory_order_relaxed);
             discard_prefix(serial_package::kImuFrameSize);

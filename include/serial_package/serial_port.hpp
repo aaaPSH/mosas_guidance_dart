@@ -90,6 +90,15 @@ public:
 
     bool receive_running() const noexcept;
 
+    bool receive_realtime_priority_applied() const noexcept {
+        return receive_realtime_priority_applied_.load(
+            std::memory_order_acquire);
+    }
+
+    bool receive_priority_error() const noexcept {
+        return receive_priority_error_.load(std::memory_order_acquire);
+    }
+
     const SerialPortConfig& config() const noexcept { return config_; }
 
     bool flush_input();
@@ -120,6 +129,8 @@ private:
     std::thread receive_thread_;
     std::atomic<bool> receive_stop_requested_{false};
     std::atomic<bool> receive_running_{false};
+    std::atomic<bool> receive_realtime_priority_applied_{false};
+    std::atomic<bool> receive_priority_error_{false};
 };
 
 }  // namespace serial_package
