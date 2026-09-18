@@ -57,6 +57,24 @@ bool same_video(const VIDEO_INFO& video, const CameraAppConfig& config,
            video.f_Fps == static_cast<float>(config.fps);
 }
 
+runtime::CameraTimestampDomain frame_timestamp_domain(
+    const FRAME_BUFFER_DATA& frame, runtime::CameraTimestampDomain configured) {
+    if ((frame.buffer.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) ==
+        V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
+        return runtime::CameraTimestampDomain::monotonic;
+    }
+    return configured;
+}
+
+runtime::CameraTimestampSource timestamp_source(
+    runtime::CameraTimestampDomain domain) {
+    return domain == runtime::CameraTimestampDomain::monotonic
+               ? runtime::CameraTimestampSource::sdk_monotonic
+               : domain == runtime::CameraTimestampDomain::realtime
+                     ? runtime::CameraTimestampSource::sdk_realtime_converted
+                     : runtime::CameraTimestampSource::unknown;
+}
+
 }  // 匿名命名空间结束
 
 NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config)
@@ -109,6 +127,16 @@ runtime::SourceResult NoriSdkCameraSource::configure(
         set_error("视频配置无效，设备 " + config_.device);
         return fatal_result();
     }
+
+    const runtime::TimestampNs realtime_now = runtime::realtime_timestamp_ns();
+    const runtime::TimestampNs monotonic_now =
+        runtime::monotonic_timestamp_ns();
+    if (realtime_now < 0 || monotonic_now < 0) {
+        set_error("无法建立相机 realtime 到 monotonic 的时钟映射");
+        return fatal_result();
+    }
+    camera_clock_mapping_ = {realtime_now, monotonic_now};
+    dropped_timestamp_count_.store(0, std::memory_order_relaxed);
 
     if (config_.undistort) {
         try {
@@ -377,7 +405,9 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     CaptureGuard capture_guard(this);
 
     frame->image.release();
-    frame->timestamp_ns = 0;
+    frame->timestamp_ns = -1;
+    frame->received_timestamp_ns = -1;
+    frame->timestamp_source = runtime::CameraTimestampSource::unknown;
 
     PendingFrame pending;
     {
@@ -466,6 +496,8 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     }
 
     frame->timestamp_ns = pending.timestamp_ns;
+    frame->received_timestamp_ns = pending.received_timestamp_ns;
+    frame->timestamp_source = pending.timestamp_source;
     if (frame->image.empty() || frame->image.type() != CV_8UC3) {
         set_error("capture 输出图像无效，设备 " + config_.device);
         return fatal_result();
@@ -674,7 +706,18 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     pending.media_type = frame->PixFormat.u_Format;
     pending.width = frame->PixFormat.u_Width;
     pending.height = frame->PixFormat.u_Height;
-    pending.timestamp_ns = steady_timestamp_ns();
+    pending.received_timestamp_ns = steady_timestamp_ns();
+    const runtime::CameraTimestampDomain domain = frame_timestamp_domain(
+        *frame, config_.frame_timestamp_domain);
+    const auto timestamp = runtime::convert_camera_timeval(
+        frame->Frame_Time.tv_sec, frame->Frame_Time.tv_usec, domain,
+        camera_clock_mapping_, config_.camera_timestamp_bias_ns);
+    if (!timestamp.has_value()) {
+        dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
+        return NORI_OK;
+    }
+    pending.timestamp_ns = *timestamp;
+    pending.timestamp_source = timestamp_source(domain);
     if (std::isfinite(frame->PixFormat.f_Fps) &&
         frame->PixFormat.f_Fps > 0.0F) {
         sdk_capture_fps_.store(static_cast<double>(frame->PixFormat.f_Fps),

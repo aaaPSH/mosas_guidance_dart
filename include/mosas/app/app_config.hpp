@@ -46,6 +46,11 @@ struct CameraAppConfig {
     double gain = 0.0;
     // SDK 回调与处理线程之间的帧缓存容量；队列满时丢弃最旧帧。
     std::size_t callback_queue_capacity = 2;
+    // Frame_Time 的时钟域必须由设备/驱动实测确认；默认按显式配置的 realtime 处理。
+    runtime::CameraTimestampDomain frame_timestamp_domain =
+        runtime::CameraTimestampDomain::realtime;
+    // 对 SDK 采集时刻到曝光参考时刻的固定修正，单位纳秒。
+    runtime::TimestampNs camera_timestamp_bias_ns = 0;
     bool undistort = false;
     CameraMatrix3 camera_matrix{};
     DistortionCoefficients distortion{};
@@ -61,7 +66,7 @@ enum class ImuMode {
 
 struct ImuAppConfig {
     ImuMode mode = ImuMode::simulated;
-    // IMU 实际发送频率，同时作为串口积压帧逻辑时间戳的周期基准。
+    // IMU 实际发送频率，仅用于兼容配置校验；帧时间戳来自串口接收时间轴。
     double sample_rate_hz = 200.0;
     // 测试模式：使用假基准跳过 IMU 静止自检。
     bool skip_self_check = false;

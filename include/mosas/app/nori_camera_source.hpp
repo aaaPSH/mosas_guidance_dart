@@ -3,6 +3,7 @@
 
 #include <mosas/app/app_config.hpp>
 #include <mosas/app/nori_camera_sdk.hpp>
+#include <mosas/runtime/frame_timing.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -50,6 +51,9 @@ private:
         uint32_t width = 0;
         uint32_t height = 0;
         runtime::TimestampNs timestamp_ns = 0;
+        runtime::TimestampNs received_timestamp_ns = 0;
+        runtime::CameraTimestampSource timestamp_source =
+            runtime::CameraTimestampSource::unknown;
     };
 
     class CaptureGuard {
@@ -96,6 +100,8 @@ private:
     bool video_started_ = false;
     bool configured_ = false;
     std::atomic<double> sdk_capture_fps_{0.0};
+    runtime::CameraClockMapping camera_clock_mapping_{};
+    std::atomic<std::uint64_t> dropped_timestamp_count_{0};
 
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex capture_mutex_;

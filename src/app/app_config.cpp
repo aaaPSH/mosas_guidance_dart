@@ -179,6 +179,37 @@ bool parse_timestamp_ms(const std::string& text, runtime::TimestampNs* value) {
     return true;
 }
 
+bool parse_timestamp_ns(const std::string& text, runtime::TimestampNs* value) {
+    if (text.empty()) {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long long parsed = std::strtoll(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0') {
+        return false;
+    }
+    *value = static_cast<runtime::TimestampNs>(parsed);
+    return true;
+}
+
+bool parse_camera_timestamp_domain(
+    const std::string& text, runtime::CameraTimestampDomain* value) {
+    if (text == "unknown") {
+        *value = runtime::CameraTimestampDomain::unknown;
+        return true;
+    }
+    if (text == "monotonic") {
+        *value = runtime::CameraTimestampDomain::monotonic;
+        return true;
+    }
+    if (text == "realtime") {
+        *value = runtime::CameraTimestampDomain::realtime;
+        return true;
+    }
+    return false;
+}
+
 bool parse_mode(const std::string& text, runtime::CameraCaptureMode* value) {
     if (text == "free_run") {
         *value = runtime::CameraCaptureMode::free_run;
@@ -234,6 +265,12 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->camera.gain = decimal;
         } else if (key == "callback_queue_capacity" &&
                    parse_size(value, &config->camera.callback_queue_capacity)) {
+        } else if (key == "frame_timestamp_domain" &&
+                   parse_camera_timestamp_domain(
+                       value, &config->camera.frame_timestamp_domain)) {
+        } else if (key == "camera_timestamp_bias_ns" &&
+                   parse_timestamp_ns(value,
+                                      &config->camera.camera_timestamp_bias_ns)) {
         } else if (key == "undistort" &&
                    parse_bool(value, &config->camera.undistort)) {
         } else if (key == "distortion_k1" && parse_double(value, &decimal)) {
@@ -456,6 +493,8 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         !std::isfinite(config.camera.exposure_us) ||
         config.camera.exposure_us <= 0.0 || !std::isfinite(config.camera.gain) ||
         config.camera.gain < 0.0 || config.camera.callback_queue_capacity == 0 ||
+        config.camera.frame_timestamp_domain ==
+            runtime::CameraTimestampDomain::unknown ||
         !std::isfinite(matrix.m00) ||
         !std::isfinite(matrix.m01) || !std::isfinite(matrix.m02) ||
         !std::isfinite(matrix.m10) || !std::isfinite(matrix.m11) ||

@@ -195,37 +195,21 @@ bool RtspFrameSink::publish_impl(
                 return false;
             }
 
-            const auto phase_name = [](mosas::runtime::FlightPhase phase) {
-                switch (phase) {
-                    case mosas::runtime::FlightPhase::pre_launch:
-                        return "pre_launch";
-                    case mosas::runtime::FlightPhase::ejection:
-                        return "ejection";
-                    case mosas::runtime::FlightPhase::free_flight:
-                        return "free_flight";
-                }
-                return "unknown";
-            };
             const VisionOverlayData empty_overlay{};
             const VisionOverlayData& data =
                 overlay == nullptr ? empty_overlay : *overlay;
             flight_data_writer_
                 << recording_frame_index_ << ',' << frame.timestamp_ns << ','
+                << frame.received_timestamp_ns << ','
                 << imu_state.timestamp_ns << ','
-                << phase_name(imu_state.phase) << ','
                 << (vision_result.found ? 1 : 0) << ',' << vision_result.blob.x
                 << ',' << vision_result.blob.y << ',' << vision_result.blob.width
                 << ',' << vision_result.blob.height << ','
                 << vision_result.blob.area << ',' << vision_result.blob.center_x
                 << ',' << vision_result.blob.center_y << ','
-                << imu_state.acceleration.x << ',' << imu_state.acceleration.y
-                << ',' << imu_state.acceleration.z << ','
                 << imu_state.angular_velocity.x << ','
                 << imu_state.angular_velocity.y << ','
-                << imu_state.angular_velocity.z << ',' << imu_state.attitude.pitch
-                << ',' << imu_state.attitude.yaw << ',' << imu_state.attitude.roll
-                << ',' << imu_state.velocity.x << ',' << imu_state.velocity.y
-                << ',' << imu_state.velocity.z << ','
+                << imu_state.angular_velocity.z << ','
                 << (data.line_of_sight_valid ? 1 : 0) << ','
                 << data.line_of_sight_q_y_rad << ',' << data.line_of_sight_q_z_rad
                 << ',' << (data.line_of_sight_rate_valid ? 1 : 0) << ','
@@ -334,14 +318,12 @@ bool RtspFrameSink::initialize_recording_impl() {
         return false;
     }
     flight_data_writer_
-        << "frame_index,frame_timestamp_ns,imu_timestamp_ns,flight_phase,"
+        << "frame_index,frame_timestamp_ns,frame_received_timestamp_ns,"
+           "imu_timestamp_ns,"
            "vision_found,target_x,target_y,target_width,target_height,"
            "target_area,target_center_x,target_center_y,"
-           "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
-           "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
+           "imu_angular_velocity_x_rad_s,"
            "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
-           "attitude_pitch_rad,attitude_yaw_rad,attitude_roll_rad,"
-           "velocity_x_mps,velocity_y_mps,velocity_z_mps,"
            "los_valid,los_q_y_rad,los_q_z_rad,los_rate_valid,"
            "los_rate_q_y_rad_s,los_rate_q_z_rad_s,guidance_valid,"
            "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"

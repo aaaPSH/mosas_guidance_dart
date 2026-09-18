@@ -2,6 +2,7 @@
 #define MOSAS_RUNTIME_TYPES_HPP
 
 #include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/runtime/frame_timing.hpp>
 
 #include <cstdint>
 
@@ -24,17 +25,15 @@ struct ImuSample {
 };
 
 struct CameraFrame {
-    TimestampNs timestamp_ns;
+    TimestampNs timestamp_ns = -1;
+    TimestampNs received_timestamp_ns = -1;
+    CameraTimestampSource timestamp_source = CameraTimestampSource::unknown;
     cv::Mat image;
 };
 
 struct ImuStateSnapshot {
-    TimestampNs timestamp_ns;
-    FlightPhase phase;
-    EulerAngles attitude;
-    Vector3 velocity;
-    Vector3 acceleration;
-    Vector3 angular_velocity;
+    TimestampNs timestamp_ns = -1;
+    Vector3 angular_velocity{0.0, 0.0, 0.0};
 };
 
 struct GuidanceCommand {
