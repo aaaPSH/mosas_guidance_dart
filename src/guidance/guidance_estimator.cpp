@@ -6,21 +6,13 @@
 namespace {
 
 constexpr double kEpsilon = 1e-12;
-constexpr double kRotationTolerance = 1e-6;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
 
-bool is_finite(double value) {
-    return std::isfinite(value);
-}
+bool is_finite(double value) { return std::isfinite(value); }
 
-LineOfSight invalid_line_of_sight() {
-    return {false, 0.0, 0.0};
-}
-
-bool is_finite(const EulerAngles& value) {
-    return is_finite(value.roll) && is_finite(value.pitch) &&
-           is_finite(value.yaw);
+bool is_finite(const Vector3& value) {
+    return is_finite(value.x) && is_finite(value.y) && is_finite(value.z);
 }
 
 bool is_valid_line_of_sight(const LineOfSight& value) {
@@ -57,39 +49,7 @@ double normalize_angle(double angle) {
     return angle - kPi;
 }
 
-bool is_finite(const RotationMatrix3& value) {
-    return is_finite(value.m00) && is_finite(value.m01) &&
-           is_finite(value.m02) && is_finite(value.m10) &&
-           is_finite(value.m11) && is_finite(value.m12) &&
-           is_finite(value.m20) && is_finite(value.m21) &&
-           is_finite(value.m22);
-}
-
-double vector_norm(const Vector3& value);
-
-bool is_rotation_matrix(const RotationMatrix3& value) {
-    if (!is_finite(value)) {
-        return false;
-    }
-
-    const Vector3 column_0{value.m00, value.m10, value.m20};
-    const Vector3 column_1{value.m01, value.m11, value.m21};
-    const Vector3 column_2{value.m02, value.m12, value.m22};
-    const double determinant =
-        value.m00 * (value.m11 * value.m22 - value.m12 * value.m21) -
-        value.m01 * (value.m10 * value.m22 - value.m12 * value.m20) +
-        value.m02 * (value.m10 * value.m21 - value.m11 * value.m20);
-    return std::abs(vector_norm(column_0) - 1.0) <= kRotationTolerance &&
-           std::abs(vector_norm(column_1) - 1.0) <= kRotationTolerance &&
-           std::abs(vector_norm(column_2) - 1.0) <= kRotationTolerance &&
-           std::abs(column_0.x * column_1.x + column_0.y * column_1.y +
-                    column_0.z * column_1.z) <= kRotationTolerance &&
-           std::abs(column_0.x * column_2.x + column_0.y * column_2.y +
-                    column_0.z * column_2.z) <= kRotationTolerance &&
-           std::abs(column_1.x * column_2.x + column_1.y * column_2.y +
-                    column_1.z * column_2.z) <= kRotationTolerance &&
-           std::abs(determinant - 1.0) <= kRotationTolerance;
-}
+LineOfSight invalid_line_of_sight() { return {false, 0.0, 0.0}; }
 
 bool is_valid_intrinsics(const CameraIntrinsics& intrinsics) {
     return is_finite(intrinsics.fx) && is_finite(intrinsics.fy) &&
@@ -97,8 +57,45 @@ bool is_valid_intrinsics(const CameraIntrinsics& intrinsics) {
            intrinsics.fx > 0.0 && intrinsics.fy > 0.0;
 }
 
-bool is_valid_vector(const Vector3& value) {
-    return is_finite(value.x) && is_finite(value.y) && is_finite(value.z);
+bool is_valid_rotation(const RotationMatrix3& value) {
+    if (!is_finite(value.m00) || !is_finite(value.m01) ||
+        !is_finite(value.m02) || !is_finite(value.m10) ||
+        !is_finite(value.m11) || !is_finite(value.m12) ||
+        !is_finite(value.m20) || !is_finite(value.m21) ||
+        !is_finite(value.m22)) {
+        return false;
+    }
+    const Vector3 c0{value.m00, value.m10, value.m20};
+    const Vector3 c1{value.m01, value.m11, value.m21};
+    const Vector3 c2{value.m02, value.m12, value.m22};
+    const auto dot = [](const Vector3& lhs, const Vector3& rhs) {
+        return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+    };
+    const double determinant =
+        value.m00 * (value.m11 * value.m22 - value.m12 * value.m21) -
+        value.m01 * (value.m10 * value.m22 - value.m12 * value.m20) +
+        value.m02 * (value.m10 * value.m21 - value.m11 * value.m20);
+    return std::abs(std::hypot(std::hypot(c0.x, c0.y), c0.z) - 1.0) <= 1e-6 &&
+           std::abs(std::hypot(std::hypot(c1.x, c1.y), c1.z) - 1.0) <= 1e-6 &&
+           std::abs(std::hypot(std::hypot(c2.x, c2.y), c2.z) - 1.0) <= 1e-6 &&
+           std::abs(dot(c0, c1)) <= 1e-6 && std::abs(dot(c0, c2)) <= 1e-6 &&
+           std::abs(dot(c1, c2)) <= 1e-6 && std::abs(determinant - 1.0) <= 1e-6;
+}
+
+Vector3 multiply(const RotationMatrix3& matrix, const Vector3& value) {
+    return {
+        matrix.m00 * value.x + matrix.m01 * value.y + matrix.m02 * value.z,
+        matrix.m10 * value.x + matrix.m11 * value.y + matrix.m12 * value.z,
+        matrix.m20 * value.x + matrix.m21 * value.y + matrix.m22 * value.z,
+    };
+}
+
+Vector3 cross_product(const Vector3& lhs, const Vector3& rhs) {
+    return {
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x,
+    };
 }
 
 double vector_norm(const Vector3& value) {
@@ -113,124 +110,78 @@ Vector3 normalize(const Vector3& value) {
     return {value.x / norm, value.y / norm, value.z / norm};
 }
 
-Vector3 multiply(const RotationMatrix3& matrix, const Vector3& value) {
-    return {
-        matrix.m00 * value.x + matrix.m01 * value.y + matrix.m02 * value.z,
-        matrix.m10 * value.x + matrix.m11 * value.y + matrix.m12 * value.z,
-        matrix.m20 * value.x + matrix.m21 * value.y + matrix.m22 * value.z,
-    };
-}
-
-Vector3 multiply_transpose(const RotationMatrix3& matrix,
-                           const Vector3& value) {
-    return {
-        matrix.m00 * value.x + matrix.m10 * value.y + matrix.m20 * value.z,
-        matrix.m01 * value.x + matrix.m11 * value.y + matrix.m21 * value.z,
-        matrix.m02 * value.x + matrix.m12 * value.y + matrix.m22 * value.z,
-    };
-}
-
-Vector3 cross_product(const Vector3& lhs, const Vector3& rhs) {
-    return {
-        lhs.y * rhs.z - lhs.z * rhs.y,
-        lhs.z * rhs.x - lhs.x * rhs.z,
-        lhs.x * rhs.y - lhs.y * rhs.x,
-    };
-}
-
-RotationMatrix3 identity_rotation() {
-    return {1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0};
-}
-
-RotationMatrix3 rotation_from_euler(const EulerAngles& angles) {
-    const double cr = std::cos(angles.roll);
-    const double sr = std::sin(angles.roll);
-    const double cp = std::cos(angles.pitch);
-    const double sp = std::sin(angles.pitch);
-    const double cy = std::cos(angles.yaw);
-    const double sy = std::sin(angles.yaw);
-
-    // YZX 欧拉角对应的弹体坐标系到地面坐标系旋转矩阵。
-    return {
-        cy * cp, -cy * sp * cr + sy * sr, cy * sp * sr + sy * cr,
-        sp,      cp * cr,                 -cp * sr,
-        -sy * cp, sy * sp * cr + cy * sr, -sy * sp * sr + cy * cr,
-    };
-}
-
-RotationMatrix3 ballistic_to_navigation_rotation(const Vector3& velocity) {
-    const double speed = vector_norm(velocity);
-    const double horizontal_speed = std::hypot(velocity.x, velocity.z);
-    const double cos_theta = horizontal_speed / speed;
-    const double sin_theta = velocity.y / speed;
-
-    // 航向角采用与 DartCondition 相同的约定：导航系 +z 为右侧，
-    // 绕导航系 +y 轴的正角度将弹道系 +x 轴转向导航系 -z 轴。
-    double cos_heading = 1.0;
-    double sin_heading = 0.0;
-    if (horizontal_speed >= kEpsilon) {
-        cos_heading = velocity.x / horizontal_speed;
-        sin_heading = -velocity.z / horizontal_speed;
-    }
-
-    // 由弹道系到导航系的旋转矩阵，弹道系 +x 沿速度方向，
-    // +y 位于速度和导航系竖直方向构成的平面内，+z 用右手系补齐。
-    return {
-        cos_heading * cos_theta,
-        -cos_heading * sin_theta,
-        sin_heading,
-        sin_theta,
-        cos_theta,
-        0.0,
-        -sin_heading * cos_theta,
-        sin_heading * sin_theta,
-        cos_heading,
-    };
-}
-
 bool camera_direction(const VisionResult& result,
                       const CameraIntrinsics& intrinsics,
                       Vector3* direction) {
     if (direction == nullptr || !result.found ||
         !is_finite(result.blob.center_x) ||
-        !is_finite(result.blob.center_y) ||
-        !is_valid_intrinsics(intrinsics)) {
+        !is_finite(result.blob.center_y) || !is_valid_intrinsics(intrinsics)) {
         return false;
     }
-
     const double right =
         (result.blob.center_x - intrinsics.cx) / intrinsics.fx;
     const double up =
         -(result.blob.center_y - intrinsics.cy) / intrinsics.fy;
     const Vector3 unnormalized{1.0, up, right};
-    if (!is_valid_vector(unnormalized) ||
-        vector_norm(unnormalized) < kEpsilon) {
+    if (!is_finite(unnormalized) || vector_norm(unnormalized) < kEpsilon) {
         return false;
     }
-
     *direction = normalize(unnormalized);
-    return is_valid_vector(*direction) && vector_norm(*direction) >= kEpsilon;
+    return is_finite(*direction) && vector_norm(*direction) >= kEpsilon;
 }
 
 LineOfSight angles_from_direction(const Vector3& direction) {
-    if (!is_valid_vector(direction)) {
+    if (!is_finite(direction)) {
         return invalid_line_of_sight();
     }
-
     const double norm = vector_norm(direction);
     if (!is_finite(norm) || norm < kEpsilon) {
         return invalid_line_of_sight();
     }
-
-    const double q_y = std::atan2(direction.y,
-                                  std::hypot(direction.x, direction.z));
+    const double q_y =
+        std::atan2(direction.y, std::hypot(direction.x, direction.z));
     const double q_z = std::atan2(direction.z, direction.x);
-    if (!is_finite(q_y) || !is_finite(q_z)) {
-        return invalid_line_of_sight();
+    return is_finite(q_y) && is_finite(q_z) ? LineOfSight{true, q_y, q_z}
+                                           : invalid_line_of_sight();
+}
+
+Vector3 line_of_sight_unit(const LineOfSight& line_of_sight) {
+    const double sin_elevation = std::sin(line_of_sight.q_y);
+    const double cos_elevation = std::cos(line_of_sight.q_y);
+    const double sin_azimuth = std::sin(line_of_sight.q_z);
+    const double cos_azimuth = std::cos(line_of_sight.q_z);
+    return {cos_elevation * cos_azimuth, sin_elevation,
+            cos_elevation * sin_azimuth};
+}
+
+double dot_product(const Vector3& lhs, const Vector3& rhs) {
+    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+bool body_rotation_rate(const LineOfSight& line_of_sight,
+                        const Vector3& body_angular_velocity,
+                        double* q_y_rate, double* q_z_rate) {
+    if (q_y_rate == nullptr || q_z_rate == nullptr ||
+        !is_finite(body_angular_velocity)) {
+        return false;
     }
-    return {true, q_y, q_z};
+    const double cos_elevation = std::cos(line_of_sight.q_y);
+    if (!is_finite(cos_elevation) || std::abs(cos_elevation) < kEpsilon) {
+        return false;
+    }
+    const Vector3 unit = line_of_sight_unit(line_of_sight);
+    const Vector3 rotation_rate = cross_product(body_angular_velocity, unit);
+    const Vector3 elevation_basis{
+        -std::sin(line_of_sight.q_y) * std::cos(line_of_sight.q_z),
+        cos_elevation,
+        -std::sin(line_of_sight.q_y) * std::sin(line_of_sight.q_z)};
+    const Vector3 azimuth_derivative{
+        -cos_elevation * std::sin(line_of_sight.q_z), 0.0,
+        cos_elevation * std::cos(line_of_sight.q_z)};
+    *q_y_rate = dot_product(rotation_rate, elevation_basis);
+    *q_z_rate = dot_product(rotation_rate, azimuth_derivative) /
+                (cos_elevation * cos_elevation);
+    return is_finite(*q_y_rate) && is_finite(*q_z_rate);
 }
 
 }  // namespace
@@ -244,103 +195,54 @@ LineOfSightRateEstimator::ScalarKalmanFilter::ScalarKalmanFilter(
 }
 
 void LineOfSightRateEstimator::ScalarKalmanFilter::reset() {
-    angle_ = 0.0;
     rate_ = 0.0;
-    angle_covariance_ = config_.measurement_noise;
-    angle_rate_covariance_ = 0.0;
     rate_covariance_ = config_.initial_covariance;
 }
 
-void LineOfSightRateEstimator::ScalarKalmanFilter::initialize(double angle,
-                                                               double rate) {
-    angle_ = angle;
+void LineOfSightRateEstimator::ScalarKalmanFilter::initialize(double rate) {
     rate_ = rate;
-    angle_covariance_ = config_.measurement_noise;
-    angle_rate_covariance_ = 0.0;
     rate_covariance_ = config_.initial_covariance;
 }
 
 double LineOfSightRateEstimator::ScalarKalmanFilter::update(
     double measurement, double dt) {
-    const double dt_squared = dt * dt;
-    const double dt_cubed = dt_squared * dt;
-    const double dt_fourth = dt_cubed * dt;
-
-    // 使用常角加速度模型预测角度和角速度。
-    const double predicted_angle = angle_ + rate_ * dt;
     const double predicted_rate = rate_;
-    const double predicted_angle_covariance =
-        angle_covariance_ + 2.0 * dt * angle_rate_covariance_ +
-        dt_squared * rate_covariance_ +
-        config_.process_noise * dt_fourth * 0.25;
-    const double predicted_angle_rate_covariance =
-        angle_rate_covariance_ + dt * rate_covariance_ +
-        config_.process_noise * dt_cubed * 0.5;
-    const double predicted_rate_covariance =
-        rate_covariance_ + config_.process_noise * dt_squared;
-
-    const double innovation = measurement - predicted_angle;
+    const double predicted_covariance =
+        rate_covariance_ + config_.process_noise * dt * dt;
+    const double innovation = measurement - predicted_rate;
     const double innovation_covariance =
-        predicted_angle_covariance + config_.measurement_noise;
-    if (!is_finite(predicted_angle) || !is_finite(predicted_rate) ||
-        !is_finite(predicted_angle_covariance) ||
-        !is_finite(predicted_angle_rate_covariance) ||
-        !is_finite(predicted_rate_covariance) ||
+        predicted_covariance + config_.measurement_noise;
+    if (!is_finite(predicted_rate) || !is_finite(predicted_covariance) ||
         !is_finite(innovation_covariance) || innovation_covariance <= 0.0) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-
-    const double angle_gain =
-        predicted_angle_covariance / innovation_covariance;
-    const double rate_gain =
-        predicted_angle_rate_covariance / innovation_covariance;
-    angle_ = predicted_angle + angle_gain * innovation;
-    rate_ = predicted_rate + rate_gain * innovation;
-    angle_covariance_ =
-        (1.0 - angle_gain) * predicted_angle_covariance;
-    angle_rate_covariance_ =
-        (1.0 - angle_gain) * predicted_angle_rate_covariance;
-    rate_covariance_ = predicted_rate_covariance -
-                       rate_gain * predicted_angle_rate_covariance;
+    const double gain = predicted_covariance / innovation_covariance;
+    rate_ = predicted_rate + gain * innovation;
+    rate_covariance_ = (1.0 - gain) * predicted_covariance;
     return rate_;
 }
 
 LineOfSight GuidanceEstimator::calculate(
     const VisionResult& result, const CameraIntrinsics& intrinsics) {
     Vector3 direction{};
-    if (!camera_direction(result, intrinsics, &direction)) {
-        return invalid_line_of_sight();
-    }
-    return angles_from_direction(direction);
+    return camera_direction(result, intrinsics, &direction)
+               ? angles_from_direction(direction)
+               : invalid_line_of_sight();
 }
 
-LineOfSight GuidanceEstimator::calculate_compensated(
+LineOfSight GuidanceEstimator::calculate_body(
     const VisionResult& result, const CameraIntrinsics& intrinsics,
-    const EulerAngles& attitude) {
-    return calculate_compensated(result, intrinsics, attitude,
-                                  identity_rotation());
-}
-
-LineOfSight GuidanceEstimator::calculate_compensated(
-    const VisionResult& result, const CameraIntrinsics& intrinsics,
-    const EulerAngles& attitude, const RotationMatrix3& camera_to_body) {
+    const RotationMatrix3& camera_to_body) {
     Vector3 camera_direction_value{};
-    if (!is_finite(attitude) || !is_rotation_matrix(camera_to_body) ||
+    if (!is_valid_rotation(camera_to_body) ||
         !camera_direction(result, intrinsics, &camera_direction_value)) {
         return invalid_line_of_sight();
     }
-
     const Vector3 body_direction =
-        multiply(camera_to_body, camera_direction_value);
-    if (!is_valid_vector(body_direction) ||
-        vector_norm(body_direction) < kEpsilon) {
-        return invalid_line_of_sight();
-    }
-
-    const RotationMatrix3 body_to_navigation = rotation_from_euler(attitude);
-    const Vector3 navigation_direction =
-        multiply(body_to_navigation, normalize(body_direction));
-    return angles_from_direction(navigation_direction);
+        normalize(multiply(camera_to_body, camera_direction_value));
+    return vector_norm(body_direction) < kEpsilon
+               ? invalid_line_of_sight()
+               : angles_from_direction(body_direction);
 }
 
 LineOfSightRateEstimator::LineOfSightRateEstimator(
@@ -366,9 +268,10 @@ void LineOfSightRateEstimator::reset() {
 }
 
 LineOfSightAngularVelocity LineOfSightRateEstimator::update(
-    const LineOfSight& line_of_sight, double dt) {
-    if (!is_valid_line_of_sight(line_of_sight) || !is_finite(dt) ||
-        dt <= 0.0) {
+    const LineOfSight& line_of_sight, const Vector3& body_angular_velocity,
+    double dt) {
+    if (!is_valid_line_of_sight(line_of_sight) ||
+        !is_finite(body_angular_velocity) || !is_finite(dt) || dt <= 0.0) {
         reset();
         return angular_velocity_;
     }
@@ -384,44 +287,51 @@ LineOfSightAngularVelocity LineOfSightRateEstimator::update(
         return angular_velocity_;
     }
 
-    const double measured_q_y = (line_of_sight.q_y - previous_q_y_) / dt;
-    const double measured_q_z =
+    const double observed_q_y = (line_of_sight.q_y - previous_q_y_) / dt;
+    const double observed_q_z =
         normalize_angle(line_of_sight.q_z - previous_q_z_) / dt;
     previous_q_y_ = line_of_sight.q_y;
     previous_q_z_ = line_of_sight.q_z;
-    if (!is_finite(measured_q_y) || !is_finite(measured_q_z)) {
+    double rotation_q_y = 0.0;
+    double rotation_q_z = 0.0;
+    if (!is_finite(observed_q_y) || !is_finite(observed_q_z) ||
+        !body_rotation_rate(line_of_sight, body_angular_velocity,
+                            &rotation_q_y, &rotation_q_z)) {
         reset();
         return angular_velocity_;
     }
 
-    const LineOfSightAngularVelocity raw_angular_velocity{
-        true, measured_q_y, measured_q_z};
+    const LineOfSightAngularVelocity compensated_rate{
+        true, observed_q_y + rotation_q_y, observed_q_z + rotation_q_z};
+    if (!is_finite(compensated_rate.q_y) ||
+        !is_finite(compensated_rate.q_z)) {
+        reset();
+        return angular_velocity_;
+    }
     sample_.line_of_sight = line_of_sight;
-    sample_.raw_angular_velocity = raw_angular_velocity;
+    sample_.raw_angular_velocity = compensated_rate;
 
     if (!filter_enabled_) {
-        angular_velocity_ = raw_angular_velocity;
+        angular_velocity_ = compensated_rate;
         sample_.filtered_angular_velocity = angular_velocity_;
         return angular_velocity_;
     }
 
     if (!has_rate_) {
-        // 第二帧直接提供初始角速度，避免短时飞行中多帧等待滤波收敛。
-        q_y_filter_.initialize(line_of_sight.q_y, measured_q_y);
-        q_z_filter_.initialize(line_of_sight.q_z, measured_q_z);
+        q_y_filter_.initialize(compensated_rate.q_y);
+        q_z_filter_.initialize(compensated_rate.q_z);
         has_rate_ = true;
-        angular_velocity_ = raw_angular_velocity;
+        angular_velocity_ = compensated_rate;
         sample_.filtered_angular_velocity = angular_velocity_;
         return angular_velocity_;
     }
 
-    const double filtered_q_y = q_y_filter_.update(line_of_sight.q_y, dt);
-    const double filtered_q_z = q_z_filter_.update(line_of_sight.q_z, dt);
+    const double filtered_q_y = q_y_filter_.update(compensated_rate.q_y, dt);
+    const double filtered_q_z = q_z_filter_.update(compensated_rate.q_z, dt);
     if (!is_finite(filtered_q_y) || !is_finite(filtered_q_z)) {
         reset();
         return angular_velocity_;
     }
-
     angular_velocity_ = {true, filtered_q_y, filtered_q_z};
     sample_.filtered_angular_velocity = angular_velocity_;
     return angular_velocity_;
@@ -437,76 +347,40 @@ LineOfSightRateSample LineOfSightRateEstimator::sample() const {
 
 PngGuidanceOutput PngGuidance::calculate(
     const LineOfSight& line_of_sight,
-    const LineOfSightAngularVelocity& angular_velocity,
-    const Vector3& dart_velocity, const EulerAngles& attitude,
+    const LineOfSightAngularVelocity& angular_velocity, double speed_mps,
     const PngGuidanceConfig& config) {
     const PngGuidanceOutput invalid_output{
-        false,
-        {0.0, 0.0, 0.0},
-        {0.0, 0.0, 0.0},
-        {0.0, 0.0, 0.0},
-        0.0,
-        0.0,
-    };
-    if (!is_valid_line_of_sight(line_of_sight) ||
-        !angular_velocity.valid || !is_finite(angular_velocity.q_y) ||
-        !is_finite(angular_velocity.q_z) || !is_valid_vector(dart_velocity) ||
-        !is_finite(attitude) || !is_valid_png_config(config)) {
+        false, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 0.0,
+        0.0};
+    if (!is_valid_line_of_sight(line_of_sight) || !angular_velocity.valid ||
+        !is_finite(angular_velocity.q_y) ||
+        !is_finite(angular_velocity.q_z) || !is_finite(speed_mps) ||
+        speed_mps <= kEpsilon || !is_valid_png_config(config)) {
         return invalid_output;
     }
 
-    const double speed = vector_norm(dart_velocity);
-    if (!is_finite(speed) || speed < kEpsilon) {
-        return invalid_output;
-    }
-
-    // q_y/q_z 是导航系球面 LOS 角及其角速度。先求 LOS 单位向量导数，
-    // 再由 omega_LOS = u_LOS x u_dot_LOS 得到空间角速度，避免将导航系
-    // 球面角速度直接当成弹道系 Y/Z 量。
+    const Vector3 unit = line_of_sight_unit(line_of_sight);
     const double sin_elevation = std::sin(line_of_sight.q_y);
     const double cos_elevation = std::cos(line_of_sight.q_y);
     const double sin_azimuth = std::sin(line_of_sight.q_z);
     const double cos_azimuth = std::cos(line_of_sight.q_z);
-    const Vector3 line_of_sight_unit{
-        cos_elevation * cos_azimuth,
-        sin_elevation,
-        cos_elevation * sin_azimuth,
-    };
-    const Vector3 line_of_sight_unit_rate{
+    const Vector3 unit_rate{
         -sin_elevation * cos_azimuth * angular_velocity.q_y -
             cos_elevation * sin_azimuth * angular_velocity.q_z,
         cos_elevation * angular_velocity.q_y,
         -sin_elevation * sin_azimuth * angular_velocity.q_y +
-            cos_elevation * cos_azimuth * angular_velocity.q_z,
-    };
-    const Vector3 los_angular_velocity =
-        cross_product(line_of_sight_unit, line_of_sight_unit_rate);
-
-    // theta 为飞镖速度矢量的弹道俯仰角，v 为速度模长。
-    const double cos_theta =
-        std::hypot(dart_velocity.x, dart_velocity.z) / speed;
-    const double speed_over_gravity = speed / config.gravity;
-    const Vector3 velocity_unit{
-        dart_velocity.x / speed,
-        dart_velocity.y / speed,
-        dart_velocity.z / speed,
-    };
-    const Vector3 normal_acceleration_direction =
+            cos_elevation * cos_azimuth * angular_velocity.q_z};
+    const Vector3 los_angular_velocity = cross_product(unit, unit_rate);
+    const Vector3 velocity_unit{1.0, 0.0, 0.0};
+    const Vector3 normal_direction =
         cross_product(los_angular_velocity, velocity_unit);
-    const RotationMatrix3 ballistic_to_navigation =
-        ballistic_to_navigation_rotation(dart_velocity);
-    const Vector3 ballistic_normal_direction = multiply_transpose(
-        ballistic_to_navigation, normal_acceleration_direction);
-
+    const double speed_over_gravity = speed_mps / config.gravity;
     double vertical_overload =
-        config.navigation_constant_y * ballistic_normal_direction.y *
-            speed_over_gravity +
-        cos_theta;
+        config.navigation_constant_y * normal_direction.y *
+            speed_over_gravity + 1.0;
     double lateral_overload =
-        config.navigation_constant_z * ballistic_normal_direction.z *
-        speed_over_gravity;
-    if (!is_finite(cos_theta) || !is_finite(vertical_overload) ||
-        !is_finite(lateral_overload)) {
+        config.navigation_constant_z * normal_direction.z * speed_over_gravity;
+    if (!is_finite(vertical_overload) || !is_finite(lateral_overload)) {
         return invalid_output;
     }
 
@@ -515,9 +389,7 @@ PngGuidanceOutput PngGuidance::calculate(
     if (!is_finite(command_overload)) {
         return invalid_output;
     }
-
     if (command_overload > config.maximum_command_overload) {
-        // 对弹道系 Y/Z 合成指令限幅，保持指令方向不变。
         const double scale =
             config.maximum_command_overload / command_overload;
         vertical_overload *= scale;
@@ -525,64 +397,34 @@ PngGuidanceOutput PngGuidance::calculate(
         command_overload = std::hypot(vertical_overload, lateral_overload);
     }
 
-    const double command_phase =
-        std::atan2(lateral_overload, vertical_overload);
-    if (!is_finite(command_overload) || !is_finite(command_phase)) {
+    const double command_phase = std::atan2(lateral_overload, vertical_overload);
+    Vector3 body_acceleration{
+        0.0, config.gravity * vertical_overload,
+        config.gravity * lateral_overload};
+    if (!is_finite(body_acceleration)) {
         return invalid_output;
     }
-
-    // 二维解耦：纵向和横向通道先在弹道系 y/z 方向生成过载，x 轴不产生指令。
-    Vector3 ballistic_acceleration{
-        0.0,
-        config.gravity * vertical_overload,
-        config.gravity * lateral_overload,
-    };
-    if (!is_valid_vector(ballistic_acceleration)) {
-        return invalid_output;
-    }
-
-    Vector3 navigation_acceleration =
-        multiply(ballistic_to_navigation, ballistic_acceleration);
-    if (!is_valid_vector(navigation_acceleration)) {
-        return invalid_output;
-    }
-
-    const double command_acceleration = vector_norm(navigation_acceleration);
+    const double command_acceleration = vector_norm(body_acceleration);
     if (!is_finite(command_acceleration)) {
         return invalid_output;
     }
     if (is_finite(config.maximum_command_acceleration) &&
         command_acceleration > config.maximum_command_acceleration) {
-        const double scale = config.maximum_command_acceleration /
-                             command_acceleration;
-        ballistic_acceleration.x *= scale;
-        ballistic_acceleration.y *= scale;
-        ballistic_acceleration.z *= scale;
-        navigation_acceleration.x *= scale;
-        navigation_acceleration.y *= scale;
-        navigation_acceleration.z *= scale;
+        const double scale =
+            config.maximum_command_acceleration / command_acceleration;
+        body_acceleration.x *= scale;
+        body_acceleration.y *= scale;
+        body_acceleration.z *= scale;
         command_overload *= scale;
-    }
-
-    const RotationMatrix3 body_to_navigation = rotation_from_euler(attitude);
-    const Vector3 body_acceleration =
-        multiply_transpose(body_to_navigation, navigation_acceleration);
-    if (!is_valid_vector(body_acceleration)) {
-        return invalid_output;
     }
 
     const Vector3 body_overload{
         body_acceleration.x / config.gravity,
         body_acceleration.y / config.gravity,
-        body_acceleration.z / config.gravity,
-    };
-    if (!is_valid_vector(body_overload)) {
+        body_acceleration.z / config.gravity};
+    if (!is_finite(body_overload) || !is_finite(command_phase)) {
         return invalid_output;
     }
-    return {true,
-            navigation_acceleration,
-            body_acceleration,
-            body_overload,
-            command_overload,
-            command_phase};
+    return {true, body_acceleration, body_acceleration, body_overload,
+            command_overload, command_phase};
 }

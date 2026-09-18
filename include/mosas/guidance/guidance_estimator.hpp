@@ -38,9 +38,9 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。弹道系 Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²；
-// maximum_command_overload 是弹道系 Y/Z 合成过载上限（单位 g），
-// maximum_command_acceleration 是导航系指令加速度模长上限（单位 m/s²）。
+// PNG 律参数。镖体系 Y/Z 方向导航系数无量纲，重力加速度单位为 m/s²；
+// maximum_command_overload 是镖体系 Y/Z 合成过载上限（单位 g），
+// maximum_command_acceleration 是镖体系指令加速度模长上限（单位 m/s²）。
 struct PngGuidanceConfig {
     double navigation_constant_y = 3.0;
     double navigation_constant_z = 3.0;
@@ -80,29 +80,19 @@ struct LineOfSightRateFilterConfig {
 
 class GuidanceEstimator {
 public:
-    // 根据绿色引导灯形心和相机内参计算相机/弹体系视线俯仰角与偏航角。
+    // 根据绿色引导灯形心和相机内参计算相机视线俯仰角与偏航角。
     // 相机光轴对应弹体系 +x，图像上方对应 +y，图像右方对应 +z。
     // 目标上仰时 q_y 为正，目标右偏时 q_z 为正，角度单位为弧度。
     static LineOfSight calculate(const VisionResult& result,
                                  const CameraIntrinsics& intrinsics);
 
-    // 使用飞镖姿态将相机视线补偿到地面坐标系。
-    // attitude 的字段顺序为 pitch、yaw、roll，角度单位为弧度，旋转顺序与
-    // DartCondition 一致（YZX），表示弹体坐标系到地面坐标系的姿态。
-    // 调用方需保证姿态估计和视觉模块的轴定义一致。
-    // 默认相机坐标系与弹体坐标系重合。
-    static LineOfSight calculate_compensated(
+    // 只使用固定安装矩阵将相机视线转换到镖体系，不使用姿态状态。
+    static LineOfSight calculate_body(
         const VisionResult& result, const CameraIntrinsics& intrinsics,
-        const EulerAngles& attitude);
-
-    // camera_to_body 表示相机坐标系到弹体坐标系的固定安装旋转。
-    static LineOfSight calculate_compensated(
-        const VisionResult& result, const CameraIntrinsics& intrinsics,
-        const EulerAngles& attitude, const RotationMatrix3& camera_to_body);
+        const RotationMatrix3& camera_to_body);
 };
 
-// 根据连续视线角估计俯仰/偏航角速度，并使用两个独立的二状态 Kalman
-// 滤波器直接处理视线角观测，避免先差分再滤波造成的噪声放大。
+// 根据连续视线角估计角速度，并用同步的镖体角速度补偿弹体转动影响。
 class LineOfSightRateEstimator {
 public:
     explicit LineOfSightRateEstimator(
@@ -110,9 +100,10 @@ public:
 
     void reset();
 
-    // 第一次有效视线角仅建立差分基准，不产生有效角速度。
-    // 视线无效或 dt 非法时清空时序状态并返回无效结果。
+    // 第一次有效视线角仅建立差分基准，不产生有效角速度；第二帧开始将
+    // body_angular_velocity 对 LOS 的转动项加入观测角速度，再进行滤波。
     LineOfSightAngularVelocity update(const LineOfSight& line_of_sight,
+                                       const Vector3& body_angular_velocity,
                                        double dt);
 
     LineOfSightAngularVelocity angular_velocity() const;
@@ -127,15 +118,12 @@ private:
             const LineOfSightRateFilterConfig& config);
 
         void reset();
-        void initialize(double angle, double rate);
+        void initialize(double rate);
         double update(double measurement, double dt);
 
     private:
         LineOfSightRateFilterConfig config_;
-        double angle_ = 0.0;
         double rate_ = 0.0;
-        double angle_covariance_ = 0.0;
-        double angle_rate_covariance_ = 0.0;
         double rate_covariance_ = 0.0;
     };
 
@@ -150,18 +138,15 @@ private:
     LineOfSightRateSample sample_{};
 };
 
-// 使用二维解耦 PNG 律，在弹道系计算纵向/横向过载，再转换到镖体系。
+// 使用二维解耦 PNG 律，在恒速度、小攻角假设下直接在镖体系计算过载。
 class PngGuidance {
 public:
-    // line_of_sight、angular_velocity 和 dart_velocity 必须在同一导航坐标系中。
-    // q_y/q_z 是导航系球面视线角速率；先还原 LOS 空间角速度并投影到
-    // 弹道系，再生成 Y/Z 过载。
-    // 输出 body_overload 的 x/y/z 分量为弹体系过载倍数。
-    // 速度模长为零时返回无效输出。
+    // 速度方向固定为镖体系 +x；输出的 navigation/body 字段均为镖体系数值，
+    // 不进行姿态或速度向量旋转。
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,
-        const Vector3& dart_velocity, const EulerAngles& attitude,
+        double speed_mps,
         const PngGuidanceConfig& config = {});
 };
 
