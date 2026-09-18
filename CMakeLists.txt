@@ -117,6 +117,7 @@ add_library(mosas_runtime STATIC
     src/runtime/frame_timing.cpp
     src/runtime/imu_angular_velocity_history.cpp
     src/runtime/async_info_logger.cpp
+    src/runtime/thread_affinity.cpp
     src/runtime/guidance_runtime.cpp
 )
 configure_mosas_target(mosas_runtime)

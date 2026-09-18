@@ -428,7 +428,8 @@ bool SerialPort::configure_receive_thread(
             pthread_self(), sizeof(cpu_set), &cpu_set);
         if (result != 0) {
             receive_priority_error_.store(true, std::memory_order_release);
-            if (config.require_realtime_priority) {
+            if (config.require_realtime_priority ||
+                config.require_cpu_affinity) {
                 set_error("failed to set serial receive CPU affinity");
                 return false;
             }

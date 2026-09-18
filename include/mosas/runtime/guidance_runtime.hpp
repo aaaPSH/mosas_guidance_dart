@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
@@ -63,6 +64,13 @@ struct GuidanceRuntimeConfig {
     std::size_t capture_queue_capacity = 1;
     std::size_t output_queue_capacity = 1;
     std::size_t info_log_queue_capacity = 256;
+    // 关键运行线程的 CPU 亲和性；-1 表示不绑定。
+    int imu_cpu_affinity = -1;
+    int capture_cpu_affinity = -1;
+    int processing_cpu_affinity = -1;
+    int output_cpu_affinity = -1;
+    // 亲和性配置失败时是否拒绝启动运行时。
+    bool require_cpu_affinity = false;
 };
 
 class GuidanceRuntime {
@@ -130,6 +138,10 @@ private:
     void set_error(const std::string& message);
     void set_fault(const std::string& message);
     void cancel_sources() noexcept;
+    bool configure_worker_thread(const char* worker_name,
+                                 int cpu_affinity);
+    void report_worker_startup(bool affinity_applied,
+                               const std::string& error);
 
     std::unique_ptr<ImuSource> imu_source_;
     std::unique_ptr<CameraSource> camera_source_;
@@ -150,6 +162,11 @@ private:
     std::thread capture_thread_;
     std::thread processing_thread_;
     std::thread output_thread_;
+    std::mutex worker_start_mutex_;
+    std::condition_variable worker_start_condition_;
+    std::size_t worker_start_reports_ = 0;
+    bool worker_start_affinity_failed_ = false;
+    std::string worker_start_error_;
 
     mutable std::mutex state_mutex_;
     std::optional<ImuStateSnapshot> latest_state_;

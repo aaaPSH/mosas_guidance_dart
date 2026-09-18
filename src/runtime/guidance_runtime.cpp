@@ -1,4 +1,5 @@
 #include <mosas/runtime/guidance_runtime.hpp>
+#include <mosas/runtime/thread_affinity.hpp>
 #include <mosas/vision/vision_recognizer.hpp>
 
 #include <algorithm>
@@ -13,6 +14,8 @@
 
 namespace mosas::runtime {
 namespace {
+
+constexpr std::size_t kWorkerThreadCount = 4;
 
 bool is_finite(double value) {
     return std::isfinite(value);
@@ -210,7 +213,53 @@ bool GuidanceRuntime::validate_config() const {
            valid_png_config(config_.png_guidance) &&
            config_.capture_queue_capacity > 0 &&
            config_.output_queue_capacity > 0 &&
-           config_.info_log_queue_capacity > 0;
+           config_.info_log_queue_capacity > 0 &&
+           config_.imu_cpu_affinity >= -1 &&
+           config_.capture_cpu_affinity >= -1 &&
+           config_.processing_cpu_affinity >= -1 &&
+           config_.output_cpu_affinity >= -1;
+}
+
+bool GuidanceRuntime::configure_worker_thread(const char* worker_name,
+                                              int cpu_affinity) {
+    std::string affinity_error;
+    bool affinity_applied = false;
+    try {
+        affinity_applied = configure_current_thread_affinity(
+            cpu_affinity, &affinity_error);
+    } catch (const std::exception& exception) {
+        affinity_error = exception.what();
+    } catch (...) {
+        affinity_error = "配置线程 CPU 亲和性时发生未知异常";
+    }
+
+    std::string diagnostic;
+    if (!affinity_applied && cpu_affinity >= 0) {
+        diagnostic = std::string(worker_name) +
+                     " 线程 CPU 亲和性配置失败: " + affinity_error;
+    }
+    report_worker_startup(affinity_applied, diagnostic);
+
+    if (!diagnostic.empty() && !config_.require_cpu_affinity) {
+        log("警告: " + diagnostic);
+    }
+    return diagnostic.empty() || !config_.require_cpu_affinity;
+}
+
+void GuidanceRuntime::report_worker_startup(bool affinity_applied,
+                                            const std::string& error) {
+    {
+        std::lock_guard<std::mutex> lock(worker_start_mutex_);
+        ++worker_start_reports_;
+        if (!affinity_applied && config_.require_cpu_affinity &&
+            !worker_start_affinity_failed_) {
+            worker_start_affinity_failed_ = true;
+            worker_start_error_ = error.empty()
+                                      ? "worker 线程 CPU 亲和性配置失败"
+                                      : error;
+        }
+    }
+    worker_start_condition_.notify_all();
 }
 
 bool GuidanceRuntime::start() {
@@ -268,6 +317,12 @@ bool GuidanceRuntime::start() {
         last_error_.clear();
     }
     running_.store(true);
+    {
+        std::lock_guard<std::mutex> lock(worker_start_mutex_);
+        worker_start_reports_ = 0;
+        worker_start_affinity_failed_ = false;
+        worker_start_error_.clear();
+    }
     try {
         imu_thread_ = std::thread(&GuidanceRuntime::imu_worker, this);
         capture_thread_ = std::thread(&GuidanceRuntime::capture_worker, this);
@@ -280,6 +335,22 @@ bool GuidanceRuntime::start() {
         return false;
     } catch (...) {
         set_fault("failed to start guidance runtime worker");
+        stop();
+        return false;
+    }
+
+    std::string worker_start_error;
+    {
+        std::unique_lock<std::mutex> lock(worker_start_mutex_);
+        worker_start_condition_.wait(lock, [this] {
+            return worker_start_reports_ == kWorkerThreadCount;
+        });
+        if (worker_start_affinity_failed_) {
+            worker_start_error = worker_start_error_;
+        }
+    }
+    if (!worker_start_error.empty()) {
+        set_fault(worker_start_error);
         stop();
         return false;
     }
@@ -460,6 +531,9 @@ void GuidanceRuntime::cancel_sources() noexcept {
 
 void GuidanceRuntime::imu_worker() {
     try {
+        if (!configure_worker_thread("IMU", config_.imu_cpu_affinity)) {
+            return;
+        }
         while (!stop_requested_.load()) {
             ImuAngularVelocitySample sample{};
             if (!imu_source_->try_pop(&sample)) {
@@ -490,6 +564,9 @@ void GuidanceRuntime::imu_worker() {
 
 void GuidanceRuntime::capture_worker() {
     try {
+        if (!configure_worker_thread("相机采集", config_.capture_cpu_affinity)) {
+            return;
+        }
         while (!stop_requested_.load()) {
             CameraFrame frame{};
             const auto capture_started = std::chrono::steady_clock::now();
@@ -551,6 +628,10 @@ void GuidanceRuntime::capture_worker() {
 
 void GuidanceRuntime::processing_worker() {
     try {
+        if (!configure_worker_thread("视觉处理",
+                                     config_.processing_cpu_affinity)) {
+            return;
+        }
         VisionRecognizer recognizer(config_.vision_config);
         LineOfSightRateEstimator rate_estimator(config_.los_rate_filter);
         bool has_frame_timestamp = false;
@@ -913,6 +994,9 @@ void GuidanceRuntime::output_worker() {
     } stop_guard{frame_sink_.get()};
 
     try {
+        if (!configure_worker_thread("输出", config_.output_cpu_affinity)) {
+            return;
+        }
         ProcessedFrame result{};
         while (output_queue_.pop(&result)) {
             if (stop_requested_.load()) {

@@ -347,24 +347,39 @@ void test_stop_waits_for_yuyv_conversion() {
     require_call_order(sdk->calls, "video_uninit", "uninit");
 }
 
-void test_configure_failure_releases_undistort_maps() {
+void test_prepare_rotates_inverted_image() {
     auto sdk = std::make_shared<RecordingNoriSdk>();
-    sdk->init_result = 0xDEAD;
+    sdk->video_width = 2;
+    sdk->video_height = 2;
+    sdk->video_fps = 30.0F;
 
     mosas::app::CameraAppConfig camera_config;
     camera_config.device = "/dev/video0";
-    camera_config.width = 640;
-    camera_config.height = 480;
+    camera_config.width = 2;
+    camera_config.height = 2;
     camera_config.fps = 30;
     camera_config.pixel_format = "MJPEG";
-    camera_config.undistort = true;
+    camera_config.auto_exposure = false;
 
     mosas::app::NoriSdkCameraSource source(camera_config, sdk);
     mosas::runtime::CameraCaptureConfig capture_config;
     const auto configure_result = source.configure(capture_config);
-    assert(configure_result.status == mosas::runtime::SourceStatus::fatal);
-    assert(source.undistort_map_x_.empty());
-    assert(source.undistort_map_y_.empty());
+    assert(configure_result.status == mosas::runtime::SourceStatus::ok);
+
+    mosas::runtime::CameraFrame frame;
+    frame.image = cv::Mat(2, 2, CV_8UC3);
+    frame.image.at<cv::Vec3b>(0, 0) = cv::Vec3b(1, 2, 3);
+    frame.image.at<cv::Vec3b>(0, 1) = cv::Vec3b(4, 5, 6);
+    frame.image.at<cv::Vec3b>(1, 0) = cv::Vec3b(7, 8, 9);
+    frame.image.at<cv::Vec3b>(1, 1) = cv::Vec3b(10, 11, 12);
+
+    const auto prepare_result = source.prepare(&frame);
+    assert(prepare_result.status == mosas::runtime::SourceStatus::ok);
+    assert(frame.image.at<cv::Vec3b>(0, 0) == cv::Vec3b(10, 11, 12));
+    assert(frame.image.at<cv::Vec3b>(0, 1) == cv::Vec3b(7, 8, 9));
+    assert(frame.image.at<cv::Vec3b>(1, 0) == cv::Vec3b(4, 5, 6));
+    assert(frame.image.at<cv::Vec3b>(1, 1) == cv::Vec3b(1, 2, 3));
+    source.stop();
 }
 
 }  // 匿名命名空间结束
@@ -372,7 +387,7 @@ void test_configure_failure_releases_undistort_maps() {
 int main() {
     test_callback_queue_capacity_is_configurable();
     test_stop_waits_for_yuyv_conversion();
-    test_configure_failure_releases_undistort_maps();
+    test_prepare_rotates_inverted_image();
 
     auto sdk = std::make_shared<RecordingNoriSdk>();
     mosas::app::CameraAppConfig camera_config;
