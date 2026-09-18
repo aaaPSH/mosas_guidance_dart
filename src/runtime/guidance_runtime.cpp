@@ -185,7 +185,7 @@ GuidanceRuntime::GuidanceRuntime(
       frame_sink_(std::move(frame_sink)),
       config_(config),
       output_(&output),
-      info_logger_(output),
+      info_logger_(output, config_.info_log_queue_capacity),
       capture_queue_(config_.capture_queue_capacity),
       output_queue_(config_.output_queue_capacity),
       angular_velocity_history_(config_.history_capacity) {}
@@ -209,7 +209,8 @@ bool GuidanceRuntime::validate_config() const {
            valid_los_filter_config(config_.los_rate_filter) &&
            valid_png_config(config_.png_guidance) &&
            config_.capture_queue_capacity > 0 &&
-           config_.output_queue_capacity > 0;
+           config_.output_queue_capacity > 0 &&
+           config_.info_log_queue_capacity > 0;
 }
 
 bool GuidanceRuntime::start() {
@@ -412,6 +413,10 @@ void GuidanceRuntime::record_timing(
 void GuidanceRuntime::log(const std::string& message) {
     const std::string formatted = "[运行时] " + message;
     if (info_logger_.try_submit_text(monotonic_timestamp_ns(), formatted)) {
+        return;
+    }
+    // 日志线程已经启动时，队列满只丢弃，不能把同步输出带回关键路径。
+    if (info_logger_.running()) {
         return;
     }
     std::lock_guard<std::mutex> lock(log_mutex_);

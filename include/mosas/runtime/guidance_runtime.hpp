@@ -67,6 +67,7 @@ struct GuidanceRuntimeConfig {
     CameraCaptureConfig camera_capture{};
     std::size_t capture_queue_capacity = 1;
     std::size_t output_queue_capacity = 1;
+    std::size_t info_log_queue_capacity = 256;
 };
 
 class GuidanceRuntime {

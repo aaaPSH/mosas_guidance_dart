@@ -43,6 +43,11 @@ public:
     bool try_submit(const RuntimeLogEvent& event) noexcept;
     bool try_submit_text(TimestampNs timestamp_ns,
                          const std::string& message) noexcept;
+
+    bool running() const noexcept {
+        return running_.load(std::memory_order_acquire);
+    }
+
     void stop() noexcept;
 
     std::uint64_t dropped_count() const noexcept {
