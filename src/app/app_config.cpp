@@ -307,8 +307,6 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->imu.mode = ImuMode::simulated;
         } else if (key == "mode" && value == "serial") {
             config->imu.mode = ImuMode::serial;
-        } else if (key == "skip_self_check") {
-            return parse_bool(value, &config->imu.skip_self_check) || invalid();
         } else if (key == "sample_rate_hz" && parse_double(value, &decimal)) {
             config->imu.sample_rate_hz = decimal;
         } else if (key == "measurement_latency_ns") {
@@ -419,14 +417,6 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "png_gravity") return set_double(&config->guidance.png_guidance.gravity) || invalid();
         if (key == "png_maximum_command_overload") return set_double(&config->guidance.png_guidance.maximum_command_overload) || invalid();
         if (key == "png_maximum_command_acceleration") return set_double(&config->guidance.png_guidance.maximum_command_acceleration) || invalid();
-        if (key == "phase_min_static_samples") return set_int(&config->guidance.phase_detector.min_static_samples) || invalid();
-        if (key == "phase_min_static_duration_ms") return parse_timestamp_ms(value, &config->guidance.phase_detector.min_static_duration_ns) || invalid();
-        if (key == "phase_max_static_axis_variation") return set_double(&config->guidance.phase_detector.max_static_axis_variation) || invalid();
-        if (key == "phase_launch_direction") return set_int(&config->guidance.phase_detector.launch_direction) || invalid();
-        if (key == "phase_ejection_start_threshold") return set_double(&config->guidance.phase_detector.ejection_start_threshold) || invalid();
-        if (key == "phase_ejection_confirm_duration_ms") return parse_timestamp_ms(value, &config->guidance.phase_detector.ejection_confirm_duration_ns) || invalid();
-        if (key == "phase_free_flight_release_threshold") return set_double(&config->guidance.phase_detector.free_flight_release_threshold) || invalid();
-        if (key == "phase_free_flight_confirm_duration_ms") return parse_timestamp_ms(value, &config->guidance.phase_detector.free_flight_confirm_duration_ns) || invalid();
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
             const int row = key[16] - '0';
             const int column = key[17] - '0';

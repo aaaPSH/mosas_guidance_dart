@@ -3,7 +3,6 @@
 
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/async_info_logger.hpp>
-#include <mosas/runtime/flight_phase_detector.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
 #include <mosas/runtime/imu_angular_velocity_history.hpp>
 #include <mosas/runtime/latest_frame_queue.hpp>
@@ -45,10 +44,6 @@ struct GuidanceRuntimeTiming {
 };
 
 struct GuidanceRuntimeConfig {
-    // 兼容旧配置；当前运行时不执行 IMU 静止自检，也不维护飞行阶段。
-    bool skip_imu_self_check = false;
-    // 兼容旧配置；当前运行时不实例化或更新该检测器。
-    FlightPhaseDetectorConfig phase_detector{};
     double launch_speed_mps = 100.0;
     std::size_t history_capacity = 256;
     TimestampNs max_imu_age_ns = 50000000;

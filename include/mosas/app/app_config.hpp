@@ -62,8 +62,6 @@ struct ImuAppConfig {
     runtime::TimestampNs measurement_latency_ns = 0;
     // 串口原始接收线程的调度策略；实时优先级申请失败时是否拒绝启动。
     serial_package::ReceiveThreadConfig receive_thread{256, 20, false, -1};
-    // 兼容旧配置；当前运行时不执行 IMU 静止自检。
-    bool skip_self_check = false;
 };
 
 enum class CommandMode {

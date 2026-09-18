@@ -99,7 +99,7 @@ public:
     // 返回相机源报告的采集帧率；没有源报告时返回 0，运行时使用本地统计回退。
     virtual double capture_fps() const noexcept { return 0.0; }
 
-    // 在处理线程完成颜色转换、缩放和去畸变等帧预处理。
+    // 在处理线程完成颜色转换、缩放和相机安装方向修正等帧预处理。
     virtual SourceResult prepare(CameraFrame* frame) {
         if (frame == nullptr || frame->image.empty() ||
             frame->image.type() != CV_8UC3) {
