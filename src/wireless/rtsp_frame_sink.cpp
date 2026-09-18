@@ -207,9 +207,15 @@ bool RtspFrameSink::publish_impl(
                 << ',' << vision_result.blob.height << ','
                 << vision_result.blob.area << ',' << vision_result.blob.center_x
                 << ',' << vision_result.blob.center_y << ','
+                << imu_state.acceleration.x << ','
+                << imu_state.acceleration.y << ','
+                << imu_state.acceleration.z << ','
                 << imu_state.angular_velocity.x << ','
                 << imu_state.angular_velocity.y << ','
                 << imu_state.angular_velocity.z << ','
+                << imu_state.pitch_rad << ',' << imu_state.roll_rad << ','
+                << (imu_state.attitude_valid ? 1 : 0) << ','
+                << (imu_state.launched ? 1 : 0) << ','
                 << (data.line_of_sight_valid ? 1 : 0) << ','
                 << data.line_of_sight_q_y_rad << ',' << data.line_of_sight_q_z_rad
                 << ',' << (data.line_of_sight_rate_valid ? 1 : 0) << ','
@@ -322,8 +328,11 @@ bool RtspFrameSink::initialize_recording_impl() {
            "imu_timestamp_ns,"
            "vision_found,target_x,target_y,target_width,target_height,"
            "target_area,target_center_x,target_center_y,"
+           "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
+           "imu_acceleration_z_mps2,"
            "imu_angular_velocity_x_rad_s,"
            "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
+           "imu_pitch_rad,imu_roll_rad,imu_attitude_valid,imu_launched,"
            "los_valid,los_q_y_rad,los_q_z_rad,los_rate_valid,"
            "los_rate_q_y_rad_s,los_rate_q_z_rad_s,guidance_valid,"
            "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"

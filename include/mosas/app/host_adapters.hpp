@@ -20,7 +20,9 @@ namespace mosas::app {
 
 class SimulatedImuSource final : public runtime::ImuSource {
 public:
-    explicit SimulatedImuSource(double sample_rate_hz);
+    explicit SimulatedImuSource(double sample_rate_hz,
+                                double gravity_mps2 = 9.80665,
+                                bool accelerometer_specific_force = true);
 
     runtime::SourceResult start() override;
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
@@ -30,6 +32,8 @@ public:
 
 private:
     std::chrono::nanoseconds period_;
+    double gravity_mps2_ = 9.80665;
+    bool accelerometer_specific_force_ = true;
     std::mutex mutex_;
     std::condition_variable condition_;
     std::chrono::steady_clock::time_point next_deadline_{};

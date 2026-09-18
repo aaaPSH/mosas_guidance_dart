@@ -113,6 +113,8 @@ target_link_libraries(mosas_guidance
 )
 
 add_library(mosas_runtime STATIC
+    src/runtime/attitude_estimator.cpp
+    src/runtime/attitude_history.cpp
     src/runtime/clock.cpp
     src/runtime/frame_timing.cpp
     src/runtime/imu_angular_velocity_history.cpp

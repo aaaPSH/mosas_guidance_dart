@@ -36,7 +36,7 @@ void test_png_uses_scalar_speed_and_body_frame() {
     const LineOfSight line_of_sight{true, 0.0, 0.0};
     const LineOfSightAngularVelocity angular_velocity{true, 0.0, 0.1};
     const auto output = PngGuidance::calculate(line_of_sight, angular_velocity,
-                                               100.0);
+                                               100.0, 0.0);
     assert(output.valid);
     assert(output.navigation_acceleration.x == output.body_acceleration.x);
     assert(output.navigation_acceleration.y == output.body_acceleration.y);

@@ -48,10 +48,10 @@ public:
     // 启动串口原始字节接收线程；协议解析在 try_pop 所在线程完成。
     runtime::SourceResult start() override;
 
-    // 非阻塞取出一个已经解析的三轴角速度样本。
+    // 非阻塞取出一个已经解析的三轴加速度和角速度样本。
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
 
-    // 兼容旧调用方：在普通调用线程等待并返回一个角速度样本。
+    // 兼容旧调用方：在普通调用线程等待并返回一个 IMU 运动样本。
     runtime::SourceResult read(runtime::ImuSample* sample) override;
     void cancel() noexcept override;
     void stop() noexcept override;
@@ -59,7 +59,7 @@ public:
     // 该字段已不进入运行时状态；保留接口以兼容旧诊断调用方，始终返回 0。
     std::uint16_t initialization_g_raw() const noexcept;
 
-    // 返回有效角速度样本时间戳的间隔统计值；调用方应在读取线程停止后调用。
+    // 返回有效 IMU 样本时间戳的间隔统计值；调用方应在读取线程停止后调用。
     SerialImuIntervalStatistics interval_statistics() const noexcept;
 
     // 返回串口输入队列、原始块和解码错误的线程安全快照。

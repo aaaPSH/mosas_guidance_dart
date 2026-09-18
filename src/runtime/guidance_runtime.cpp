@@ -165,6 +165,16 @@ bool valid_png_config(const PngGuidanceConfig& config) {
            config.maximum_command_acceleration >= 0.0;
 }
 
+bool valid_attitude_config(const AttitudeEstimatorConfig& config) {
+    return is_finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
+           is_finite(config.acceleration_filter_alpha) &&
+           config.acceleration_filter_alpha > 0.0 &&
+           config.acceleration_filter_alpha <= 1.0 &&
+           is_finite(config.launch_ax_threshold_mps2) &&
+           config.launch_ax_threshold_mps2 > 0.0 &&
+           config.launch_confirm_ns > 0;
+}
+
 }  // namespace
 
 GuidanceRuntime::GuidanceRuntime(
@@ -191,7 +201,9 @@ GuidanceRuntime::GuidanceRuntime(
       info_logger_(output, config_.info_log_queue_capacity),
       capture_queue_(config_.capture_queue_capacity),
       output_queue_(config_.output_queue_capacity),
-      angular_velocity_history_(config_.history_capacity) {}
+      angular_velocity_history_(config_.history_capacity),
+      attitude_history_(config_.history_capacity),
+      attitude_estimator_(config_.attitude) {}
 
 GuidanceRuntime::~GuidanceRuntime() {
     stop();
@@ -211,6 +223,7 @@ bool GuidanceRuntime::validate_config() const {
            valid_rotation(config_.camera_to_body) &&
            valid_los_filter_config(config_.los_rate_filter) &&
            valid_png_config(config_.png_guidance) &&
+           valid_attitude_config(config_.attitude) &&
            config_.capture_queue_capacity > 0 &&
            config_.output_queue_capacity > 0 &&
            config_.info_log_queue_capacity > 0 &&
@@ -308,6 +321,8 @@ bool GuidanceRuntime::start() {
     capture_queue_.reset();
     output_queue_.reset();
     angular_velocity_history_.reset();
+    attitude_history_.reset();
+    attitude_estimator_.reset();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         latest_state_.reset();
@@ -540,16 +555,37 @@ void GuidanceRuntime::imu_worker() {
                 std::this_thread::yield();
                 continue;
             }
-            if (sample.timestamp_ns < 0 || !is_finite(sample.angular_velocity)) {
-                set_fault("imu source returned an invalid angular velocity sample");
+            if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
+                !is_finite(sample.angular_velocity)) {
+                set_fault("imu source returned an invalid kinematic sample");
+                return;
+            }
+            const AttitudeEstimate attitude =
+                attitude_estimator_.update(sample);
+            if (!attitude.valid) {
+                set_fault("imu source returned an acceleration sample without a valid attitude");
                 return;
             }
             if (!angular_velocity_history_.push(sample)) {
                 set_fault("imu angular velocity timestamp is not increasing");
                 return;
             }
-            const ImuStateSnapshot snapshot{sample.timestamp_ns,
-                                            sample.angular_velocity};
+            if (!attitude_history_.push({sample.timestamp_ns,
+                                         attitude.pitch_rad,
+                                         attitude.body_to_navigation,
+                                         attitude.launched})) {
+                set_fault("imu attitude timestamp is not increasing");
+                return;
+            }
+            ImuStateSnapshot snapshot{};
+            snapshot.timestamp_ns = sample.timestamp_ns;
+            snapshot.acceleration = sample.acceleration;
+            snapshot.angular_velocity = sample.angular_velocity;
+            snapshot.body_to_navigation = attitude.body_to_navigation;
+            snapshot.pitch_rad = attitude.pitch_rad;
+            snapshot.roll_rad = attitude.roll_rad;
+            snapshot.attitude_valid = attitude.valid;
+            snapshot.launched = attitude.launched;
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
                 latest_state_ = snapshot;
@@ -706,7 +742,8 @@ void GuidanceRuntime::processing_worker() {
                 config_.vision_config.initial_roi;
             result.vision_result.minimum_blob_area =
                 config_.vision_config.min_blob_area;
-            result.imu_state = {timestamp_ns, {0.0, 0.0, 0.0}};
+            result.imu_state = {};
+            result.imu_state.timestamp_ns = timestamp_ns;
             result.guidance = {false, {}, {}, {}, 0.0, 0.0};
             result.overlay = {};
 
@@ -813,8 +850,36 @@ void GuidanceRuntime::processing_worker() {
                 imu_match_failure_active = false;
             }
 
-            result.imu_state = {
-                timestamp_ns, angular_velocity_lookup->sample.angular_velocity};
+            const auto attitude_lookup =
+                attitude_history_.find_interpolated(timestamp_ns);
+            if (!attitude_lookup.has_value()) {
+                log_output_diagnostic(
+                    "姿态历史无法匹配相机曝光时刻",
+                    "camera_timestamp_ns=" + std::to_string(timestamp_ns));
+                if (!enqueue_processed_frame()) {
+                    return;
+                }
+                result = ProcessedFrame{};
+                continue;
+            }
+
+            result.imu_state.timestamp_ns = timestamp_ns;
+            result.imu_state.acceleration =
+                angular_velocity_lookup->sample.acceleration;
+            result.imu_state.angular_velocity =
+                angular_velocity_lookup->sample.angular_velocity;
+            result.imu_state.body_to_navigation =
+                attitude_lookup->body_to_navigation;
+            result.imu_state.pitch_rad = attitude_lookup->pitch_rad;
+            result.imu_state.roll_rad = std::atan2(
+                attitude_lookup->body_to_navigation.m21,
+                attitude_lookup->body_to_navigation.m22);
+            result.imu_state.attitude_valid = true;
+            result.imu_state.launched = attitude_lookup->launched;
+            result.overlay.attitude_valid = true;
+            result.overlay.attitude_pitch_rad = attitude_lookup->pitch_rad;
+            result.overlay.attitude_roll_rad = result.imu_state.roll_rad;
+            result.overlay.launched = attitude_lookup->launched;
 
             const auto vision_started = std::chrono::steady_clock::now();
             result.vision_result = recognizer.process(result.frame.image);
@@ -937,7 +1002,7 @@ void GuidanceRuntime::processing_worker() {
             const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = PngGuidance::calculate(
                 line_of_sight, angular_velocity, config_.launch_speed_mps,
-                config_.png_guidance);
+                attitude_lookup->pitch_rad, config_.png_guidance);
             record_timing(TimingStage::guidance,
                           std::chrono::steady_clock::now() - guidance_started);
             if (!result.guidance.valid) {

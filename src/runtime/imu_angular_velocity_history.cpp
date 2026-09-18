@@ -27,7 +27,8 @@ double bits_double(std::uint64_t bits) noexcept {
 
 bool ImuAngularVelocityHistory::push(
     const ImuAngularVelocitySample& sample) noexcept {
-    if (sample.timestamp_ns < 0 || !finite_vector(sample.angular_velocity) ||
+    if (sample.timestamp_ns < 0 || !finite_vector(sample.acceleration) ||
+        !finite_vector(sample.angular_velocity) ||
         (has_timestamp_ && sample.timestamp_ns <= last_timestamp_ns_)) {
         return false;
     }
@@ -37,6 +38,12 @@ bool ImuAngularVelocityHistory::push(
         slot.sequence.load(std::memory_order_relaxed);
     slot.sequence.store(sequence + 1, std::memory_order_release);
     slot.timestamp_ns.store(sample.timestamp_ns, std::memory_order_relaxed);
+    slot.acceleration_x_bits.store(double_bits(sample.acceleration.x),
+                                   std::memory_order_relaxed);
+    slot.acceleration_y_bits.store(double_bits(sample.acceleration.y),
+                                   std::memory_order_relaxed);
+    slot.acceleration_z_bits.store(double_bits(sample.acceleration.z),
+                                   std::memory_order_relaxed);
     slot.angular_velocity_x_bits.store(
         double_bits(sample.angular_velocity.x), std::memory_order_relaxed);
     slot.angular_velocity_y_bits.store(
@@ -102,22 +109,32 @@ ImuAngularVelocityHistory::find_interpolated(
     const auto interpolate = [fraction](double lhs, double rhs) {
         return lhs + (rhs - lhs) * fraction;
     };
+    const Vector3 acceleration{
+        interpolate(lower.acceleration.x, upper.acceleration.x),
+        interpolate(lower.acceleration.y, upper.acceleration.y),
+        interpolate(lower.acceleration.z, upper.acceleration.z)};
     const Vector3 angular_velocity{
         interpolate(lower.angular_velocity.x, upper.angular_velocity.x),
         interpolate(lower.angular_velocity.y, upper.angular_velocity.y),
         interpolate(lower.angular_velocity.z, upper.angular_velocity.z)};
-    if (!finite_vector(angular_velocity)) {
+    if (!finite_vector(acceleration) || !finite_vector(angular_velocity)) {
         return std::nullopt;
     }
     return ImuAngularVelocityLookup{
-        {timestamp_ns, angular_velocity}, true, lower.timestamp_ns,
-        upper.timestamp_ns};
+        {timestamp_ns, acceleration, angular_velocity}, true,
+        lower.timestamp_ns, upper.timestamp_ns};
 }
 
 void ImuAngularVelocityHistory::reset() noexcept {
     for (std::size_t index = 0; index < capacity_; ++index) {
         slots_[index].sequence.store(0, std::memory_order_relaxed);
         slots_[index].timestamp_ns.store(-1, std::memory_order_relaxed);
+        slots_[index].acceleration_x_bits.store(0,
+                                                std::memory_order_relaxed);
+        slots_[index].acceleration_y_bits.store(0,
+                                                std::memory_order_relaxed);
+        slots_[index].acceleration_z_bits.store(0,
+                                                std::memory_order_relaxed);
         slots_[index].angular_velocity_x_bits.store(0,
                                                      std::memory_order_relaxed);
         slots_[index].angular_velocity_y_bits.store(0,
@@ -144,6 +161,12 @@ bool ImuAngularVelocityHistory::read_slot(
     }
     sample->timestamp_ns =
         slot.timestamp_ns.load(std::memory_order_relaxed);
+    sample->acceleration.x = bits_double(
+        slot.acceleration_x_bits.load(std::memory_order_relaxed));
+    sample->acceleration.y = bits_double(
+        slot.acceleration_y_bits.load(std::memory_order_relaxed));
+    sample->acceleration.z = bits_double(
+        slot.acceleration_z_bits.load(std::memory_order_relaxed));
     sample->angular_velocity.x = bits_double(
         slot.angular_velocity_x_bits.load(std::memory_order_relaxed));
     sample->angular_velocity.y = bits_double(

@@ -148,6 +148,15 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             " z " +
             format_value(data.body_overload_valid, data.body_overload_z_g,
                          1.0, ""),
+        "Attitude(deg): pitch " +
+            format_value(data.attitude_valid, data.attitude_pitch_rad,
+                         kRadiansToDegrees, "") +
+            " roll " +
+            format_value(data.attitude_valid, data.attitude_roll_rad,
+                         kRadiansToDegrees, "") +
+            " phase " +
+            (data.attitude_valid ? (data.launched ? "LAUNCHED" : "PRELAUNCH")
+                                 : "N/A"),
         "Processing FPS: " + format_fps(data.processing_fps),
     };
 

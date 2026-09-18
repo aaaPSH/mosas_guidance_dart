@@ -107,6 +107,8 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
 
         const runtime::ImuAngularVelocitySample sample{
             timestamp,
+            {values.acceleration_x_mps2, values.acceleration_y_mps2,
+             values.acceleration_z_mps2},
             {values.angular_velocity_x_rad_s,
              values.angular_velocity_y_rad_s,
              values.angular_velocity_z_rad_s}};

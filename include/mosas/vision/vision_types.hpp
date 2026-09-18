@@ -82,6 +82,10 @@ struct VisionOverlayData {
     double body_overload_x_g;
     double body_overload_y_g;
     double body_overload_z_g;
+    bool attitude_valid = false;
+    double attitude_pitch_rad = 0.0;
+    double attitude_roll_rad = 0.0;
+    bool launched = false;
     double processing_fps = 0.0;
 };
 

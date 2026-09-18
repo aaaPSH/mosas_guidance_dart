@@ -185,7 +185,7 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
            std::chrono::steady_clock::now() < deadline) {
         if (try_pop(&angular_velocity)) {
             sample->timestamp_ns = angular_velocity.timestamp_ns;
-            sample->acceleration = {0.0, 0.0, 0.0};
+            sample->acceleration = angular_velocity.acceleration;
             sample->angular_velocity = angular_velocity.angular_velocity;
             return {runtime::SourceStatus::ok, {}};
         }
@@ -286,7 +286,7 @@ runtime::SourceResult SerialImuSource::fatal_result(const char* message) {
 
 runtime::SourceResult SerialImuSource::timeout_result() noexcept {
     timeout_count_.fetch_add(1, std::memory_order_relaxed);
-    return {runtime::SourceStatus::timeout, "等待 IMU 角速度样本超时"};
+    return {runtime::SourceStatus::timeout, "等待 IMU 运动样本超时"};
 }
 
 }  // namespace mosas::app
