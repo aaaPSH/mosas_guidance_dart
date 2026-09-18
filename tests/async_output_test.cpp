@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -19,12 +20,47 @@ namespace {
 
 void test_latest_value_mailbox_keeps_newest_value() {
     mosas::runtime::LatestValueMailbox<int> mailbox;
+    assert(mailbox.is_lock_free());
     assert(mailbox.try_publish(1));
     assert(mailbox.try_publish(2));
     int value = 0;
     assert(mailbox.try_consume(&value));
     assert(value == 2);
     assert(mailbox.dropped_count() == 1);
+}
+
+void test_latest_value_mailbox_is_safe_for_one_producer_and_consumer() {
+    mosas::runtime::LatestValueMailbox<int> mailbox;
+    constexpr int kLastValue = 100'000;
+    std::atomic<bool> producer_done{false};
+
+    std::thread producer([&] {
+        for (int value = 1; value <= kLastValue; ++value) {
+            while (!mailbox.try_publish(value)) {
+                std::this_thread::yield();
+            }
+        }
+        producer_done.store(true, std::memory_order_release);
+        mailbox.close();
+    });
+
+    int last_value = 0;
+    int value = 0;
+    for (;;) {
+        const bool consumed = mailbox.try_consume(&value);
+        if (consumed) {
+            assert(value > last_value);
+            last_value = value;
+        } else if (producer_done.load(std::memory_order_acquire)) {
+            break;
+        }
+    }
+    producer.join();
+    while (mailbox.try_consume(&value)) {
+        assert(value > last_value);
+        last_value = value;
+    }
+    assert(last_value == kLastValue);
 }
 
 void test_async_logger_formats_on_worker_thread() {
@@ -80,6 +116,7 @@ void test_serial_command_submission_is_async() {
 
 int main() {
     test_latest_value_mailbox_keeps_newest_value();
+    test_latest_value_mailbox_is_safe_for_one_producer_and_consumer();
     test_async_logger_formats_on_worker_thread();
     test_serial_command_submission_is_async();
     return 0;
