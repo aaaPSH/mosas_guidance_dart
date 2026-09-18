@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <thread>
 
@@ -80,6 +81,22 @@ void test_serial_imu_source_decodes_on_consumer_thread() {
     assert(std::abs(sample.angular_velocity.z - 3.0) < 1e-9);
 
     source.stop();
+
+    serial_package::ReceiveThreadConfig strict_receive_config;
+    strict_receive_config.realtime_priority = 20;
+    strict_receive_config.require_realtime_priority = true;
+    mosas::app::SerialImuSource strict_source(
+        port, 200.0, 20, false, std::cerr, 0, strict_receive_config);
+    const auto strict_start_result = strict_source.start();
+    const auto strict_diagnostics = strict_source.diagnostics();
+    if (strict_diagnostics.receive_priority_error) {
+        assert(strict_start_result.status ==
+               mosas::runtime::SourceStatus::fatal);
+    } else {
+        assert(strict_start_result.status == mosas::runtime::SourceStatus::ok);
+    }
+    strict_source.stop();
+
     port->close();
     ::close(master_fd);
     ::close(slave_fd);
