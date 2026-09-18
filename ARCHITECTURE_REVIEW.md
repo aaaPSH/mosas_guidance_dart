@@ -159,7 +159,7 @@ NoriSdkCameraSource::capture()
         ↓
 MJPG/YUYV 解码
         ↓
-resize / undistort
+resize
         ↓
 VisionRecognizer
         ↓

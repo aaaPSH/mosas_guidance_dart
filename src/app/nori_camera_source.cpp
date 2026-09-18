@@ -9,7 +9,6 @@
 #include <utility>
 
 #include <linux/v4l2-controls.h>
-#include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -129,36 +128,6 @@ runtime::SourceResult NoriSdkCameraSource::configure(
     }
     camera_clock_mapping_ = {realtime_now, monotonic_now};
     dropped_timestamp_count_.store(0, std::memory_order_relaxed);
-
-    if (config_.undistort) {
-        try {
-            const cv::Mat camera_matrix =
-                (cv::Mat_<double>(3, 3) << config_.camera_matrix.m00,
-                 config_.camera_matrix.m01, config_.camera_matrix.m02,
-                 config_.camera_matrix.m10, config_.camera_matrix.m11,
-                 config_.camera_matrix.m12, config_.camera_matrix.m20,
-                 config_.camera_matrix.m21, config_.camera_matrix.m22);
-            const cv::Mat distortion =
-                (cv::Mat_<double>(1, 5) << config_.distortion.k1,
-                 config_.distortion.k2, config_.distortion.p1,
-                 config_.distortion.p2, config_.distortion.k3);
-            cv::initUndistortRectifyMap(
-                camera_matrix, distortion, cv::Mat(), camera_matrix,
-                cv::Size(config_.width, config_.height), CV_32FC1,
-                undistort_map_x_, undistort_map_y_);
-        } catch (const std::exception& error) {
-            set_error("初始化去畸变映射失败：" + std::string(error.what()) +
-                      "，设备 " + config_.device);
-            undistort_map_x_.release();
-            undistort_map_y_.release();
-            return fatal_result();
-        } catch (...) {
-            set_error("初始化去畸变映射发生未知异常，设备 " + config_.device);
-            undistort_map_x_.release();
-            undistort_map_y_.release();
-            return fatal_result();
-        }
-    }
 
     uint32_t device_count = 0;
     std::string session_error;
@@ -518,18 +487,6 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
             cv::resize(frame->image, frame->image,
                        cv::Size(config_.width, config_.height));
         }
-        if (config_.undistort) {
-            if (undistort_map_x_.empty() || undistort_map_y_.empty() ||
-                undistort_map_x_.size() != cv::Size(config_.width, config_.height) ||
-                undistort_map_y_.size() != cv::Size(config_.width, config_.height)) {
-                set_error("去畸变映射未按目标尺寸配置，设备 " + config_.device);
-                return fatal_result();
-            }
-            cv::Mat undistorted_frame;
-            cv::remap(frame->image, undistorted_frame, undistort_map_x_,
-                      undistort_map_y_, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
-            frame->image = std::move(undistorted_frame);
-        }
     } catch (const std::exception& error) {
         set_error("相机帧预处理失败：" + std::string(error.what()) +
                   "，设备 " + config_.device);
@@ -633,8 +590,6 @@ void NoriSdkCameraSource::stop_locked() noexcept {
         session_acquired_ = false;
     }
 
-    undistort_map_x_.release();
-    undistort_map_y_.release();
     sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
 }
 
