@@ -255,6 +255,9 @@ void test_callback_queue_capacity_is_configurable() {
         std::ofstream output(path);
         output << "[camera]\ndevice_id=0\ncallback_queue_capacity=3\n"
                << "[imu]\nmeasurement_latency_ns=1234\n"
+               << "receive_realtime_priority=42\n"
+               << "require_realtime_priority=true\n"
+               << "receive_cpu_affinity=-1\n"
                << "[guidance]\nmax_camera_future_ms=7\n"
                << "max_camera_age_ms=800\n";
     }
@@ -265,6 +268,9 @@ void test_callback_queue_capacity_is_configurable() {
     assert(config.camera.device_id == 0);
     assert(config.camera.callback_queue_capacity == 3);
     assert(config.imu.measurement_latency_ns == 1234);
+    assert(config.imu.receive_thread.realtime_priority == 42);
+    assert(config.imu.receive_thread.require_realtime_priority);
+    assert(config.imu.receive_thread.cpu_affinity == -1);
     assert(config.guidance.max_camera_future_ns == 7'000'000);
     assert(config.guidance.max_camera_age_ns == 800'000'000);
     std::filesystem::remove(path);

@@ -13,6 +13,9 @@ namespace mosas::runtime {
 template <typename T>
 class SpscRing {
 public:
+    static_assert(std::atomic<std::size_t>::is_always_lock_free,
+                  "SpscRing requires lock-free size_t atomics");
+
     explicit SpscRing(std::size_t capacity)
         : capacity_(capacity), storage_(std::make_unique<T[]>(capacity)) {
         if (capacity_ == 0) {

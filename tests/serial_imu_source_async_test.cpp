@@ -48,6 +48,17 @@ void test_serial_imu_source_decodes_on_consumer_thread() {
     mosas::app::SerialImuSource source(port, 200.0, 20);
     const auto start_result = source.start();
     assert(start_result.status == mosas::runtime::SourceStatus::ok);
+    bool priority_reported = false;
+    for (int attempt = 0; attempt < 100 && !priority_reported; ++attempt) {
+        const auto diagnostics = source.diagnostics();
+        priority_reported =
+            diagnostics.receive_realtime_priority_applied ||
+            diagnostics.receive_priority_error;
+        if (!priority_reported) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    assert(priority_reported);
 
     const auto frame = make_frame();
     assert(::write(master_fd, frame.data(), frame.size()) ==

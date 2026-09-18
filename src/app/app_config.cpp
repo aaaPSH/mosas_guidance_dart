@@ -327,6 +327,17 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             return parse_timestamp_ns(value,
                                       &config->imu.measurement_latency_ns) ||
                    invalid();
+        } else if (key == "receive_realtime_priority") {
+            return parse_int(value,
+                             &config->imu.receive_thread.realtime_priority) ||
+                   invalid();
+        } else if (key == "require_realtime_priority") {
+            return parse_bool(
+                       value, &config->imu.receive_thread.require_realtime_priority) ||
+                   invalid();
+        } else if (key == "receive_cpu_affinity") {
+            return parse_int(value, &config->imu.receive_thread.cpu_affinity) ||
+                   invalid();
         } else {
             return invalid();
         }
@@ -517,7 +528,11 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     }
     if (!std::isfinite(config.imu.sample_rate_hz) ||
         config.imu.sample_rate_hz <= 0.0 ||
-        config.imu.measurement_latency_ns < 0) {
+        config.imu.measurement_latency_ns < 0 ||
+        config.imu.receive_thread.read_chunk_size == 0 ||
+        config.imu.receive_thread.realtime_priority < 0 ||
+        config.imu.receive_thread.realtime_priority > 99 ||
+        config.imu.receive_thread.cpu_affinity < -1) {
         return fail_global(path, "IMU 参数无效", error);
     }
     const bool serial_required =

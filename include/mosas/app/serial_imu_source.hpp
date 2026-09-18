@@ -39,6 +39,11 @@ public:
                     double sample_rate_hz, int read_timeout_ms,
                     bool enable_interval_statistics, std::ostream& output,
                     runtime::TimestampNs measurement_latency_ns);
+    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
+                    double sample_rate_hz, int read_timeout_ms,
+                    bool enable_interval_statistics, std::ostream& output,
+                    runtime::TimestampNs measurement_latency_ns,
+                    const serial_package::ReceiveThreadConfig& receive_config);
 
     // 启动串口原始字节接收线程；协议解析在 try_pop 所在线程完成。
     runtime::SourceResult start() override;

@@ -317,28 +317,63 @@ bool SerialPort::start_receive(ReceiveCallback callback, void* context,
         set_error("receive realtime priority is out of range");
         return false;
     }
-
-    std::lock_guard<std::mutex> lock(receive_mutex_);
-    if (receive_thread_.joinable()) {
-        set_error("serial receive thread is already running");
+    if (config.cpu_affinity < -1) {
+        set_error("receive CPU affinity is out of range");
         return false;
     }
+#ifdef __linux__
+    if (config.cpu_affinity >= CPU_SETSIZE) {
+        set_error("receive CPU affinity is out of range");
+        return false;
+    }
+#endif
 
-    receive_callback_ = callback;
-    receive_context_ = context;
-    receive_config_ = config;
-    receive_realtime_priority_applied_.store(false,
-                                             std::memory_order_release);
-    receive_priority_error_.store(false, std::memory_order_release);
-    receive_stop_requested_.store(false, std::memory_order_release);
-    receive_running_.store(true, std::memory_order_release);
-    try {
-        receive_thread_ = std::thread(&SerialPort::receive_loop, this);
-    } catch (...) {
+    {
+        std::lock_guard<std::mutex> lock(receive_mutex_);
+        if (receive_thread_.joinable()) {
+            set_error("serial receive thread is already running");
+            return false;
+        }
+
+        receive_callback_ = callback;
+        receive_context_ = context;
+        receive_config_ = config;
+        receive_realtime_priority_applied_.store(
+            false, std::memory_order_release);
+        receive_priority_error_.store(false, std::memory_order_release);
+        receive_stop_requested_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> start_lock(receive_start_mutex_);
+            receive_start_complete_ = false;
+            receive_start_succeeded_ = false;
+        }
         receive_running_.store(false, std::memory_order_release);
-        receive_callback_ = nullptr;
-        receive_context_ = nullptr;
-        set_error("failed to start serial receive thread");
+        try {
+            receive_thread_ = std::thread(&SerialPort::receive_loop, this);
+        } catch (...) {
+            receive_running_.store(false, std::memory_order_release);
+            receive_callback_ = nullptr;
+            receive_context_ = nullptr;
+            set_error("failed to start serial receive thread");
+            return false;
+        }
+    }
+
+    const auto startup_timeout_ms =
+        static_cast<long long>(std::max(100, config_.read_timeout_ms)) + 100;
+    std::unique_lock<std::mutex> start_lock(receive_start_mutex_);
+    const bool startup_reported = receive_start_condition_.wait_for(
+        start_lock, std::chrono::milliseconds(startup_timeout_ms), [this] {
+            return receive_start_complete_;
+        });
+    const bool startup_succeeded =
+        startup_reported && receive_start_succeeded_;
+    start_lock.unlock();
+    if (!startup_succeeded) {
+        if (!startup_reported) {
+            set_error("serial receive thread startup timed out");
+        }
+        stop_receive();
         return false;
     }
     return true;
@@ -412,10 +447,18 @@ void SerialPort::receive_loop() noexcept {
     const std::int64_t byte_period_ns = wire_byte_period_ns(config_);
     std::array<std::uint8_t, 256> buffer{};
 
-    if (!configure_receive_thread(receive_config)) {
+    const bool configured = configure_receive_thread(receive_config);
+    {
+        std::lock_guard<std::mutex> start_lock(receive_start_mutex_);
+        receive_start_succeeded_ = configured;
+        receive_start_complete_ = true;
+    }
+    receive_start_condition_.notify_all();
+    if (!configured) {
         receive_running_.store(false, std::memory_order_release);
         return;
     }
+    receive_running_.store(true, std::memory_order_release);
 
     while (!receive_stop_requested_.load(std::memory_order_acquire)) {
         bool timed_out = false;

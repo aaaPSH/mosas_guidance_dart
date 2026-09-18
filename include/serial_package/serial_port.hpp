@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <atomic>
 #include <array>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <sys/types.h>
@@ -131,6 +132,10 @@ private:
     std::atomic<bool> receive_running_{false};
     std::atomic<bool> receive_realtime_priority_applied_{false};
     std::atomic<bool> receive_priority_error_{false};
+    std::mutex receive_start_mutex_;
+    std::condition_variable receive_start_condition_;
+    bool receive_start_complete_ = false;
+    bool receive_start_succeeded_ = false;
 };
 
 }  // namespace serial_package

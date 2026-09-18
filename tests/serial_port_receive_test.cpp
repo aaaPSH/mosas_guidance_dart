@@ -1,6 +1,7 @@
 #include <serial_package/serial_port.hpp>
 
 #include <pty.h>
+#include <sched.h>
 #include <unistd.h>
 
 #include <array>
@@ -53,6 +54,7 @@ void test_async_receive_delivers_raw_bytes_and_timestamp() {
     serial_package::ReceiveThreadConfig receive_config;
     receive_config.read_chunk_size = 64;
     assert(port.start_receive(capture_callback, &capture, receive_config));
+    assert(port.receive_running());
 
     const std::array<std::uint8_t, 4> payload{0x01, 0x55, 0xAA, 0xFF};
     assert(::write(master_fd, payload.data(), payload.size()) ==
@@ -76,9 +78,31 @@ void test_async_receive_delivers_raw_bytes_and_timestamp() {
     ::close(slave_fd);
 }
 
+void test_invalid_cpu_affinity_is_rejected_before_thread_start() {
+    int master_fd = -1;
+    int slave_fd = -1;
+    char slave_name[128]{};
+    assert(openpty(&master_fd, &slave_fd, slave_name, nullptr, nullptr) == 0);
+
+    serial_package::SerialPort port;
+    serial_package::SerialPortConfig config;
+    config.device = slave_name;
+    assert(port.open(config));
+
+    serial_package::ReceiveThreadConfig receive_config;
+    receive_config.cpu_affinity = CPU_SETSIZE;
+    assert(!port.start_receive(capture_callback, nullptr, receive_config));
+    assert(!port.receive_running());
+
+    port.close();
+    ::close(master_fd);
+    ::close(slave_fd);
+}
+
 }  // namespace
 
 int main() {
     test_async_receive_delivers_raw_bytes_and_timestamp();
+    test_invalid_cpu_affinity_is_rejected_before_thread_start();
     return 0;
 }

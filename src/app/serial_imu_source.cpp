@@ -35,6 +35,15 @@ runtime::TimestampNs source_wire_byte_period(
     return port == nullptr ? 1 : wire_byte_period_ns(port->config());
 }
 
+serial_package::ReceiveThreadConfig default_receive_config() noexcept {
+    serial_package::ReceiveThreadConfig config;
+    config.read_chunk_size = runtime::RawSerialChunk::kMaxChunkBytes;
+    config.realtime_priority = 20;
+    config.require_realtime_priority = false;
+    config.cpu_affinity = -1;
+    return config;
+}
+
 }  // namespace
 
 SerialImuSource::SerialImuSource(
@@ -60,12 +69,22 @@ SerialImuSource::SerialImuSource(
     int read_timeout_ms, bool enable_interval_statistics,
     std::ostream& output)
     : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
-                      enable_interval_statistics, output, 0) {}
+                      enable_interval_statistics, output, 0,
+                      default_receive_config()) {}
 
 SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
     int read_timeout_ms, bool enable_interval_statistics,
     std::ostream& output, runtime::TimestampNs measurement_latency_ns)
+    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
+                      enable_interval_statistics, output,
+                      measurement_latency_ns, default_receive_config()) {}
+
+SerialImuSource::SerialImuSource(
+    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
+    int read_timeout_ms, bool enable_interval_statistics,
+    std::ostream& output, runtime::TimestampNs measurement_latency_ns,
+    const serial_package::ReceiveThreadConfig& receive_config)
     : port_(std::move(port)),
       output_(&output),
       read_timeout_ms_(read_timeout_ms),
@@ -73,7 +92,8 @@ SerialImuSource::SerialImuSource(
       interval_statistics_enabled_(enable_interval_statistics),
       raw_receive_buffer_(kRawQueueCapacity),
       decoder_(source_wire_byte_period(port_), measurement_latency_ns,
-               kDecodedQueueCapacity) {
+               kDecodedQueueCapacity),
+      receive_config_(receive_config) {
     if (port_ == nullptr) {
         configuration_error_ = "串口对象为空";
         return;
@@ -90,11 +110,13 @@ SerialImuSource::SerialImuSource(
         configuration_error_ = "IMU 测量延迟不能为负数";
         return;
     }
-
-    // 默认尝试使用实时优先级；无 CAP_SYS_NICE 时保留接收功能，由诊断接口报告。
-    receive_config_.read_chunk_size = runtime::RawSerialChunk::kMaxChunkBytes;
-    receive_config_.realtime_priority = 20;
-    receive_config_.require_realtime_priority = false;
+    if (receive_config_.read_chunk_size == 0 ||
+        receive_config_.realtime_priority < 0 ||
+        receive_config_.realtime_priority > 99 ||
+        receive_config_.cpu_affinity < -1) {
+        configuration_error_ = "IMU 接收线程调度配置无效";
+        return;
+    }
 }
 
 runtime::SourceResult SerialImuSource::start() {

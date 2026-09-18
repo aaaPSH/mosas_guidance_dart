@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
             serial_port, config.imu.sample_rate_hz,
             config.serial.read_timeout_ms,
             config.enable_serial_interval_statistics, std::cerr,
-            config.imu.measurement_latency_ns);
+            config.imu.measurement_latency_ns, config.imu.receive_thread);
         serial_imu_source = source.get();
         imu_source = std::move(source);
     } else {
