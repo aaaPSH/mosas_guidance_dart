@@ -1,7 +1,7 @@
 #ifndef GUIDANCE_ESTIMATOR_HPP
 #define GUIDANCE_ESTIMATOR_HPP
 
-#include <mosas/dart/dart_condition.hpp>
+#include <mosas/runtime/vector3.hpp>
 #include <mosas/vision/vision_types.hpp>
 
 #include <limits>

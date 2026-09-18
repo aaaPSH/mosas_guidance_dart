@@ -487,6 +487,8 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
             cv::resize(frame->image, frame->image,
                        cv::Size(config_.width, config_.height));
         }
+        // 相机倒装时在图像链路统一旋转 180 度，避免再通过外参重复补偿。
+        cv::flip(frame->image, frame->image, -1);
     } catch (const std::exception& error) {
         set_error("相机帧预处理失败：" + std::string(error.what()) +
                   "，设备 " + config_.device);

@@ -124,9 +124,6 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
         return;
     }
 
-    const double speed = std::hypot(
-        data.velocity_x_mps,
-        std::hypot(data.velocity_y_mps, data.velocity_z_mps));
     const std::vector<std::string> lines{
         "LOS(deg): qy " +
             format_value(data.line_of_sight_valid,
@@ -151,23 +148,6 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             " z " +
             format_value(data.body_overload_valid, data.body_overload_z_g,
                          1.0, ""),
-        "Attitude(deg): P " +
-            format_value(data.attitude_valid, data.attitude_pitch_rad,
-                         kRadiansToDegrees, "") +
-            " Y " +
-            format_value(data.attitude_valid, data.attitude_yaw_rad,
-                         kRadiansToDegrees, "") +
-            " R " +
-            format_value(data.attitude_valid, data.attitude_roll_rad,
-                         kRadiansToDegrees, ""),
-        "Velocity(m/s): x " +
-            format_value(data.velocity_valid, data.velocity_x_mps, 1.0, "") +
-            " y " +
-            format_value(data.velocity_valid, data.velocity_y_mps, 1.0, "") +
-            " z " +
-            format_value(data.velocity_valid, data.velocity_z_mps, 1.0, ""),
-        "Speed(m/s): " +
-            format_value(data.velocity_valid, speed, 1.0, ""),
         "Processing FPS: " + format_fps(data.processing_fps),
     };
 

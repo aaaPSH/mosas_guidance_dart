@@ -92,11 +92,6 @@ add_library(serial_package STATIC
 configure_mosas_target(serial_package)
 target_link_libraries(serial_package PUBLIC Threads::Threads)
 
-add_library(mosas_dart STATIC
-    src/dart/dart_condition.cpp
-)
-configure_mosas_target(mosas_dart)
-
 add_library(mosas_vision STATIC
     src/vision/vision_recognizer.cpp
     src/vision/vision_visualizer.cpp
@@ -114,7 +109,6 @@ add_library(mosas_guidance STATIC
 configure_mosas_target(mosas_guidance)
 target_link_libraries(mosas_guidance
     PUBLIC
-        mosas_dart
         mosas_vision
 )
 
@@ -191,7 +185,6 @@ endif()
 
 set(MOSAS_INSTALL_TARGETS
     serial_package
-    mosas_dart
     mosas_vision
     mosas_guidance
     mosas_runtime

@@ -1,8 +1,8 @@
 #ifndef MOSAS_RUNTIME_IMU_ANGULAR_VELOCITY_HPP
 #define MOSAS_RUNTIME_IMU_ANGULAR_VELOCITY_HPP
 
-#include <mosas/dart/dart_condition.hpp>
 #include <mosas/runtime/clock.hpp>
+#include <mosas/runtime/vector3.hpp>
 
 namespace mosas::runtime {
 
