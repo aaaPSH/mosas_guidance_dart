@@ -4,6 +4,7 @@
 #include <mosas/app/app_config.hpp>
 #include <mosas/app/nori_camera_sdk.hpp>
 #include <mosas/runtime/frame_timing.hpp>
+#include <mosas/runtime/frame_rate_meter.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -97,7 +98,7 @@ private:
     bool device_video_initialized_ = false;
     bool video_started_ = false;
     bool configured_ = false;
-    std::atomic<double> sdk_capture_fps_{0.0};
+    runtime::FrameRateMeter callback_capture_fps_meter_;
     runtime::CameraClockMapping camera_clock_mapping_{};
     std::atomic<std::uint64_t> dropped_timestamp_count_{0};
 

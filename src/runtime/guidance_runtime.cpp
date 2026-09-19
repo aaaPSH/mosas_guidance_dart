@@ -21,6 +21,18 @@ bool is_finite(double value) {
     return std::isfinite(value);
 }
 
+const char* camera_timestamp_source_name(CameraTimestampSource source) {
+    switch (source) {
+        case CameraTimestampSource::sdk_monotonic:
+            return "sdk_monotonic";
+        case CameraTimestampSource::sdk_realtime_converted:
+            return "sdk_realtime_converted";
+        case CameraTimestampSource::unknown:
+        default:
+            return "unknown";
+    }
+}
+
 bool is_finite(const Vector3& value) {
     return is_finite(value.x) && is_finite(value.y) && is_finite(value.z);
 }
@@ -642,7 +654,24 @@ void GuidanceRuntime::capture_worker() {
                     frame.timestamp_ns, frame.received_timestamp_ns, -1,
                     config_.max_camera_future_ns,
                     config_.max_camera_age_ns)) {
-                set_fault("camera source returned an invalid capture timestamp");
+                const bool timestamp_is_future =
+                    frame.timestamp_ns > frame.received_timestamp_ns;
+                const TimestampNs timestamp_delta_ns =
+                    timestamp_is_future
+                        ? frame.timestamp_ns - frame.received_timestamp_ns
+                        : frame.received_timestamp_ns - frame.timestamp_ns;
+                std::ostringstream message;
+                message << "camera source returned an invalid capture timestamp"
+                        << " (source="
+                        << camera_timestamp_source_name(frame.timestamp_source)
+                        << ", capture_timestamp_ns=" << frame.timestamp_ns
+                        << ", received_timestamp_ns="
+                        << frame.received_timestamp_ns << ", "
+                        << (timestamp_is_future ? "future_ns=" : "age_ns=")
+                        << timestamp_delta_ns
+                        << ", max_future_ns=" << config_.max_camera_future_ns
+                        << ", max_age_ns=" << config_.max_camera_age_ns << ')';
+                set_fault(message.str());
                 return;
             }
 

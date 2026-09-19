@@ -7,29 +7,34 @@
 
 namespace mosas::runtime {
 
-// 使用最近一秒样本计算速率；读取不会清空样本，也不会影响其他统计器。
+// 使用最近一秒样本的时间间隔计算速率；读取不会清空样本。
 class FrameRateMeter {
 public:
-    void record() {
-        const auto now = std::chrono::steady_clock::now();
+    void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
+        samples_.clear();
+    }
+
+    void record() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
         samples_.push_back(now);
         remove_expired(now);
     }
 
     double snapshot() const {
-        const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
         remove_expired(now);
-        if (samples_.empty()) {
+        if (samples_.size() < 2) {
             return 0.0;
         }
         const double elapsed_seconds = std::chrono::duration<double>(
-            now - samples_.front()).count();
+            samples_.back() - samples_.front()).count();
         if (elapsed_seconds <= 0.0) {
             return 0.0;
         }
-        return static_cast<double>(samples_.size()) / elapsed_seconds;
+        return static_cast<double>(samples_.size() - 1) / elapsed_seconds;
     }
 
 private:
