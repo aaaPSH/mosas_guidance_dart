@@ -1040,7 +1040,8 @@ void GuidanceRuntime::processing_worker() {
                         << static_cast<double>(bracket_age_ns) / 1e6;
                 log_output_diagnostic("PNG 引导输出无效", details.str());
             }
-            if (result.guidance.valid && !faulted_.load() &&
+            if (attitude_lookup->launched && result.guidance.valid &&
+                !faulted_.load() &&
                 !stop_requested_.load()) {
                 result.overlay.body_overload_valid = true;
                 result.overlay.body_overload_x_g =
