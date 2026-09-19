@@ -96,7 +96,7 @@ public:
     virtual SourceResult configure(const CameraCaptureConfig& config) = 0;
     virtual SourceResult capture(CameraFrame* frame) = 0;
 
-    // 返回相机源报告的采集帧率；没有源报告时返回 0，运行时使用本地统计回退。
+    // 返回相机源实测的有效帧到达速率；返回 0 时运行时使用本地统计回退。
     virtual double capture_fps() const noexcept { return 0.0; }
 
     // 在处理线程完成颜色转换、缩放和相机安装方向修正等帧预处理。

@@ -48,15 +48,6 @@ bool same_video(const VIDEO_INFO& video, const CameraAppConfig& config,
            video.f_Fps == static_cast<float>(config.fps);
 }
 
-runtime::CameraTimestampDomain frame_timestamp_domain(
-    const FRAME_BUFFER_DATA& frame, runtime::CameraTimestampDomain configured) {
-    if ((frame.buffer.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) ==
-        V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
-        return runtime::CameraTimestampDomain::monotonic;
-    }
-    return configured;
-}
-
 runtime::CameraTimestampSource timestamp_source(
     runtime::CameraTimestampDomain domain) {
     return domain == runtime::CameraTimestampDomain::monotonic
@@ -108,7 +99,7 @@ runtime::SourceResult NoriSdkCameraSource::configure(
         return fatal_result();
     }
     set_error("");
-    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
+    callback_capture_fps_meter_.reset();
 
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
@@ -467,7 +458,11 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
 }
 
 double NoriSdkCameraSource::capture_fps() const noexcept {
-    return sdk_capture_fps_.load(std::memory_order_relaxed);
+    try {
+        return callback_capture_fps_meter_.snapshot();
+    } catch (...) {
+        return 0.0;
+    }
 }
 
 runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
@@ -592,7 +587,7 @@ void NoriSdkCameraSource::stop_locked() noexcept {
         session_acquired_ = false;
     }
 
-    sdk_capture_fps_.store(0.0, std::memory_order_relaxed);
+    callback_capture_fps_meter_.reset();
 }
 
 NoriSdkCameraSource::CaptureGuard::~CaptureGuard() noexcept {
@@ -647,6 +642,7 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
         frame->buff_Length > buffer_length - frame->buff_Offset) {
         return NORI_OK;
     }
+    callback_capture_fps_meter_.record();
 
     const auto* source = static_cast<const uint8_t*>(frame->pBufAddr);
     PendingFrame pending;
@@ -660,8 +656,9 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
         dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
         return NORI_OK;
     }
-    const runtime::CameraTimestampDomain domain = frame_timestamp_domain(
-        *frame, config_.frame_timestamp_domain);
+    // Frame_Time 与 V4L2 buffer.timestamp 是不同字段，按显式配置解释其时钟域。
+    const runtime::CameraTimestampDomain domain =
+        config_.frame_timestamp_domain;
     const auto timestamp = runtime::convert_camera_timeval(
         frame->Frame_Time.tv_sec, frame->Frame_Time.tv_usec, domain,
         camera_clock_mapping_, config_.camera_timestamp_bias_ns);
@@ -671,11 +668,6 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     }
     pending.timestamp_ns = *timestamp;
     pending.timestamp_source = timestamp_source(domain);
-    if (std::isfinite(frame->PixFormat.f_Fps) &&
-        frame->PixFormat.f_Fps > 0.0F) {
-        sdk_capture_fps_.store(static_cast<double>(frame->PixFormat.f_Fps),
-                               std::memory_order_relaxed);
-    }
 
     {
         std::lock_guard<std::mutex> queue_lock(queue_mutex_);

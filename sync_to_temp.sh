@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-# 将当前 Git 跟踪的文件同步到目标目录。
+# 仅将指定源码目录和根目录配置文件同步到目标目录。
 set -Eeuo pipefail
 
 SOURCE_INPUT="${SYNC_SOURCE:-$(dirname "${BASH_SOURCE[0]}")}"
 DESTINATION_INPUT="${SYNC_DEST:-/mnt/c/temp}"
 
 if ! command -v git >/dev/null 2>&1; then
-  echo "错误：未找到 git，无法获取跟踪文件清单。" >&2
+  echo "错误：未找到 git，无法定位仓库根目录。" >&2
   exit 127
 fi
 if ! command -v rsync >/dev/null 2>&1; then
@@ -69,11 +69,23 @@ if [[ "${DESTINATION_DIR}" == "/" ]] || \
   exit 1
 fi
 
-# Git 的 NUL 分隔清单可以安全处理空格、换行和二进制文件名。
-echo "正在同步 Git 跟踪文件到：${DESTINATION_DIR}"
-if ! git -C "${SOURCE_DIR}" ls-files -z | \
-  rsync --archive --recursive --from0 --files-from=- \
-    "${SOURCE_DIR}/" "${DESTINATION_DIR}/"; then
+# 只同步需要交付的目录和文件；跳过 Git 元数据及其他工作区内容。
+echo "正在同步指定目录和文件到：${DESTINATION_DIR}"
+if ! rsync --archive --recursive \
+  --exclude='.git' \
+  --exclude='/.worktrees/' \
+  --include='/camera_SDk/***' \
+  --include='/config/***' \
+  --include='/examples/***' \
+  --include='/include/***' \
+  --include='/scripts/***' \
+  --include='/serial_forward_test/***' \
+  --include='/src/***' \
+  --include='/.gitignore' \
+  --include='/CMakeLists.txt' \
+  --include='/sync_to_temp.sh' \
+  --exclude='*' \
+  "${SOURCE_DIR}/" "${DESTINATION_DIR}/"; then
   echo "错误：同步失败。" >&2
   exit 1
 fi

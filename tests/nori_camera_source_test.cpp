@@ -424,7 +424,7 @@ int main() {
     sdk_frame.PixFormat.u_Format = VIDEO_MEDIA_TYPE_MJPG;
     sdk_frame.PixFormat.u_Width = 2;
     sdk_frame.PixFormat.u_Height = 2;
-    sdk_frame.PixFormat.f_Fps = 120.0F;
+    sdk_frame.PixFormat.f_Fps = 1.0F;
     sdk_frame.pBufAddr = encoded.data();
     sdk_frame.buff_Length = static_cast<uint32_t>(encoded.size());
     sdk_frame.buff_Offset = 0;
@@ -432,7 +432,7 @@ int main() {
     set_current_frame_time(&sdk_frame);
     assert(sdk->callback != nullptr);
     assert(sdk->callback(nullptr, &sdk_frame, sdk->callback_user) == NORI_OK);
-    assert(source.capture_fps() == 120.0);
+    assert(source.capture_fps() == 0.0);
     std::fill(encoded.begin(), encoded.end(), 0);
 
     mosas::runtime::CameraFrame frame;
