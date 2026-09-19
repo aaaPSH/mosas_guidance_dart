@@ -12,7 +12,8 @@ struct AttitudeEstimatorConfig {
     double gravity_mps2 = 9.80665;
     // 取 1.0 时直接使用当前加速度，不进行低通滤波。
     double acceleration_filter_alpha = 1.0;
-    double launch_ax_threshold_mps2 = 5.0;
+    // 相对启动基线的 X 轴加速度增量阈值，单位 m/s²（1.5g）。
+    double launch_ax_threshold_mps2 = 14.709975;
     TimestampNs launch_confirm_ns = 20'000'000;
     bool accelerometer_specific_force = true;
 };
