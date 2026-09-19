@@ -11,6 +11,7 @@
 namespace {
 
 constexpr mosas::runtime::TimestampNs kBytePeriodNs = 100;
+constexpr double kDegreesToRadians = 0.017453292519943295;
 
 std::array<std::uint8_t, serial_package::kImuFrameSize> make_frame(
     std::int16_t angular_x, std::int16_t angular_y,
@@ -64,9 +65,11 @@ void test_split_frame_preserves_frame_start_timestamp() {
                                900'000 + 7 * kBytePeriodNs, 2));
     assert(decoder.try_pop(&sample));
     assert(sample.timestamp_ns == 900'000);
-    assert(std::abs(sample.angular_velocity.x - 1.0) < 1e-12);
-    assert(std::abs(sample.angular_velocity.y + 2.0) < 1e-12);
-    assert(std::abs(sample.angular_velocity.z - 3.0) < 1e-12);
+    assert(std::abs(sample.angular_velocity.x - kDegreesToRadians) < 1e-12);
+    assert(std::abs(sample.angular_velocity.y + 2.0 * kDegreesToRadians) <
+           1e-12);
+    assert(std::abs(sample.angular_velocity.z - 3.0 * kDegreesToRadians) <
+           1e-12);
     assert(std::abs(sample.acceleration.x - 1.0) < 1e-12);
     assert(std::abs(sample.acceleration.y + 2.0) < 1e-12);
     assert(std::abs(sample.acceleration.z - 3.0) < 1e-12);

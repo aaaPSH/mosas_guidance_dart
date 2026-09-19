@@ -24,7 +24,6 @@ struct AttitudeEstimate {
         0.0, 1.0, 0.0,
         0.0, 0.0, 1.0};
     double pitch_rad = 0.0;
-    double roll_rad = 0.0;
     bool launched = false;
     bool valid = false;
 };
@@ -53,8 +52,7 @@ private:
     static Quaternion multiply(const Quaternion& lhs,
                                const Quaternion& rhs) noexcept;
     static Quaternion normalize(const Quaternion& value) noexcept;
-    static Quaternion from_pitch_roll(double pitch_rad,
-                                      double roll_rad) noexcept;
+    static Quaternion from_pitch(double pitch_rad) noexcept;
     static Quaternion delta_from_body_rate(const Vector3& angular_velocity,
                                            double dt_seconds) noexcept;
     static RotationMatrix3 to_matrix(const Quaternion& value) noexcept;
