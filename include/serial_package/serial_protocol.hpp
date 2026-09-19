@@ -38,7 +38,7 @@ bool encode_control_frame(
 std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept;
 
-// 校验并解码一帧 IMU 上行数据。
+// 校验并解码一帧 IMU 上行数据；角速度统一输出为 rad/s。
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
                       ImuFrameValues* values,
                       std::string* error = nullptr);

@@ -8,6 +8,7 @@ namespace mosas::runtime {
 
 struct ImuAngularVelocitySample {
     TimestampNs timestamp_ns = -1;
+    // 加速度单位为 m/s²，角速度单位为 rad/s。
     Vector3 acceleration{0.0, 0.0, 0.0};
     Vector3 angular_velocity{0.0, 0.0, 0.0};
 };

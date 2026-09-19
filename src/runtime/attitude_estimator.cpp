@@ -64,15 +64,11 @@ AttitudeEstimator::Quaternion AttitudeEstimator::normalize(
     return {value.w / norm, value.x / norm, value.y / norm, value.z / norm};
 }
 
-AttitudeEstimator::Quaternion AttitudeEstimator::from_pitch_roll(
-    double pitch_rad, double roll_rad) noexcept {
+AttitudeEstimator::Quaternion AttitudeEstimator::from_pitch(
+    double pitch_rad) noexcept {
     const double half_pitch = 0.5 * pitch_rad;
-    const double half_roll = 0.5 * roll_rad;
-    const Quaternion pitch_rotation{std::cos(half_pitch), 0.0, 0.0,
-                                   std::sin(half_pitch)};
-    const Quaternion roll_rotation{std::cos(half_roll), std::sin(half_roll),
-                                  0.0, 0.0};
-    return normalize(multiply(pitch_rotation, roll_rotation));
+    return normalize(
+        {std::cos(half_pitch), 0.0, 0.0, std::sin(half_pitch)});
 }
 
 AttitudeEstimator::Quaternion AttitudeEstimator::delta_from_body_rate(
@@ -122,8 +118,7 @@ AttitudeEstimate AttitudeEstimator::make_estimate(
     TimestampNs timestamp_ns, bool valid) const noexcept {
     const RotationMatrix3 matrix = to_matrix(orientation_);
     const double pitch = pitch_from_matrix(matrix);
-    const double roll = std::atan2(matrix.m21, matrix.m22);
-    return {timestamp_ns, matrix, pitch, roll, launched_, valid};
+    return {timestamp_ns, matrix, pitch, launched_, valid};
 }
 
 bool AttitudeEstimator::update_prelaunch_attitude(
@@ -140,11 +135,11 @@ bool AttitudeEstimator::update_prelaunch_attitude(
 
     const double pitch = std::atan2(
         up_force.x, std::hypot(up_force.y, up_force.z));
-    const double roll = std::atan2(-up_force.z, up_force.y);
-    if (!finite(pitch) || !finite(roll)) {
+    if (!finite(pitch)) {
         return false;
     }
-    orientation_ = from_pitch_roll(pitch, roll);
+    // 重力只用于俯仰初始化。
+    orientation_ = from_pitch(pitch);
     return true;
 }
 

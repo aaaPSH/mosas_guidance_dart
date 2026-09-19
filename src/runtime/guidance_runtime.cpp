@@ -583,7 +583,6 @@ void GuidanceRuntime::imu_worker() {
             snapshot.angular_velocity = sample.angular_velocity;
             snapshot.body_to_navigation = attitude.body_to_navigation;
             snapshot.pitch_rad = attitude.pitch_rad;
-            snapshot.roll_rad = attitude.roll_rad;
             snapshot.attitude_valid = attitude.valid;
             snapshot.launched = attitude.launched;
             {
@@ -871,14 +870,10 @@ void GuidanceRuntime::processing_worker() {
             result.imu_state.body_to_navigation =
                 attitude_lookup->body_to_navigation;
             result.imu_state.pitch_rad = attitude_lookup->pitch_rad;
-            result.imu_state.roll_rad = std::atan2(
-                attitude_lookup->body_to_navigation.m21,
-                attitude_lookup->body_to_navigation.m22);
             result.imu_state.attitude_valid = true;
             result.imu_state.launched = attitude_lookup->launched;
             result.overlay.attitude_valid = true;
             result.overlay.attitude_pitch_rad = attitude_lookup->pitch_rad;
-            result.overlay.attitude_roll_rad = result.imu_state.roll_rad;
             result.overlay.launched = attitude_lookup->launched;
 
             const auto vision_started = std::chrono::steady_clock::now();

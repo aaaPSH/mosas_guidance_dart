@@ -15,11 +15,13 @@
 
 namespace {
 
+constexpr double kDegreesToRadians = 0.017453292519943295;
+
 std::array<std::uint8_t, serial_package::kImuFrameSize> make_frame() {
     std::array<std::uint8_t, serial_package::kImuFrameSize> frame{};
     frame[0] = 0x55;
     frame[1] = 0xAA;
-    // 加速度保持为零，三轴角速度分别编码为 1.0、-2.0、3.0 rad/s。
+    // 加速度保持为零，三轴角速度分别编码为 1.0、-2.0、3.0 deg/s。
     frame[8] = 10;
     frame[10] = 0xEC;
     frame[11] = 0xFF;
@@ -76,9 +78,11 @@ void test_serial_imu_source_decodes_on_consumer_thread() {
 
     assert(received);
     assert(sample.timestamp_ns >= 0);
-    assert(std::abs(sample.angular_velocity.x - 1.0) < 1e-9);
-    assert(std::abs(sample.angular_velocity.y + 2.0) < 1e-9);
-    assert(std::abs(sample.angular_velocity.z - 3.0) < 1e-9);
+    assert(std::abs(sample.angular_velocity.x - kDegreesToRadians) < 1e-9);
+    assert(std::abs(sample.angular_velocity.y + 2.0 * kDegreesToRadians) <
+           1e-9);
+    assert(std::abs(sample.angular_velocity.z - 3.0 * kDegreesToRadians) <
+           1e-9);
 
     source.stop();
 

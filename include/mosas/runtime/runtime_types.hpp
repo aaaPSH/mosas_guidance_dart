@@ -36,7 +36,6 @@ struct ImuStateSnapshot {
         0.0, 1.0, 0.0,
         0.0, 0.0, 1.0};
     double pitch_rad = 0.0;
-    double roll_rad = 0.0;
     bool attitude_valid = false;
     bool launched = false;
 };

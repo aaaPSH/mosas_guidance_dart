@@ -11,6 +11,7 @@ namespace serial_package {
 namespace {
 
 constexpr double kOverloadScale = 100.0;
+constexpr double kDegreesToRadians = 0.017453292519943295;
 
 void set_error(const std::string& message, std::string* error) {
     if (error != nullptr) {
@@ -176,12 +177,16 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
         static_cast<double>(read_int16_le(data + 4)) * 0.01;
     decoded.acceleration_z_mps2 =
         static_cast<double>(read_int16_le(data + 6)) * 0.01;
+    // 下位机以 0.1 deg/s 编码；运行时角速度统一使用 rad/s。
     decoded.angular_velocity_x_rad_s =
-        static_cast<double>(read_int16_le(data + 8)) * 0.1;
+        static_cast<double>(read_int16_le(data + 8)) * 0.1 *
+        kDegreesToRadians;
     decoded.angular_velocity_y_rad_s =
-        static_cast<double>(read_int16_le(data + 10)) * 0.1;
+        static_cast<double>(read_int16_le(data + 10)) * 0.1 *
+        kDegreesToRadians;
     decoded.angular_velocity_z_rad_s =
-        static_cast<double>(read_int16_le(data + 12)) * 0.1;
+        static_cast<double>(read_int16_le(data + 12)) * 0.1 *
+        kDegreesToRadians;
     decoded.initialization_g_raw =
         static_cast<std::uint16_t>(data[14]) |
         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[15]) << 8u);

@@ -151,9 +151,6 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
         "Attitude(deg): pitch " +
             format_value(data.attitude_valid, data.attitude_pitch_rad,
                          kRadiansToDegrees, "") +
-            " roll " +
-            format_value(data.attitude_valid, data.attitude_roll_rad,
-                         kRadiansToDegrees, "") +
             " phase " +
             (data.attitude_valid ? (data.launched ? "LAUNCHED" : "PRELAUNCH")
                                  : "N/A"),
