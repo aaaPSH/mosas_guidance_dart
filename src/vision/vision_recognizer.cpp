@@ -98,11 +98,6 @@ VisionResult VisionRecognizer::process(const cv::Mat& frame) {
             cv::Scalar(config_.threshold.h_max, config_.threshold.s_max,
                        config_.threshold.v_max),
             mask_);
-        // 复制一份二值掩码供显示线程使用，录像链路不会读取该字段。
-        result.debug_mask = mask_.clone();
-        result.debug_mask_roi = roi;
-        result.debug_mask_valid = true;
-
         // 无前景时无需生成连通域标签和统计矩阵，直接恢复全局搜索 ROI。
         result.mask_pixel_count = cv::countNonZero(mask_);
         if (result.mask_pixel_count == 0) {
