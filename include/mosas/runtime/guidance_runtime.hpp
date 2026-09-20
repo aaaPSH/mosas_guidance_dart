@@ -9,6 +9,7 @@
 #include <mosas/runtime/imu_angular_velocity_history.hpp>
 #include <mosas/runtime/latest_frame_queue.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
+#include <mosas/runtime/timing_distribution.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -31,19 +32,29 @@ struct GuidanceRuntimeStatistics {
 
 struct GuidanceRuntimeTimingStage {
     std::uint64_t samples = 0;
+    double minimum_ms = 0.0;
     double average_ms = 0.0;
+    double p50_ms = 0.0;
+    double p95_ms = 0.0;
+    double p99_ms = 0.0;
     double maximum_ms = 0.0;
 };
 
 struct GuidanceRuntimeTiming {
     GuidanceRuntimeTimingStage capture;
+    GuidanceRuntimeTimingStage capture_queue_wait;
+    GuidanceRuntimeTimingStage capture_queue_delay;
     GuidanceRuntimeTimingStage prepare;
     GuidanceRuntimeTimingStage vision;
     GuidanceRuntimeTimingStage line_of_sight;
     GuidanceRuntimeTimingStage guidance;
     GuidanceRuntimeTimingStage command;
     GuidanceRuntimeTimingStage processing_total;
+    GuidanceRuntimeTimingStage output_queue_wait;
+    GuidanceRuntimeTimingStage output_queue_delay;
     GuidanceRuntimeTimingStage output;
+    std::uint64_t capture_queue_dropped = 0;
+    std::uint64_t output_queue_dropped = 0;
 };
 
 struct GuidanceRuntimeConfig {
@@ -111,6 +122,12 @@ private:
         ImuStateSnapshot imu_state{};
         PngGuidanceOutput guidance{};
         VisionOverlayData overlay{};
+        std::chrono::steady_clock::time_point enqueued_at{};
+    };
+
+    struct QueuedCameraFrame {
+        CameraFrame frame;
+        std::chrono::steady_clock::time_point enqueued_at{};
     };
 
     bool validate_config() const;
@@ -120,19 +137,21 @@ private:
     void output_worker();
     enum class TimingStage {
         capture,
+        capture_queue_wait,
+        capture_queue_delay,
         prepare,
         vision,
         line_of_sight,
         guidance,
         command,
         processing_total,
+        output_queue_wait,
+        output_queue_delay,
         output,
     };
 
     struct TimingAccumulator {
-        std::uint64_t samples = 0;
-        std::uint64_t total_ns = 0;
-        std::uint64_t maximum_ns = 0;
+        TimingDistribution distribution;
     };
 
     void record_timing(TimingStage stage,
@@ -153,7 +172,7 @@ private:
     GuidanceRuntimeConfig config_;
     std::ostream* output_ = nullptr;
     AsyncInfoLogger info_logger_;
-    LatestFrameQueue<CameraFrame> capture_queue_;
+    LatestFrameQueue<QueuedCameraFrame> capture_queue_;
     LatestFrameQueue<ProcessedFrame> output_queue_;
     ImuAngularVelocityHistory angular_velocity_history_;
     AttitudeHistory attitude_history_;
@@ -180,12 +199,16 @@ private:
     FrameRateMeter output_fps_meter_;
     mutable std::mutex timing_mutex_;
     TimingAccumulator capture_timing_;
+    TimingAccumulator capture_queue_wait_timing_;
+    TimingAccumulator capture_queue_delay_timing_;
     TimingAccumulator prepare_timing_;
     TimingAccumulator vision_timing_;
     TimingAccumulator line_of_sight_timing_;
     TimingAccumulator guidance_timing_;
     TimingAccumulator command_timing_;
     TimingAccumulator processing_total_timing_;
+    TimingAccumulator output_queue_wait_timing_;
+    TimingAccumulator output_queue_delay_timing_;
     TimingAccumulator output_timing_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
