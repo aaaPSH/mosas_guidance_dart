@@ -5,9 +5,11 @@
 #include <mosas/runtime/imu_angular_velocity.hpp>
 #include <mosas/vision/vision_types.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <thread>
 
 namespace mosas::runtime {
 
@@ -64,11 +66,16 @@ class ImuSource {
 public:
     virtual ~ImuSource() = default;
 
-    // 新的异步接口：源只负责提供带加速度和角速度的时间戳样本，调用线程不得阻塞等待。
+    // try_pop 用于非阻塞取样；没有样本时，调用方可等待数据源就绪。
     virtual SourceResult start() { return {SourceStatus::ok, {}}; }
     virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept {
         (void)sample;
         return false;
+    }
+    // 无数据时等待数据源通知；未实现通知的旧数据源使用短暂退避。
+    virtual bool wait_for_data() noexcept {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return true;
     }
     virtual void stop() noexcept {}
 

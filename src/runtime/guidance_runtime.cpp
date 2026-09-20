@@ -586,7 +586,13 @@ void GuidanceRuntime::imu_worker() {
         while (!stop_requested_.load()) {
             ImuAngularVelocitySample sample{};
             if (!imu_source_->try_pop(&sample)) {
-                std::this_thread::yield();
+                if (!imu_source_->wait_for_data()) {
+                    if (stop_requested_.load()) {
+                        return;
+                    }
+                    set_fault("imu source stopped while waiting for data");
+                    return;
+                }
                 continue;
             }
             if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||

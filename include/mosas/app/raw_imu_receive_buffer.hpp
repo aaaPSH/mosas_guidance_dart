@@ -5,8 +5,11 @@
 #include <mosas/runtime/spsc_ring.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 namespace mosas::app {
 
@@ -30,13 +33,13 @@ public:
         return queue_.try_pop(chunk);
     }
 
-    // 仅允许在串口接收线程停止后调用。
-    void reset() noexcept {
-        queue_.reset();
-        next_sequence_ = 0;
-        received_chunk_count_.store(0, std::memory_order_relaxed);
-        dropped_chunk_count_.store(0, std::memory_order_relaxed);
-    }
+    bool wait_for_data() noexcept;
+    bool wait_for_data_until(
+        std::chrono::steady_clock::time_point deadline) noexcept;
+    void close() noexcept;
+
+    // 仅允许在串口接收线程和消费线程停止后调用。
+    void reset() noexcept;
 
     std::uint64_t dropped_chunk_count() const noexcept {
         return dropped_chunk_count_.load(std::memory_order_relaxed);
@@ -52,6 +55,10 @@ public:
 
 private:
     runtime::SpscRing<runtime::RawSerialChunk> queue_;
+    std::mutex wait_mutex_;
+    std::condition_variable wait_condition_;
+    bool closed_ = true;
+    std::uint64_t wait_generation_ = 0;
     std::uint64_t next_sequence_ = 0;
     std::atomic<std::uint64_t> received_chunk_count_{0};
     std::atomic<std::uint64_t> dropped_chunk_count_{0};

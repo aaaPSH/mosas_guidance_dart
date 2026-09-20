@@ -170,6 +170,14 @@ bool SerialImuSource::try_pop(
     return false;
 }
 
+bool SerialImuSource::wait_for_data() noexcept {
+    if (!started_.load(std::memory_order_acquire) ||
+        cancelled_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    return raw_receive_buffer_.wait_for_data();
+}
+
 runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
     if (sample == nullptr) {
         return fatal_result("IMU sample 输出指针为空");
@@ -189,7 +197,9 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             sample->angular_velocity = angular_velocity.angular_velocity;
             return {runtime::SourceStatus::ok, {}};
         }
-        std::this_thread::yield();
+        if (!raw_receive_buffer_.wait_for_data_until(deadline)) {
+            break;
+        }
     }
     if (cancelled_.load(std::memory_order_acquire)) {
         return {runtime::SourceStatus::cancelled, {}};
@@ -199,6 +209,7 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
 
 void SerialImuSource::cancel() noexcept {
     cancelled_.store(true, std::memory_order_release);
+    raw_receive_buffer_.close();
     if (port_ != nullptr) {
         port_->stop_receive();
     }

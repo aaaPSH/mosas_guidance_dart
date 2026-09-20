@@ -45,11 +45,12 @@ public:
                     runtime::TimestampNs measurement_latency_ns,
                     const serial_package::ReceiveThreadConfig& receive_config);
 
-    // 启动串口原始字节接收线程；协议解析在 try_pop 所在线程完成。
+    // 启动串口原始字节接收线程；协议解析在消费样本的线程完成。
     runtime::SourceResult start() override;
 
     // 非阻塞取出一个已经解析的三轴加速度和角速度样本。
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
+    bool wait_for_data() noexcept override;
 
     // 兼容旧调用方：在普通调用线程等待并返回一个 IMU 运动样本。
     runtime::SourceResult read(runtime::ImuSample* sample) override;
