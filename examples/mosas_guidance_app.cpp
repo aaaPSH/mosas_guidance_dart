@@ -41,20 +41,63 @@ void print_usage(const char* program) {
 void print_timing_stage(
     const char* name,
     const mosas::runtime::GuidanceRuntimeTimingStage& stage) {
-    std::cout << "[TIMING] " << name << " samples=" << stage.samples
-              << " avg_ms=" << stage.average_ms
-              << " max_ms=" << stage.maximum_ms << '\n';
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(3)
+           << "[TIMING] " << name << " n=" << stage.samples
+           << " min_ms=" << stage.minimum_ms
+           << " avg_ms=" << stage.average_ms
+           << " p50_ms=" << stage.p50_ms
+           << " p95_ms=" << stage.p95_ms
+           << " p99_ms=" << stage.p99_ms
+           << " max_ms=" << stage.maximum_ms;
+    std::cout << output.str() << '\n';
+}
+
+void print_timing_stage_ns(
+    const char* name,
+    const mosas::runtime::TimingDistributionSummary& stage) {
+    constexpr double kNanosecondsPerMillisecond = 1e6;
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(3)
+           << "[TIMING] " << name << " n=" << stage.samples
+           << " min_ms=" << stage.minimum_ns / kNanosecondsPerMillisecond
+           << " avg_ms=" << stage.average_ns / kNanosecondsPerMillisecond
+           << " p50_ms=" << stage.p50_ns / kNanosecondsPerMillisecond
+           << " p95_ms=" << stage.p95_ns / kNanosecondsPerMillisecond
+           << " p99_ms=" << stage.p99_ns / kNanosecondsPerMillisecond
+           << " max_ms=" << stage.maximum_ns / kNanosecondsPerMillisecond;
+    std::cout << output.str() << '\n';
 }
 
 void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
+    std::cout << "[TIMING] P50/P95/P99 为对数直方图估值，分位桶最大相对误差约 0.8%\n";
     print_timing_stage("capture", timing.capture);
+    print_timing_stage("capture_queue_wait", timing.capture_queue_wait);
+    print_timing_stage("capture_queue_delay", timing.capture_queue_delay);
     print_timing_stage("prepare", timing.prepare);
     print_timing_stage("vision", timing.vision);
     print_timing_stage("line_of_sight", timing.line_of_sight);
     print_timing_stage("guidance", timing.guidance);
     print_timing_stage("command", timing.command);
     print_timing_stage("processing_total", timing.processing_total);
+    print_timing_stage("output_queue_wait", timing.output_queue_wait);
+    print_timing_stage("output_queue_delay", timing.output_queue_delay);
     print_timing_stage("output", timing.output);
+    std::cout << "[QUEUE] runtime_capture_dropped="
+              << timing.capture_queue_dropped
+              << " runtime_output_dropped=" << timing.output_queue_dropped
+              << '\n';
+}
+
+void print_camera_timing(const mosas::app::NoriCameraTiming& timing) {
+    print_timing_stage_ns("camera_callback_wait", timing.callback_wait);
+    print_timing_stage_ns("camera_callback_queue_delay",
+                          timing.callback_queue_delay);
+    print_timing_stage_ns("camera_decode_convert", timing.decode_convert);
+    std::cout << "[QUEUE] sdk_callback_dropped="
+              << timing.callback_queue_dropped
+              << " sdk_timestamp_dropped=" << timing.timestamp_dropped
+              << '\n';
 }
 
 void print_serial_imu_interval_statistics(
@@ -229,6 +272,7 @@ int main(int argc, char** argv) {
     }
     if (options.show_timing) {
         print_timing(runtime.timing());
+        print_camera_timing(camera_source_status->camera_timing());
     }
     return faulted ? 1 : 0;
 }

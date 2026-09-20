@@ -101,6 +101,14 @@ runtime::SourceResult NoriSdkCameraSource::configure(
     set_error("");
     sdk_configuration_ = {};
     callback_capture_fps_meter_.reset();
+    dropped_timestamp_count_.store(0, std::memory_order_relaxed);
+    dropped_callback_queue_count_.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> timing_lock(camera_timing_mutex_);
+        callback_wait_timing_.reset();
+        callback_queue_delay_timing_.reset();
+        decode_convert_timing_.reset();
+    }
 
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
@@ -119,7 +127,6 @@ runtime::SourceResult NoriSdkCameraSource::configure(
         return fatal_result();
     }
     camera_clock_mapping_ = {realtime_now, monotonic_now};
-    dropped_timestamp_count_.store(0, std::memory_order_relaxed);
 
     uint32_t device_count = 0;
     std::string session_error;
@@ -375,6 +382,30 @@ CameraSdkConfiguration NoriSdkCameraSource::sdk_configuration()
     return sdk_configuration_;
 }
 
+NoriCameraTiming NoriSdkCameraSource::camera_timing() const {
+    std::lock_guard<std::mutex> lock(camera_timing_mutex_);
+    return {callback_wait_timing_.summary(),
+            callback_queue_delay_timing_.summary(),
+            decode_convert_timing_.summary(),
+            dropped_callback_queue_count_.load(std::memory_order_relaxed),
+            dropped_timestamp_count_.load(std::memory_order_relaxed)};
+}
+
+void NoriSdkCameraSource::record_camera_timing(
+    runtime::TimingDistribution* distribution,
+    std::chrono::steady_clock::duration duration) noexcept {
+    if (distribution == nullptr) {
+        return;
+    }
+    const auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        duration).count();
+    if (duration_ns < 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(camera_timing_mutex_);
+    distribution->record_ns(static_cast<std::uint64_t>(duration_ns));
+}
+
 runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {
     if (frame == nullptr) {
         set_error("capture 参数为空，设备 " + config_.device);
@@ -393,6 +424,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     frame->timestamp_source = runtime::CameraTimestampSource::unknown;
 
     PendingFrame pending;
+    const auto callback_wait_started = std::chrono::steady_clock::now();
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         queue_condition_.wait(lock, [this] {
@@ -405,6 +437,11 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
         pending = std::move(pending_frames_.front());
         pending_frames_.pop_front();
     }
+    const auto frame_dequeued_at = std::chrono::steady_clock::now();
+    record_camera_timing(&callback_wait_timing_,
+                         frame_dequeued_at - callback_wait_started);
+    record_camera_timing(&callback_queue_delay_timing_,
+                         frame_dequeued_at - pending.enqueued_at);
 
     const auto max_int = static_cast<uint32_t>(std::numeric_limits<int>::max());
     if (pending.bytes.empty()) {
@@ -419,6 +456,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
         return fatal_result();
     }
 
+    const auto decode_convert_started = std::chrono::steady_clock::now();
     try {
         if (pending.media_type == VIDEO_MEDIA_TYPE_MJPG) {
             if (pending.bytes.size() >
@@ -477,6 +515,9 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
         set_error("capture 图像转换发生未知异常，设备 " + config_.device);
         return fatal_result();
     }
+    record_camera_timing(&decode_convert_timing_,
+                         std::chrono::steady_clock::now() -
+                             decode_convert_started);
 
     frame->timestamp_ns = pending.timestamp_ns;
     frame->received_timestamp_ns = pending.received_timestamp_ns;
@@ -699,6 +740,7 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     }
     pending.timestamp_ns = *timestamp;
     pending.timestamp_source = timestamp_source(domain);
+    pending.enqueued_at = std::chrono::steady_clock::now();
 
     {
         std::lock_guard<std::mutex> queue_lock(queue_mutex_);
@@ -708,6 +750,8 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
         }
         if (pending_frames_.size() >= config_.callback_queue_capacity) {
             pending_frames_.pop_front();
+            dropped_callback_queue_count_.fetch_add(
+                1, std::memory_order_relaxed);
         }
         pending_frames_.push_back(std::move(pending));
     }

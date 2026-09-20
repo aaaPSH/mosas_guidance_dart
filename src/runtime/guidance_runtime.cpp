@@ -451,19 +451,31 @@ GuidanceRuntimeStatistics GuidanceRuntime::statistics() const {
 GuidanceRuntimeTiming GuidanceRuntime::timing() const {
     std::lock_guard<std::mutex> lock(timing_mutex_);
     const auto to_stage = [](const TimingAccumulator& accumulator) {
-        if (accumulator.samples == 0) {
-            return GuidanceRuntimeTimingStage{};
-        }
+        const auto summary = accumulator.distribution.summary();
+        constexpr double kNanosecondsPerMillisecond = 1e6;
         return GuidanceRuntimeTimingStage{
-            accumulator.samples,
-            static_cast<double>(accumulator.total_ns) /
-                static_cast<double>(accumulator.samples) / 1e6,
-            static_cast<double>(accumulator.maximum_ns) / 1e6};
+            summary.samples,
+            summary.minimum_ns / kNanosecondsPerMillisecond,
+            summary.average_ns / kNanosecondsPerMillisecond,
+            summary.p50_ns / kNanosecondsPerMillisecond,
+            summary.p95_ns / kNanosecondsPerMillisecond,
+            summary.p99_ns / kNanosecondsPerMillisecond,
+            summary.maximum_ns / kNanosecondsPerMillisecond};
     };
-    return {to_stage(capture_timing_), to_stage(prepare_timing_),
-            to_stage(vision_timing_), to_stage(line_of_sight_timing_),
-            to_stage(guidance_timing_), to_stage(command_timing_),
-            to_stage(processing_total_timing_), to_stage(output_timing_)};
+    return {to_stage(capture_timing_),
+            to_stage(capture_queue_wait_timing_),
+            to_stage(capture_queue_delay_timing_),
+            to_stage(prepare_timing_),
+            to_stage(vision_timing_),
+            to_stage(line_of_sight_timing_),
+            to_stage(guidance_timing_),
+            to_stage(command_timing_),
+            to_stage(processing_total_timing_),
+            to_stage(output_queue_wait_timing_),
+            to_stage(output_queue_delay_timing_),
+            to_stage(output_timing_),
+            capture_queue_.dropped_count(),
+            output_queue_.dropped_count()};
 }
 
 void GuidanceRuntime::record_timing(
@@ -479,6 +491,12 @@ void GuidanceRuntime::record_timing(
     switch (stage) {
         case TimingStage::capture:
             accumulator = &capture_timing_;
+            break;
+        case TimingStage::capture_queue_wait:
+            accumulator = &capture_queue_wait_timing_;
+            break;
+        case TimingStage::capture_queue_delay:
+            accumulator = &capture_queue_delay_timing_;
             break;
         case TimingStage::prepare:
             accumulator = &prepare_timing_;
@@ -498,14 +516,18 @@ void GuidanceRuntime::record_timing(
         case TimingStage::processing_total:
             accumulator = &processing_total_timing_;
             break;
+        case TimingStage::output_queue_wait:
+            accumulator = &output_queue_wait_timing_;
+            break;
+        case TimingStage::output_queue_delay:
+            accumulator = &output_queue_delay_timing_;
+            break;
         case TimingStage::output:
             accumulator = &output_timing_;
             break;
     }
-    ++accumulator->samples;
-    accumulator->total_ns += static_cast<std::uint64_t>(duration_ns);
-    accumulator->maximum_ns = std::max(
-        accumulator->maximum_ns, static_cast<std::uint64_t>(duration_ns));
+    accumulator->distribution.record_ns(
+        static_cast<std::uint64_t>(duration_ns));
 }
 
 void GuidanceRuntime::log(const std::string& message) {
@@ -679,7 +701,10 @@ void GuidanceRuntime::capture_worker() {
             record_timing(TimingStage::capture,
                           std::chrono::steady_clock::now() - capture_started);
 
-            if (!capture_queue_.push(std::move(frame))) {
+            QueuedCameraFrame queued_frame;
+            queued_frame.frame = std::move(frame);
+            queued_frame.enqueued_at = std::chrono::steady_clock::now();
+            if (!capture_queue_.push(std::move(queued_frame))) {
                 return;
             }
         }
@@ -726,11 +751,24 @@ void GuidanceRuntime::processing_worker() {
             if (frame_sink_ == nullptr) {
                 return true;
             }
+            result.enqueued_at = std::chrono::steady_clock::now();
             return output_queue_.push(std::move(result));
         };
 
         ProcessedFrame result{};
-        while (capture_queue_.pop(&result.frame)) {
+        QueuedCameraFrame queued_frame{};
+        while (true) {
+            const auto queue_wait_started = std::chrono::steady_clock::now();
+            if (!capture_queue_.pop(&queued_frame)) {
+                break;
+            }
+            const auto dequeued_at = std::chrono::steady_clock::now();
+            record_timing(TimingStage::capture_queue_wait,
+                          dequeued_at - queue_wait_started);
+            record_timing(TimingStage::capture_queue_delay,
+                          dequeued_at - queued_frame.enqueued_at);
+            result.frame = std::move(queued_frame.frame);
+            queued_frame = QueuedCameraFrame{};
             if (stop_requested_.load()) {
                 break;
             }
@@ -1088,7 +1126,16 @@ void GuidanceRuntime::output_worker() {
             return;
         }
         ProcessedFrame result{};
-        while (output_queue_.pop(&result)) {
+        while (true) {
+            const auto queue_wait_started = std::chrono::steady_clock::now();
+            if (!output_queue_.pop(&result)) {
+                break;
+            }
+            const auto dequeued_at = std::chrono::steady_clock::now();
+            record_timing(TimingStage::output_queue_wait,
+                          dequeued_at - queue_wait_started);
+            record_timing(TimingStage::output_queue_delay,
+                          dequeued_at - result.enqueued_at);
             if (stop_requested_.load()) {
                 break;
             }

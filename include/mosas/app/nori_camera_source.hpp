@@ -5,8 +5,10 @@
 #include <mosas/app/nori_camera_sdk.hpp>
 #include <mosas/runtime/frame_timing.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
+#include <mosas/runtime/timing_distribution.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -18,6 +20,14 @@
 #include <opencv2/core/mat.hpp>
 
 namespace mosas::app {
+
+struct NoriCameraTiming {
+    runtime::TimingDistributionSummary callback_wait;
+    runtime::TimingDistributionSummary callback_queue_delay;
+    runtime::TimingDistributionSummary decode_convert;
+    std::uint64_t callback_queue_dropped = 0;
+    std::uint64_t timestamp_dropped = 0;
+};
 
 struct CameraSdkConfiguration {
     uint32_t width = 0;
@@ -44,6 +54,7 @@ public:
     void cancel() noexcept override;
     void stop() noexcept override;
     CameraSdkConfiguration sdk_configuration() const noexcept;
+    NoriCameraTiming camera_timing() const;
 
 private:
     struct CallbackContext {
@@ -62,6 +73,7 @@ private:
         uint32_t height = 0;
         runtime::TimestampNs timestamp_ns = 0;
         runtime::TimestampNs received_timestamp_ns = 0;
+        std::chrono::steady_clock::time_point enqueued_at{};
         runtime::CameraTimestampSource timestamp_source =
             runtime::CameraTimestampSource::unknown;
     };
@@ -94,6 +106,9 @@ private:
     std::string error_message() const;
     runtime::SourceResult fatal_result() const;
     void set_error(const std::string& error);
+    void record_camera_timing(
+        runtime::TimingDistribution* distribution,
+        std::chrono::steady_clock::duration duration) noexcept;
     void close_queue();
     void cancel_locked() noexcept;
     void stop_locked() noexcept;
@@ -111,6 +126,11 @@ private:
     runtime::FrameRateMeter callback_capture_fps_meter_;
     runtime::CameraClockMapping camera_clock_mapping_{};
     std::atomic<std::uint64_t> dropped_timestamp_count_{0};
+    std::atomic<std::uint64_t> dropped_callback_queue_count_{0};
+    mutable std::mutex camera_timing_mutex_;
+    runtime::TimingDistribution callback_wait_timing_;
+    runtime::TimingDistribution callback_queue_delay_timing_;
+    runtime::TimingDistribution decode_convert_timing_;
 
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex capture_mutex_;
