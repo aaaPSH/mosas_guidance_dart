@@ -30,9 +30,61 @@ void RawImuReceiveBuffer::receive(
     chunk.sequence = next_sequence_++;
     chunk.size = static_cast<std::uint16_t>(size);
     std::memcpy(chunk.bytes.data(), data, size);
-    if (!queue_.try_push(std::move(chunk))) {
-        dropped_chunk_count_.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(wait_mutex_);
+        if (closed_) {
+            dropped_chunk_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (!queue_.try_push(std::move(chunk))) {
+            dropped_chunk_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
     }
+    wait_condition_.notify_one();
+}
+
+bool RawImuReceiveBuffer::wait_for_data() noexcept {
+    std::unique_lock<std::mutex> lock(wait_mutex_);
+    const std::uint64_t generation = wait_generation_;
+    wait_condition_.wait(lock, [this, generation] {
+        return closed_ || wait_generation_ != generation || !queue_.empty();
+    });
+    return !closed_ && wait_generation_ == generation;
+}
+
+bool RawImuReceiveBuffer::wait_for_data_until(
+    std::chrono::steady_clock::time_point deadline) noexcept {
+    std::unique_lock<std::mutex> lock(wait_mutex_);
+    const std::uint64_t generation = wait_generation_;
+    const bool awakened = wait_condition_.wait_until(
+        lock, deadline, [this, generation] {
+            return closed_ || wait_generation_ != generation ||
+                   !queue_.empty();
+    });
+    return awakened && !closed_ && wait_generation_ == generation;
+}
+
+void RawImuReceiveBuffer::close() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(wait_mutex_);
+        closed_ = true;
+        ++wait_generation_;
+    }
+    wait_condition_.notify_all();
+}
+
+void RawImuReceiveBuffer::reset() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(wait_mutex_);
+        queue_.reset();
+        next_sequence_ = 0;
+        received_chunk_count_.store(0, std::memory_order_relaxed);
+        dropped_chunk_count_.store(0, std::memory_order_relaxed);
+        closed_ = false;
+        ++wait_generation_;
+    }
+    wait_condition_.notify_all();
 }
 
 }  // namespace mosas::app

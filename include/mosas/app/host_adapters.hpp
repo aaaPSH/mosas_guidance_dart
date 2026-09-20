@@ -26,6 +26,7 @@ public:
 
     runtime::SourceResult start() override;
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
+    bool wait_for_data() noexcept override;
     runtime::SourceResult read(runtime::ImuSample* sample) override;
     void cancel() noexcept override;
     void stop() noexcept override;

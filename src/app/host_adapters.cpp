@@ -61,6 +61,17 @@ bool SimulatedImuSource::try_pop(
     return true;
 }
 
+bool SimulatedImuSource::wait_for_data() noexcept {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!started_ || cancelled_) {
+        return false;
+    }
+    condition_.wait_until(lock, next_deadline_, [this] {
+        return cancelled_ || !started_;
+    });
+    return started_ && !cancelled_;
+}
+
 runtime::SourceResult SimulatedImuSource::read(runtime::ImuSample* sample) {
     if (sample == nullptr) {
         return {runtime::SourceStatus::fatal, "imu sample output is null"};
