@@ -157,6 +157,7 @@ int main(int argc, char** argv) {
     }
     auto camera_source = std::make_unique<mosas::app::NoriSdkCameraSource>(
         config.camera);
+    auto* camera_source_status = camera_source.get();
     std::unique_ptr<mosas::runtime::CommandSink> command_sink;
     if (config.command.mode == mosas::app::CommandMode::log) {
         command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
@@ -194,6 +195,15 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "统一制导程序已启动\n";
+    const auto camera_configuration = camera_source_status->sdk_configuration();
+    std::ostringstream camera_configuration_output;
+    camera_configuration_output
+        << "[CAMERA] SDK启动读回: " << camera_configuration.width << "x"
+        << camera_configuration.height << " @ " << std::fixed
+        << std::setprecision(2) << camera_configuration.fps
+        << " FPS, 曝光=" << camera_configuration.exposure_us
+        << " us, 增益=" << camera_configuration.gain << "倍";
+    std::cout << camera_configuration_output.str() << '\n';
     auto next_statistics_at = std::chrono::steady_clock::now() +
                               std::chrono::seconds(1);
     while (g_stop_requested == 0 && !runtime.faulted()) {
