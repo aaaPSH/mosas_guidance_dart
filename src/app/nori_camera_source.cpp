@@ -99,6 +99,7 @@ runtime::SourceResult NoriSdkCameraSource::configure(
         return fatal_result();
     }
     set_error("");
+    sdk_configuration_ = {};
     callback_capture_fps_meter_.reset();
 
     config_.capture_mode = capture_config.mode;
@@ -288,60 +289,90 @@ bool NoriSdkCameraSource::configure_exposure() {
             return false;
         }
     }
-    if (config_.auto_exposure) {
-        return true;
+    if (!config_.auto_exposure) {
+        if (!std::isfinite(config_.exposure_us) ||
+            config_.exposure_us <= 0.0 ||
+            config_.exposure_us >
+                static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+            set_error("Nori_Xvision_SetSensorShutter 参数无效，设备 " +
+                      config_.device + "，返回码 0x0");
+            return false;
+        }
+        uint32_t current_shutter = 0;
+        result = sdk_->get_sensor_shutter(device_id_, &current_shutter);
+        if (result != NORI_OK) {
+            set_error(sdk_error("Nori_Xvision_GetSensorShutter", config_.device,
+                                device_id_, result));
+            return false;
+        }
+        result = sdk_->set_sensor_shutter(
+            device_id_, static_cast<uint32_t>(config_.exposure_us));
+        if (result != NORI_OK) {
+            set_error(sdk_error("Nori_Xvision_SetSensorShutter", config_.device,
+                                device_id_, result));
+            return false;
+        }
+
+        if (config_.gain > 0.0) {
+            if (!std::isfinite(config_.gain) ||
+                config_.gain > static_cast<double>(
+                                   std::numeric_limits<uint32_t>::max())) {
+                set_error("Nori_Xvision_SetSensorGain 参数无效，设备 " +
+                          config_.device + "，返回码 0x0");
+                return false;
+            }
+            uint32_t current_gain = 0;
+            uint32_t minimum_gain = 0;
+            uint32_t maximum_gain = 0;
+            uint32_t gain_step = 0;
+            result = sdk_->get_sensor_gain(device_id_, &current_gain,
+                                           &minimum_gain, &maximum_gain,
+                                           &gain_step);
+            if (result != NORI_OK) {
+                set_error(sdk_error("Nori_Xvision_GetSensorGain",
+                                    config_.device, device_id_, result));
+                return false;
+            }
+            result = sdk_->set_sensor_gain(
+                device_id_, static_cast<uint32_t>(config_.gain));
+            if (result != NORI_OK) {
+                set_error(sdk_error("Nori_Xvision_SetSensorGain",
+                                    config_.device, device_id_, result));
+                return false;
+            }
+        }
     }
 
-    if (!std::isfinite(config_.exposure_us) || config_.exposure_us <= 0.0 ||
-        config_.exposure_us >
-            static_cast<double>(std::numeric_limits<uint32_t>::max())) {
-        set_error("Nori_Xvision_SetSensorShutter 参数无效，设备 " +
-                  config_.device + "，返回码 0x0");
-        return false;
-    }
-    uint32_t current_shutter = 0;
-    result = sdk_->get_sensor_shutter(device_id_, &current_shutter);
+    uint32_t actual_shutter = 0;
+    result = sdk_->get_sensor_shutter(device_id_, &actual_shutter);
     if (result != NORI_OK) {
         set_error(sdk_error("Nori_Xvision_GetSensorShutter", config_.device,
                             device_id_, result));
         return false;
     }
-    result = sdk_->set_sensor_shutter(
-        device_id_, static_cast<uint32_t>(config_.exposure_us));
+    uint32_t actual_gain = 0;
+    uint32_t minimum_gain = 0;
+    uint32_t maximum_gain = 0;
+    uint32_t gain_step = 0;
+    result = sdk_->get_sensor_gain(device_id_, &actual_gain, &minimum_gain,
+                                   &maximum_gain, &gain_step);
     if (result != NORI_OK) {
-        set_error(sdk_error("Nori_Xvision_SetSensorShutter", config_.device,
+        set_error(sdk_error("Nori_Xvision_GetSensorGain", config_.device,
                             device_id_, result));
         return false;
     }
-    if (config_.gain > 0.0) {
-        if (!std::isfinite(config_.gain) ||
-            config_.gain >
-                static_cast<double>(std::numeric_limits<uint32_t>::max())) {
-            set_error("Nori_Xvision_SetSensorGain 参数无效，设备 " +
-                      config_.device + "，返回码 0x0");
-            return false;
-        }
-        uint32_t current_gain = 0;
-        uint32_t minimum_gain = 0;
-        uint32_t maximum_gain = 0;
-        uint32_t gain_step = 0;
-        result = sdk_->get_sensor_gain(device_id_, &current_gain,
-                                       &minimum_gain, &maximum_gain,
-                                       &gain_step);
-        if (result != NORI_OK) {
-            set_error(sdk_error("Nori_Xvision_GetSensorGain", config_.device,
-                                device_id_, result));
-            return false;
-        }
-        result = sdk_->set_sensor_gain(device_id_,
-                                       static_cast<uint32_t>(config_.gain));
-        if (result != NORI_OK) {
-            set_error(sdk_error("Nori_Xvision_SetSensorGain", config_.device,
-                                device_id_, result));
-            return false;
-        }
-    }
+
+    sdk_configuration_ = {selected_video_.u_Width,
+                          selected_video_.u_Height,
+                          selected_video_.f_Fps,
+                          actual_shutter,
+                          actual_gain};
     return true;
+}
+
+CameraSdkConfiguration NoriSdkCameraSource::sdk_configuration()
+    const noexcept {
+    return sdk_configuration_;
 }
 
 runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) {

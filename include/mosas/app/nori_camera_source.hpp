@@ -19,6 +19,14 @@
 
 namespace mosas::app {
 
+struct CameraSdkConfiguration {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    float fps = 0.0F;
+    uint32_t exposure_us = 0;
+    uint32_t gain = 0;
+};
+
 class NoriSdkCameraSource final : public runtime::CameraSource {
 public:
     explicit NoriSdkCameraSource(CameraAppConfig config);
@@ -35,6 +43,7 @@ public:
     runtime::SourceResult prepare(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
     void stop() noexcept override;
+    CameraSdkConfiguration sdk_configuration() const noexcept;
 
 private:
     struct CallbackContext {
@@ -94,6 +103,7 @@ private:
     NoriSdkSession session_;
     uint32_t device_id_ = 0;
     VIDEO_INFO selected_video_{};
+    CameraSdkConfiguration sdk_configuration_{};
     bool session_acquired_ = false;
     bool device_video_initialized_ = false;
     bool video_started_ = false;
