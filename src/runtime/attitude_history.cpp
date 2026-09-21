@@ -141,6 +141,10 @@ bool AttitudeHistory::push(const AttitudeSample& sample) noexcept {
     slot.matrix_m22_bits.store(double_bits(sample.body_to_navigation.m22),
                                std::memory_order_relaxed);
     slot.launched.store(sample.launched, std::memory_order_relaxed);
+    slot.launch_timestamp_ns.store(sample.launch_timestamp_ns,
+                                   std::memory_order_relaxed);
+    slot.launch_generation.store(sample.launch_generation,
+                                 std::memory_order_relaxed);
     slot.sequence.store(sequence + 2, std::memory_order_release);
 
     next_index_ = (next_index_ + 1) % capacity_;
@@ -177,7 +181,9 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
             return AttitudeLookup{pitch,
                                   candidate.body_to_navigation, false,
                                   candidate.timestamp_ns,
-                                  candidate.timestamp_ns, candidate.launched};
+                                  candidate.timestamp_ns, candidate.launched,
+                                  candidate.launch_timestamp_ns,
+                                  candidate.launch_generation};
         }
         if (candidate.timestamp_ns < timestamp_ns &&
             (!has_lower || candidate.timestamp_ns > lower.timestamp_ns)) {
@@ -193,7 +199,9 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
 
     if (!has_lower || !has_upper ||
         upper.timestamp_ns <= lower.timestamp_ns ||
-        lower.launched != upper.launched) {
+        lower.launched != upper.launched ||
+        lower.launch_generation != upper.launch_generation ||
+        lower.launch_timestamp_ns != upper.launch_timestamp_ns) {
         return std::nullopt;
     }
 
@@ -214,7 +222,9 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
         return std::nullopt;
     }
     return AttitudeLookup{pitch, matrix, true, lower.timestamp_ns,
-                          upper.timestamp_ns, lower.launched};
+                          upper.timestamp_ns, lower.launched,
+                          lower.launch_timestamp_ns,
+                          lower.launch_generation};
 }
 
 void AttitudeHistory::reset() noexcept {
@@ -232,6 +242,10 @@ void AttitudeHistory::reset() noexcept {
         slots_[index].matrix_m21_bits.store(0, std::memory_order_relaxed);
         slots_[index].matrix_m22_bits.store(0, std::memory_order_relaxed);
         slots_[index].launched.store(false, std::memory_order_relaxed);
+        slots_[index].launch_timestamp_ns.store(-1,
+                                                std::memory_order_relaxed);
+        slots_[index].launch_generation.store(0,
+                                              std::memory_order_relaxed);
     }
     next_index_ = 0;
     size_writer_ = 0;
@@ -266,6 +280,10 @@ bool AttitudeHistory::read_slot(std::size_t index,
         bits_double(slot.matrix_m22_bits.load(std::memory_order_relaxed)),
     };
     sample->launched = slot.launched.load(std::memory_order_relaxed);
+    sample->launch_timestamp_ns =
+        slot.launch_timestamp_ns.load(std::memory_order_relaxed);
+    sample->launch_generation =
+        slot.launch_generation.load(std::memory_order_relaxed);
     const std::uint64_t second = slot.sequence.load(std::memory_order_acquire);
     return first == second && (second & 1U) == 0;
 }

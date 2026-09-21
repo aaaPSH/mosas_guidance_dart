@@ -2,7 +2,8 @@
 #define MOSAS_APP_CONFIG_HPP
 
 #include <mosas/runtime/guidance_runtime.hpp>
-#include <mosas/wireless/rtsp_frame_sink.hpp>
+#include <mosas/output/output_config.hpp>
+#include <mosas/wireless/rtsp_streamer.hpp>
 #include <serial_package/serial_port.hpp>
 
 #include <filesystem>
@@ -81,7 +82,8 @@ struct AppConfig {
     // 是否在程序退出时输出 IMU 数据帧间隔统计摘要。
     bool enable_serial_interval_statistics = false;
     runtime::GuidanceRuntimeConfig guidance{};
-    wireless::RtspFrameSinkConfig wireless{};
+    output::OutputConfig output{};
+    wireless::RtspStreamConfig wireless{};
 };
 
 class AppConfigLoader {

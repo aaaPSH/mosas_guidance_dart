@@ -171,6 +171,9 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> faulted_{false};
     std::atomic<bool> sources_cancelled_{false};
+    std::atomic<std::uint64_t> active_launch_generation_{0};
+    // 序列化周期切换、IMU 样本入历史和命令提交，明确新旧周期边界。
+    mutable std::mutex launch_generation_mutex_;
     std::thread imu_thread_;
     std::thread capture_thread_;
     std::thread processing_thread_;

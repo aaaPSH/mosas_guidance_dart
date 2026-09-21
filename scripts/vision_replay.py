@@ -7,7 +7,6 @@ import argparse
 import configparser
 import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -17,18 +16,6 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "mosas_guidance.conf"
-
-
-class VisionStage(Enum):
-    """视觉流程当前停留的阶段。"""
-
-    NOT_PROCESSED = "NOT_PROCESSED"
-    INVALID_FRAME = "INVALID_FRAME"
-    INVALID_ROI = "INVALID_ROI"
-    MASK_EMPTY = "MASK_EMPTY"
-    CANDIDATE_REJECTED = "CANDIDATE_REJECTED"
-    FOUND = "FOUND"
-    PROCESSING_ERROR = "PROCESSING_ERROR"
 
 
 @dataclass
@@ -63,7 +50,7 @@ class VisionParams:
 
 @dataclass
 class VisionBlob:
-    """连通域统计及候选筛选结果。"""
+    """已识别目标的位置和大小。"""
 
     x: int = 0
     y: int = 0
@@ -72,35 +59,16 @@ class VisionBlob:
     area: int = 0
     center_x: float = 0.0
     center_y: float = 0.0
-    valid: bool = False
-    candidate: bool = False
-    aspect_ratio: float = 0.0
-    fill_ratio: float = 0.0
 
 
 @dataclass
 class PipelineResult:
-    """单帧视觉流程的所有中间结果。"""
+    """单帧目标识别结果。"""
 
-    stage: VisionStage = VisionStage.NOT_PROCESSED
     found: bool = False
     roi: tuple[int, int, int, int] = (0, 0, 0, 0)
     next_roi: tuple[int, int, int, int] = (0, 0, 0, 0)
-    roi_image: Optional[np.ndarray] = None
-    hsv: Optional[np.ndarray] = None
-    h_channel: Optional[np.ndarray] = None
-    s_channel: Optional[np.ndarray] = None
-    v_channel: Optional[np.ndarray] = None
-    mask: Optional[np.ndarray] = None
-    mask_valid: bool = False
-    mask_pixel_count: int = 0
-    component_count: int = 0
-    candidate_count: int = 0
-    components: list[VisionBlob] = field(default_factory=list)
-    candidates: list[VisionBlob] = field(default_factory=list)
     blob: VisionBlob = field(default_factory=VisionBlob)
-    debug_blob: VisionBlob = field(default_factory=VisionBlob)
-    error: str = ""
 
 
 def clip_roi(
@@ -219,18 +187,17 @@ class VisionReplayPipeline:
             return False
         width = float(blob.width)
         height = float(blob.height)
-        blob.aspect_ratio = min(width / height, height / width)
-        blob.fill_ratio = blob.area / (width * height)
+        aspect_ratio = min(width / height, height / width)
+        fill_ratio = blob.area / (width * height)
         return (
-            blob.aspect_ratio >= self.params.min_aspect_ratio
-            and blob.fill_ratio >= self.params.min_fill_ratio
+            aspect_ratio >= self.params.min_aspect_ratio
+            and fill_ratio >= self.params.min_fill_ratio
         )
 
     def process(self, frame: np.ndarray) -> PipelineResult:
-        """处理单帧并返回所有中间阶段。"""
+        """处理单帧并返回是否识别到目标及其位置。"""
         result = PipelineResult(next_roi=self.current_roi)
         if not self._is_valid_frame(frame):
-            result.stage = VisionStage.INVALID_FRAME
             return result
 
         frame_height, frame_width = frame.shape[:2]
@@ -243,7 +210,6 @@ class VisionReplayPipeline:
                 self.params.initial_roi(), frame_width, frame_height
             )
             result.next_roi = self.current_roi
-            result.stage = VisionStage.INVALID_ROI
             return result
 
         try:
@@ -266,21 +232,11 @@ class VisionReplayPipeline:
                 np.array((h_min, s_min, v_min), dtype=np.uint8),
                 np.array((h_max, s_max, v_max), dtype=np.uint8),
             )
-            result.roi_image = roi_image
-            result.hsv = hsv
-            result.h_channel = hsv[:, :, 0].copy()
-            result.s_channel = hsv[:, :, 1].copy()
-            result.v_channel = hsv[:, :, 2].copy()
-            result.mask = mask
-            result.mask_valid = True
-            result.mask_pixel_count = int(cv2.countNonZero(mask))
-
-            if result.mask_pixel_count == 0:
+            if cv2.countNonZero(mask) == 0:
                 self.current_roi = clip_roi(
                     self.params.initial_roi(), frame_width, frame_height
                 )
                 result.next_roi = self.current_roi
-                result.stage = VisionStage.MASK_EMPTY
                 return result
 
             label_count, labels, stats, centroids = (
@@ -289,8 +245,6 @@ class VisionReplayPipeline:
                 )
             )
             del labels
-            result.component_count = max(int(label_count) - 1, 0)
-            largest_blob = VisionBlob()
             best_blob = VisionBlob()
             for label in range(1, int(label_count)):
                 candidate = VisionBlob(
@@ -301,25 +255,14 @@ class VisionReplayPipeline:
                     area=int(stats[label, cv2.CC_STAT_AREA]),
                     center_x=float(centroids[label, 0]) + x,
                     center_y=float(centroids[label, 1]) + y,
-                    valid=True,
                 )
-                candidate.candidate = self._is_candidate(candidate)
-                result.components.append(candidate)
-                if candidate.area > largest_blob.area:
-                    largest_blob = candidate
-                if candidate.candidate:
-                    result.candidates.append(candidate)
-                    result.candidate_count += 1
+                if self._is_candidate(candidate):
                     if candidate.area > best_blob.area:
                         best_blob = candidate
 
-            if largest_blob.valid:
-                result.debug_blob = largest_blob
-
-            if best_blob.valid:
+            if best_blob.area > 0:
                 result.found = True
                 result.blob = best_blob
-                result.stage = VisionStage.FOUND
                 self.current_roi = expanded_roi(
                     best_blob,
                     self.params.found_range_x,
@@ -328,221 +271,64 @@ class VisionReplayPipeline:
                     frame_height,
                 )
             else:
-                result.stage = VisionStage.CANDIDATE_REJECTED
                 self.current_roi = clip_roi(
                     self.params.initial_roi(), frame_width, frame_height
                 )
             result.next_roi = self.current_roi
             return result
-        except (cv2.error, ValueError) as error:
-            result.stage = VisionStage.PROCESSING_ERROR
-            result.error = str(error)
+        except (cv2.error, ValueError):
             return result
 
 
-def _to_bgr(image: Optional[np.ndarray]) -> np.ndarray:
-    """将灰度/空图转换成可显示的 BGR 图像。"""
-    if image is None or image.size == 0:
-        return np.zeros((1, 1, 3), dtype=np.uint8)
-    if image.ndim == 2:
-        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    if image.dtype != np.uint8:
-        normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
-        image = normalized.astype(np.uint8)
-    return image
+def target_status_text(found: bool) -> str:
+    """返回简洁的目标有无状态。"""
+    return "Target: DETECTED" if found else "Target: NOT DETECTED"
 
 
-def _channel_view(channel: Optional[np.ndarray], maximum: int) -> np.ndarray:
-    """将 H/S/V 通道映射为灰度 BGR 图像。"""
-    if channel is None or channel.size == 0:
-        return np.zeros((1, 1, 3), dtype=np.uint8)
-    scale = 255.0 / max(1, maximum)
-    display = cv2.convertScaleAbs(channel, alpha=scale)
-    return cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
-
-
-def _draw_text_lines(
-    image: np.ndarray,
-    lines: list[str],
-    origin: tuple[int, int] = (6, 20),
-    color: tuple[int, int, int] = (0, 255, 255),
-) -> None:
-    """在图像上绘制多行诊断文字。"""
-    x, y = origin
-    for index, line in enumerate(lines):
-        cv2.putText(
-            image,
-            line,
-            (x, y + index * 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
-
-
-def _draw_blob(
-    image: np.ndarray,
-    blob: VisionBlob,
-    color: tuple[int, int, int],
-    thickness: int = 1,
-    label: bool = False,
-) -> None:
-    """绘制连通域外接框和可选统计标签。"""
-    if not blob.valid or blob.width <= 0 or blob.height <= 0:
-        return
-    cv2.rectangle(
-        image,
-        (blob.x, blob.y),
-        (blob.x + blob.width - 1, blob.y + blob.height - 1),
-        color,
-        thickness,
-    )
-    if label:
-        text = f"A={blob.area} AR={blob.aspect_ratio:.2f} F={blob.fill_ratio:.2f}"
-        cv2.putText(
-            image,
-            text,
-            (max(2, blob.x), max(16, blob.y - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.38,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
-
-
-def render_original_view(frame: np.ndarray, result: PipelineResult) -> np.ndarray:
-    """绘制原图和当前 ROI。"""
-    view = frame.copy()
-    x, y, width, height = result.roi
-    if width > 0 and height > 0:
-        cv2.rectangle(view, (x, y), (x + width - 1, y + height - 1),
-                      (0, 0, 255), 2)
-    _draw_text_lines(view, [f"ROI={result.roi}", f"Stage={result.stage.value}"])
-    return view
-
-
-def render_component_view(frame: np.ndarray, result: PipelineResult) -> np.ndarray:
-    """绘制所有连通域及候选筛选结果。"""
-    view = frame.copy()
-    for component in result.components:
-        if component.candidate:
-            color = (0, 255, 0)
-        else:
-            color = (0, 255, 255)
-        _draw_blob(view, component, color, 1, True)
-    if result.found:
-        _draw_blob(view, result.blob, (255, 0, 0), 2, True)
-    elif result.debug_blob.valid:
-        _draw_blob(view, result.debug_blob, (0, 255, 255), 2, True)
-    _draw_text_lines(
-        view,
-        [
-            f"components={result.component_count}",
-            f"candidates={result.candidate_count}",
-        ],
-    )
-    return view
-
-
-def render_final_view(frame: np.ndarray, result: PipelineResult) -> np.ndarray:
-    """绘制最终目标框和下一帧 ROI。"""
+def render_result_view(frame: np.ndarray, result: PipelineResult) -> np.ndarray:
+    """绘制普通识别画面、ROI、目标框和目标有无状态。"""
     view = frame.copy()
     x, y, width, height = result.next_roi
     if width > 0 and height > 0:
-        cv2.rectangle(view, (x, y), (x + width - 1, y + height - 1),
-                      (0, 0, 255), 2)
+        cv2.rectangle(
+            view,
+            (x, y),
+            (x + width - 1, y + height - 1),
+            (0, 0, 255),
+            2,
+        )
     if result.found:
-        _draw_blob(view, result.blob, (255, 0, 0), 2, True)
-        center = (round(result.blob.center_x), round(result.blob.center_y))
-        cv2.drawMarker(view, center, (0, 0, 255), cv2.MARKER_CROSS, 12, 2)
-    elif result.debug_blob.valid:
-        _draw_blob(view, result.debug_blob, (0, 255, 255), 2, True)
-    _draw_text_lines(
-        view,
-        [
-            f"{result.stage.value} mask={result.mask_pixel_count}",
-            f"components={result.component_count} candidates={result.candidate_count}",
-        ],
-        origin=(6, max(20, view.shape[0] - 32)),
-    )
-    return view
+        cv2.rectangle(
+            view,
+            (result.blob.x, result.blob.y),
+            (
+                result.blob.x + result.blob.width - 1,
+                result.blob.y + result.blob.height - 1,
+            ),
+            (255, 0, 0),
+            2,
+        )
+        cv2.drawMarker(
+            view,
+            (round(result.blob.center_x), round(result.blob.center_y)),
+            (0, 0, 255),
+            cv2.MARKER_CROSS,
+            12,
+            2,
+        )
 
-
-def _make_panel(
-    image: Optional[np.ndarray],
-    title: str,
-    cell_size: tuple[int, int],
-) -> np.ndarray:
-    """将一张图缩放到带标题的固定面板中。"""
-    cell_width, cell_height = cell_size
-    title_height = 24
-    panel = np.zeros((cell_height, cell_width, 3), dtype=np.uint8)
-    panel[:title_height, :] = (45, 45, 45)
+    status_color = (0, 255, 0) if result.found else (0, 0, 255)
     cv2.putText(
-        panel,
-        title,
-        (6, 17),
+        view,
+        target_status_text(result.found),
+        (6, max(18, view.shape[0] - 8)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
-        (255, 255, 255),
+        0.45,
+        status_color,
         1,
         cv2.LINE_AA,
     )
-
-    source = _to_bgr(image)
-    available_width = max(1, cell_width - 4)
-    available_height = max(1, cell_height - title_height - 4)
-    scale = min(
-        available_width / source.shape[1],
-        available_height / source.shape[0],
-    )
-    interpolation = (
-        cv2.INTER_NEAREST if title == "7 MASK" else cv2.INTER_LINEAR
-    )
-    resized = cv2.resize(
-        source,
-        (
-            max(1, round(source.shape[1] * scale)),
-            max(1, round(source.shape[0] * scale)),
-        ),
-        interpolation=interpolation,
-    )
-    x = (cell_width - resized.shape[1]) // 2
-    y = title_height + (available_height - resized.shape[0]) // 2
-    panel[y : y + resized.shape[0], x : x + resized.shape[1]] = resized
-    return panel
-
-
-def create_dashboard(
-    frame: np.ndarray,
-    result: PipelineResult,
-    cell_size: tuple[int, int] = (320, 240),
-) -> np.ndarray:
-    """创建 3×3 阶段面板。"""
-    hsv_view = (
-        cv2.cvtColor(result.hsv, cv2.COLOR_HSV2BGR)
-        if result.hsv is not None
-        else None
-    )
-    panels = [
-        _make_panel(render_original_view(frame, result), "1 Original + ROI", cell_size),
-        _make_panel(result.roi_image, "2 ROI", cell_size),
-        _make_panel(hsv_view, "3 HSV", cell_size),
-        _make_panel(_channel_view(result.h_channel, 179), "4 H channel", cell_size),
-        _make_panel(_channel_view(result.s_channel, 255), "5 S channel", cell_size),
-        _make_panel(_channel_view(result.v_channel, 255), "6 V channel", cell_size),
-        _make_panel(result.mask, "7 MASK", cell_size),
-        _make_panel(render_component_view(frame, result), "8 Components", cell_size),
-        _make_panel(render_final_view(frame, result), "9 Final", cell_size),
-    ]
-    rows = [
-        np.hstack(panels[index : index + 3])
-        for index in range(0, len(panels), 3)
-    ]
-    return np.vstack(rows)
+    return view
 
 
 class TrackbarControls:
@@ -729,15 +515,12 @@ def run_replay(video_path: Path, config_path: Path, loop: bool) -> int:
 
             if current_frame is None or current_result is None:
                 continue
-            dashboard = create_dashboard(current_frame, current_result)
-            cv2.imshow("Vision Replay", dashboard)
+            result_view = render_result_view(current_frame, current_result)
+            cv2.imshow("Vision Replay", result_view)
             cv2.setWindowTitle(
                 "Vision Replay",
                 f"Vision Replay | frame={frame_index} | "
-                f"{current_result.stage.value} | "
-                f"mask={current_result.mask_pixel_count} "
-                f"components={current_result.component_count} "
-                f"candidates={current_result.candidate_count}",
+                f"{target_status_text(current_result.found)}",
             )
             key = cv2.waitKey(30 if paused else delay_ms) & 0xFF
             if key in (ord("q"), 27):

@@ -2,8 +2,7 @@
 /build/
 /.worktrees/
 
-# 本地测试和设计资料不提交到 Git
-/tests/
+# 本地设计资料不提交到 Git
 /docs/
 /camera_sdk/
 /README.md
@@ -11,7 +10,6 @@
 # 无线图传验收图片仅保留在本地，不提交到 Git。
 
 /assets/
-/docs/
 
 # IDE 配置
 /.vscode/

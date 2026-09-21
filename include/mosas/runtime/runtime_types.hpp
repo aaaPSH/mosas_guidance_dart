@@ -38,11 +38,14 @@ struct ImuStateSnapshot {
     double pitch_rad = 0.0;
     bool attitude_valid = false;
     bool launched = false;
+    TimestampNs launch_timestamp_ns = -1;
+    std::uint64_t launch_generation = 0;
 };
 
 struct GuidanceCommand {
     TimestampNs timestamp_ns;
     PngGuidanceOutput output;
+    std::uint64_t launch_generation = 0;
 };
 
 }  // namespace mosas::runtime

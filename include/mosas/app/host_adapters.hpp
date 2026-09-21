@@ -70,6 +70,7 @@ public:
     bool start() override;
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
     bool send(const runtime::GuidanceCommand& command) override;
+    void set_active_generation(std::uint64_t generation) noexcept override;
     void cancel() noexcept override;
     void stop() noexcept override;
     Diagnostics diagnostics() const noexcept override;
@@ -88,8 +89,10 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> submitted_count_{0};
     std::atomic<std::uint64_t> send_failure_count_{0};
+    std::atomic<std::uint64_t> active_generation_{0};
     std::thread worker_;
     mutable std::mutex mutex_;
+    std::mutex send_mutex_;
     std::string last_error_;
 };
 

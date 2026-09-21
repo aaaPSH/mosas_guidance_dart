@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(mosas_guidance LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CTest)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 
@@ -11,6 +12,8 @@ set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" MOSAS_CAMERA_SDK_PROCESSOR)
 if(MOSAS_CAMERA_SDK_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(MOSAS_CAMERA_SDK_ARCH arm64)
+elseif(MOSAS_CAMERA_SDK_PROCESSOR MATCHES "^(x86_64|amd64)$")
+    set(MOSAS_CAMERA_SDK_ARCH x64)
 else()
     message(FATAL_ERROR
         "未知的 Nori SDK 目标架构: ${CMAKE_SYSTEM_PROCESSOR}")
@@ -53,9 +56,6 @@ set_target_properties(mosas_camera_sdk PROPERTIES
 )
 
 set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
-if(MOSAS_BUILD_WIRELESS)
-    list(APPEND MOSAS_OPENCV_COMPONENTS imgcodecs)
-endif()
 find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
 find_package(Threads REQUIRED)
 
@@ -134,7 +134,6 @@ target_link_libraries(mosas_runtime
 
 if(MOSAS_BUILD_WIRELESS)
     add_library(mosas_wireless STATIC
-        src/wireless/rtsp_frame_sink.cpp
         src/wireless/rtsp_streamer.cpp
     )
     configure_mosas_target(mosas_wireless)
@@ -144,10 +143,31 @@ if(MOSAS_BUILD_WIRELESS)
     )
     target_link_libraries(mosas_wireless
         PUBLIC
-            mosas_vision
             ${OpenCV_LIBS}
             PkgConfig::FFMPEG
     )
+endif()
+
+add_library(mosas_output STATIC
+    src/output/local_recorder.cpp
+    src/output/output_controller.cpp
+)
+configure_mosas_target(mosas_output)
+target_include_directories(mosas_output
+    PUBLIC
+        ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(mosas_output
+    PUBLIC
+        mosas_runtime
+        mosas_vision
+        ${OpenCV_LIBS}
+)
+if(MOSAS_BUILD_WIRELESS)
+    target_compile_definitions(mosas_output
+        PUBLIC MOSAS_OUTPUT_HAS_WIRELESS=1
+    )
+    target_link_libraries(mosas_output PUBLIC mosas_wireless)
 endif()
 
 add_library(mosas_app STATIC
@@ -167,6 +187,7 @@ target_include_directories(mosas_app
 target_link_libraries(mosas_app
     PUBLIC
         mosas_runtime
+        mosas_output
         serial_package
         mosas_camera_sdk
         atomic
@@ -174,6 +195,104 @@ target_link_libraries(mosas_app
 )
 if(MOSAS_BUILD_WIRELESS)
     target_link_libraries(mosas_app PUBLIC mosas_wireless)
+endif()
+
+if(BUILD_TESTING)
+    function(mosas_add_test test_name)
+        add_test(NAME ${test_name} COMMAND ${test_name})
+        set_tests_properties(${test_name} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+    endfunction()
+
+    # 姿态、时钟、时序与运行时测试
+    foreach(MOSAS_RUNTIME_TEST IN ITEMS
+            attitude_history_test
+            attitude_launch_window_test
+            attitude_estimator_test
+            attitude_state_snapshot_test
+            clock_test
+            frame_timing_test
+            imu_angular_velocity_history_test
+            spsc_ring_test
+            runtime_logging_test)
+        add_executable(${MOSAS_RUNTIME_TEST}
+            tests/${MOSAS_RUNTIME_TEST}.cpp
+        )
+        configure_mosas_target(${MOSAS_RUNTIME_TEST})
+        target_link_libraries(${MOSAS_RUNTIME_TEST} PRIVATE mosas_runtime)
+        mosas_add_test(${MOSAS_RUNTIME_TEST})
+    endforeach()
+
+    # 导引与视觉测试
+    foreach(MOSAS_GUIDANCE_TEST IN ITEMS
+            guidance_body_frame_test
+            png_guidance_formula_test)
+        add_executable(${MOSAS_GUIDANCE_TEST}
+            tests/${MOSAS_GUIDANCE_TEST}.cpp
+        )
+        configure_mosas_target(${MOSAS_GUIDANCE_TEST})
+        target_link_libraries(${MOSAS_GUIDANCE_TEST} PRIVATE mosas_guidance)
+        mosas_add_test(${MOSAS_GUIDANCE_TEST})
+    endforeach()
+
+    add_executable(vision_recognizer_debug_test
+        tests/vision_recognizer_debug_test.cpp
+    )
+    configure_mosas_target(vision_recognizer_debug_test)
+    target_link_libraries(vision_recognizer_debug_test PRIVATE mosas_vision ${OpenCV_LIBS})
+    mosas_add_test(vision_recognizer_debug_test)
+
+    # 输出模式与本地录像测试
+    add_executable(output_config_test
+        tests/output_config_test.cpp
+    )
+    configure_mosas_target(output_config_test)
+    target_link_libraries(output_config_test PRIVATE mosas_app)
+    mosas_add_test(output_config_test)
+
+    add_executable(local_recorder_test
+        tests/local_recorder_test.cpp
+    )
+    configure_mosas_target(local_recorder_test)
+    target_link_libraries(local_recorder_test PRIVATE mosas_output mosas_vision ${OpenCV_LIBS})
+    mosas_add_test(local_recorder_test)
+
+    add_executable(output_controller_test
+        tests/output_controller_test.cpp
+    )
+    configure_mosas_target(output_controller_test)
+    target_link_libraries(output_controller_test PRIVATE mosas_output)
+    mosas_add_test(output_controller_test)
+
+    # 串口、配置与相机数据源测试
+    add_executable(serial_port_receive_test
+        tests/serial_port_receive_test.cpp
+    )
+    configure_mosas_target(serial_port_receive_test)
+    target_link_libraries(serial_port_receive_test PRIVATE serial_package)
+    mosas_add_test(serial_port_receive_test)
+
+    foreach(MOSAS_APP_TEST IN ITEMS
+            attitude_config_test
+            raw_serial_callback_test
+            imu_stream_decoder_test
+            serial_imu_source_async_test
+            async_output_test)
+        add_executable(${MOSAS_APP_TEST}
+            tests/${MOSAS_APP_TEST}.cpp
+        )
+        configure_mosas_target(${MOSAS_APP_TEST})
+        target_link_libraries(${MOSAS_APP_TEST} PRIVATE mosas_app)
+        mosas_add_test(${MOSAS_APP_TEST})
+    endforeach()
+
+    add_executable(nori_camera_source_test
+        tests/nori_camera_source_test.cpp
+    )
+    configure_mosas_target(nori_camera_source_test)
+    target_link_libraries(nori_camera_source_test PRIVATE mosas_app mosas_camera_sdk)
+    mosas_add_test(nori_camera_source_test)
 endif()
 
 add_executable(mosas_guidance_app
@@ -190,6 +309,7 @@ set(MOSAS_INSTALL_TARGETS
     mosas_vision
     mosas_guidance
     mosas_runtime
+    mosas_output
     mosas_app
     mosas_guidance_app
 )

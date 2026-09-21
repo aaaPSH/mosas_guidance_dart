@@ -14,7 +14,6 @@ namespace {
 constexpr double kRadiansToDegrees = 57.29577951308232;
 constexpr double kPi = 3.14159265358979323846;
 const cv::Scalar kOverlayColor{0, 255, 0};
-const cv::Scalar kDebugColor{0, 255, 255};
 
 bool is_valid_frame(const cv::Mat& frame) {
     return !frame.empty() && frame.rows > 0 && frame.cols > 0 &&
@@ -81,6 +80,13 @@ void draw_result_impl(cv::Mat& frame, const VisionResult& result,
             draw_reference_circle(frame, *line_of_sight_reference_point,
                                   result.minimum_blob_area, {0, 255, 0});
         }
+        const std::string detection_status =
+            result.found ? "Target: DETECTED" : "Target: NOT DETECTED";
+        const cv::Scalar status_color =
+            result.found ? kOverlayColor : cv::Scalar{0, 0, 255};
+        cv::putText(frame, detection_status, {6, std::max(18, frame.rows - 8)},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, status_color, 1,
+                    cv::LINE_AA);
         if (!result.found) {
             return;
         }
@@ -187,63 +193,6 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
     }
 }
 
-const char* debug_stage_name(VisionDebugStage stage) {
-    switch (stage) {
-        case VisionDebugStage::not_processed:
-            return "NOT_PROCESSED";
-        case VisionDebugStage::invalid_frame:
-            return "INVALID_FRAME";
-        case VisionDebugStage::invalid_roi:
-            return "INVALID_ROI";
-        case VisionDebugStage::mask_empty:
-            return "MASK_EMPTY";
-        case VisionDebugStage::candidate_rejected:
-            return "CANDIDATE_REJECTED";
-        case VisionDebugStage::found:
-            return "FOUND";
-        case VisionDebugStage::processing_error:
-            return "PROCESSING_ERROR";
-    }
-    return "UNKNOWN";
-}
-
-void draw_vision_debug_impl(cv::Mat& frame, const VisionResult& result) {
-    if (!is_valid_frame(frame)) {
-        return;
-    }
-
-    try {
-        std::ostringstream statistics;
-        statistics << "Vision: " << debug_stage_name(result.debug_stage)
-                   << " mask=" << result.mask_pixel_count
-                   << " components=" << result.component_count
-                   << " candidates=" << result.candidate_count;
-        constexpr int kTextX = 6;
-        const int baseline = std::max(18, frame.rows - 8);
-        cv::putText(frame, statistics.str(), {kTextX, baseline},
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, kDebugColor, 1,
-                    cv::LINE_AA);
-
-        if (!result.found && result.debug_blob_valid) {
-            const VisionRoi suspicious_blob{
-                result.debug_blob.x, result.debug_blob.y,
-                result.debug_blob.width, result.debug_blob.height};
-            draw_rectangle(frame, suspicious_blob, kDebugColor);
-            std::ostringstream blob_text;
-            blob_text << "suspicious area=" << result.debug_blob.area;
-            const int text_y = std::max(
-                16, std::min(frame.rows - 8,
-                             result.debug_blob.y - 4));
-            cv::putText(frame, blob_text.str(),
-                        {std::max(2, result.debug_blob.x), text_y},
-                        cv::FONT_HERSHEY_SIMPLEX, 0.4, kDebugColor, 1,
-                        cv::LINE_AA);
-        }
-    } catch (const cv::Exception&) {
-        return;
-    }
-}
-
 }  // namespace
 
 void VisionVisualizer::draw_result(cv::Mat& frame, const VisionResult& result) {
@@ -259,9 +208,4 @@ void VisionVisualizer::draw_result(
 void VisionVisualizer::draw_guidance_overlay(
     cv::Mat& frame, const VisionOverlayData& data) {
     draw_guidance_overlay_impl(frame, data);
-}
-
-void VisionVisualizer::draw_vision_debug(cv::Mat& frame,
-                                         const VisionResult& result) {
-    draw_vision_debug_impl(frame, result);
 }

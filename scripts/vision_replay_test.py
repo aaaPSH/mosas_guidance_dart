@@ -7,11 +7,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import vision_replay
 from vision_replay import (
+    PipelineResult,
+    VisionBlob,
     VisionParams,
     VisionReplayPipeline,
-    VisionStage,
-    create_dashboard,
     load_vision_params,
 )
 
@@ -48,33 +49,35 @@ class VisionReplayPipelineTest(unittest.TestCase):
     def setUp(self):
         self.pipeline = VisionReplayPipeline(make_params())
 
-    def test_black_frame_reports_mask_empty(self):
+    def test_black_frame_reports_only_target_absence(self):
         result = self.pipeline.process(np.zeros((48, 64, 3), dtype=np.uint8))
 
-        self.assertEqual(result.stage, VisionStage.MASK_EMPTY)
-        self.assertEqual(result.mask_pixel_count, 0)
         self.assertFalse(result.found)
-        self.assertEqual(result.component_count, 0)
+        self.assertEqual(result.next_roi, (0, 0, 64, 48))
+        self.assertFalse(hasattr(result, "stage"))
+        self.assertFalse(hasattr(result, "mask_pixel_count"))
+        self.assertFalse(hasattr(result, "component_count"))
+        self.assertFalse(hasattr(result, "candidate_count"))
+        self.assertFalse(hasattr(result, "debug_blob"))
 
-    def test_green_blob_is_found_and_expands_roi(self):
+    def test_green_target_is_found_and_expands_roi(self):
         result = self.pipeline.process(green_frame())
 
-        self.assertEqual(result.stage, VisionStage.FOUND)
         self.assertTrue(result.found)
-        self.assertGreater(result.mask_pixel_count, 0)
-        self.assertEqual(result.component_count, 1)
-        self.assertGreaterEqual(result.candidate_count, 1)
-        self.assertGreater(result.next_roi[2], result.blob.width)
-        self.assertTrue(result.mask_valid)
+        self.assertGreater(result.blob.area, 0)
+        self.assertGreaterEqual(result.next_roi[2], result.blob.width)
+        self.assertGreaterEqual(result.next_roi[3], result.blob.height)
+        self.assertFalse(hasattr(result, "components"))
+        self.assertFalse(hasattr(result, "candidates"))
 
-    def test_large_min_area_reports_rejected_candidate(self):
+    def test_rejected_target_is_not_exposed_as_diagnostic_blob(self):
         result = VisionReplayPipeline(
             make_params(min_blob_area=1000)
         ).process(green_frame())
 
-        self.assertEqual(result.stage, VisionStage.CANDIDATE_REJECTED)
-        self.assertTrue(result.debug_blob.valid)
         self.assertFalse(result.found)
+        self.assertEqual(result.next_roi, (0, 0, 64, 48))
+        self.assertFalse(hasattr(result, "debug_blob"))
 
     def test_roi_is_clipped_before_processing(self):
         result = VisionReplayPipeline(
@@ -87,14 +90,36 @@ class VisionReplayPipelineTest(unittest.TestCase):
         ).process(green_frame())
 
         self.assertEqual(result.roi, (0, 0, 64, 48))
-        self.assertEqual(result.mask.shape, (48, 64))
 
-    def test_threshold_change_changes_mask_pixel_count(self):
-        params = make_params(h_min=0, h_max=10)
-        result = VisionReplayPipeline(params).process(green_frame())
+    def test_result_view_keeps_only_roi_target_and_detection_status(self):
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        renderer = getattr(vision_replay, "render_result_view", None)
+        self.assertIsNotNone(renderer)
+        status_text = getattr(vision_replay, "target_status_text", None)
+        self.assertIsNotNone(status_text)
+        self.assertEqual(status_text(False), "Target: NOT DETECTED")
+        self.assertEqual(status_text(True), "Target: DETECTED")
+        absent = renderer(frame, PipelineResult())
+        detected = renderer(
+            frame,
+            PipelineResult(
+                found=True,
+                blob=VisionBlob(
+                    x=20,
+                    y=15,
+                    width=10,
+                    height=10,
+                    area=80,
+                    center_x=25.0,
+                    center_y=20.0,
+                ),
+                next_roi=(16, 11, 18, 18),
+            ),
+        )
 
-        self.assertEqual(result.stage, VisionStage.MASK_EMPTY)
-        self.assertEqual(result.mask_pixel_count, 0)
+        self.assertEqual(absent.shape, frame.shape)
+        self.assertEqual(detected.shape, frame.shape)
+        self.assertFalse(np.array_equal(absent, detected))
 
     def test_config_loader_reads_guidance_vision_values(self):
         params = load_vision_params(
@@ -107,15 +132,6 @@ class VisionReplayPipelineTest(unittest.TestCase):
         self.assertEqual(params.s_min, 80)
         self.assertEqual(params.v_min, 100)
         self.assertEqual(params.min_blob_area, 8)
-
-    def test_dashboard_has_three_by_three_panels(self):
-        frame = green_frame()
-        result = self.pipeline.process(frame)
-
-        dashboard = create_dashboard(frame, result, cell_size=(160, 120))
-
-        self.assertEqual(dashboard.shape, (360, 480, 3))
-        self.assertEqual(dashboard.dtype, np.uint8)
 
 
 if __name__ == "__main__":

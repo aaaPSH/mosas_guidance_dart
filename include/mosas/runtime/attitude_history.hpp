@@ -21,6 +21,8 @@ struct AttitudeSample {
         0.0, 1.0, 0.0,
         0.0, 0.0, 1.0};
     bool launched = false;
+    TimestampNs launch_timestamp_ns = -1;
+    std::uint64_t launch_generation = 0;
 };
 
 struct AttitudeLookup {
@@ -33,6 +35,8 @@ struct AttitudeLookup {
     TimestampNs lower_timestamp_ns = -1;
     TimestampNs upper_timestamp_ns = -1;
     bool launched = false;
+    TimestampNs launch_timestamp_ns = -1;
+    std::uint64_t launch_generation = 0;
 };
 
 // 单写入者、多读取者的固定容量姿态历史；不外推。
@@ -78,6 +82,8 @@ private:
         std::atomic<std::uint64_t> matrix_m21_bits{0};
         std::atomic<std::uint64_t> matrix_m22_bits{0};
         std::atomic<bool> launched{false};
+        std::atomic<TimestampNs> launch_timestamp_ns{-1};
+        std::atomic<std::uint64_t> launch_generation{0};
     };
 
     static std::uint64_t double_bits(double value) noexcept;

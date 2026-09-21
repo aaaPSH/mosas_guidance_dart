@@ -118,7 +118,8 @@ AttitudeEstimate AttitudeEstimator::make_estimate(
     TimestampNs timestamp_ns, bool valid) const noexcept {
     const RotationMatrix3 matrix = to_matrix(orientation_);
     const double pitch = pitch_from_matrix(matrix);
-    return {timestamp_ns, matrix, pitch, launched_, valid};
+    return {timestamp_ns, matrix, pitch, launched_, valid,
+            launch_timestamp_ns_};
 }
 
 bool AttitudeEstimator::update_prelaunch_attitude(
@@ -157,6 +158,7 @@ void AttitudeEstimator::update_launch_state(TimestampNs timestamp_ns) noexcept {
         timestamp_ns - launch_candidate_start_ns_ >=
             config_.launch_confirm_ns) {
         launched_ = true;
+        launch_timestamp_ns_ = timestamp_ns;
         launch_candidate_start_ns_ = -1;
     }
 }
@@ -250,6 +252,7 @@ void AttitudeEstimator::reset() noexcept {
     has_launch_baseline_ = false;
     has_timestamp_ = false;
     launched_ = false;
+    launch_timestamp_ns_ = -1;
     last_estimate_ = {};
 }
 
