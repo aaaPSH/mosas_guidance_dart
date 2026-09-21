@@ -40,7 +40,7 @@
 
 ### 优化建议（不改变协议）
 
-1. 让串口接收线程、IMU 消费线程和处理线程使用明确的优先级/CPU 亲和性层级。生产配置已支持 `require_realtime_priority=true`，接收线程完成调度配置后才报告启动成功；开发机可显式关闭该要求，但必须保留诊断并在部署时授予 `CAP_SYS_NICE`。
+1. 串口接收线程可单独设置 `receive_realtime_priority`；`require_realtime_priority` 只控制实时优先级申请失败时是否拒绝启动。部署时应授予 `CAP_SYS_NICE`，开发机可显式关闭该要求并保留诊断。
 2. 若停止延迟要求低于当前串口 `poll` 超时，应使用 `eventfd` 或 self-pipe 唤醒接收线程，避免等待超时；这只改变线程唤醒方式，不改变协议和回调职责。
 3. 为 `Frame_Time` 域、测量延迟、相机偏置建立启动自检和运行统计；超过未来/过旧窗口时记录来源、接收时间、曝光时间和队列计数，便于现场标定。
 4. 在目标架构上执行 AddressSanitizer/UndefinedBehaviorSanitizer/ThreadSanitizer（按实际实时约束分阶段执行），重点覆盖回调生命周期、SPSC 满载、相机时钟跳变、串口重连和停止并发。

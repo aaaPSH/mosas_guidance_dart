@@ -49,10 +49,6 @@ struct ReceiveThreadConfig {
     std::size_t read_chunk_size = 256;
     int realtime_priority = 0;
     bool require_realtime_priority = false;
-    // 串口接收线程绑定的 CPU；-1 表示不绑定。
-    int cpu_affinity = -1;
-    // CPU 亲和性设置失败时是否拒绝启动接收线程。
-    bool require_cpu_affinity = false;
 };
 
 class SerialPort {

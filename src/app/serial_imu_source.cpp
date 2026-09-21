@@ -40,7 +40,6 @@ serial_package::ReceiveThreadConfig default_receive_config() noexcept {
     config.read_chunk_size = runtime::RawSerialChunk::kMaxChunkBytes;
     config.realtime_priority = 20;
     config.require_realtime_priority = false;
-    config.cpu_affinity = -1;
     return config;
 }
 
@@ -112,8 +111,7 @@ SerialImuSource::SerialImuSource(
     }
     if (receive_config_.read_chunk_size == 0 ||
         receive_config_.realtime_priority < 0 ||
-        receive_config_.realtime_priority > 99 ||
-        receive_config_.cpu_affinity < -1) {
+        receive_config_.realtime_priority > 99) {
         configuration_error_ = "IMU 接收线程调度配置无效";
         return;
     }
