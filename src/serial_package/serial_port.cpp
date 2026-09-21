@@ -317,16 +317,6 @@ bool SerialPort::start_receive(ReceiveCallback callback, void* context,
         set_error("receive realtime priority is out of range");
         return false;
     }
-    if (config.cpu_affinity < -1) {
-        set_error("receive CPU affinity is out of range");
-        return false;
-    }
-#ifdef __linux__
-    if (config.cpu_affinity >= CPU_SETSIZE) {
-        set_error("receive CPU affinity is out of range");
-        return false;
-    }
-#endif
 
     {
         std::lock_guard<std::mutex> lock(receive_mutex_);
@@ -419,23 +409,6 @@ bool SerialPort::configure_receive_thread(
         }
     }
 
-#ifdef __linux__
-    if (config.cpu_affinity >= 0) {
-        cpu_set_t cpu_set;
-        CPU_ZERO(&cpu_set);
-        CPU_SET(config.cpu_affinity, &cpu_set);
-        const int result = pthread_setaffinity_np(
-            pthread_self(), sizeof(cpu_set), &cpu_set);
-        if (result != 0) {
-            receive_priority_error_.store(true, std::memory_order_release);
-            if (config.require_realtime_priority ||
-                config.require_cpu_affinity) {
-                set_error("failed to set serial receive CPU affinity");
-                return false;
-            }
-        }
-    }
-#endif
     return true;
 }
 
