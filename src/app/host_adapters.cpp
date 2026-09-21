@@ -187,7 +187,9 @@ bool SerialCommandSink::start() {
 bool SerialCommandSink::try_submit(
     const runtime::GuidanceCommand& command) noexcept {
     if (!running_.load(std::memory_order_acquire) ||
-        cancel_requested_.load(std::memory_order_acquire)) {
+        cancel_requested_.load(std::memory_order_acquire) ||
+        command.launch_generation !=
+            active_generation_.load(std::memory_order_acquire)) {
         return false;
     }
     if (!mailbox_.try_publish(command)) {
@@ -202,6 +204,13 @@ bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
         return false;
     }
     return try_submit(command);
+}
+
+void SerialCommandSink::set_active_generation(
+    std::uint64_t generation) noexcept {
+    // 与串口写入共用屏障，返回后旧周期的在途写入也已结束。
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    active_generation_.store(generation, std::memory_order_release);
 }
 
 void SerialCommandSink::cancel() noexcept {
@@ -233,6 +242,11 @@ void SerialCommandSink::worker_loop() noexcept {
         }
         if (!mailbox_.try_consume(&command)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        std::lock_guard<std::mutex> send_lock(send_mutex_);
+        if (command.launch_generation !=
+            active_generation_.load(std::memory_order_acquire)) {
             continue;
         }
         if (port_ == nullptr) {

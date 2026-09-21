@@ -222,6 +222,22 @@ bool parse_mode(const std::string& text, runtime::CameraCaptureMode* value) {
     return false;
 }
 
+bool parse_output_mode(const std::string& text, output::OutputMode* value) {
+    if (text == "rtsp") {
+        *value = output::OutputMode::rtsp;
+        return true;
+    }
+    if (text == "debug") {
+        *value = output::OutputMode::debug;
+        return true;
+    }
+    if (text == "match") {
+        *value = output::OutputMode::match;
+        return true;
+    }
+    return false;
+}
+
 bool valid_pixel_format(const std::string& value) {
     return value == "auto" || value == "MJPEG" || value == "MJPG" ||
            value == "YUYV";
@@ -448,38 +464,42 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         return invalid();
     }
 
+    if (section == "output") {
+        if (key == "mode" && parse_output_mode(value, &config->output.mode)) {
+        } else if (key == "recording_path") {
+            config->output.recording_path = value;
+        } else if (key == "draw_visualization") {
+            return parse_bool(value, &config->output.draw_visualization) ||
+                   invalid();
+        } else if (key == "match_window_duration_ms" &&
+                   parse_int(value, &config->output.match_window_duration_ms)) {
+        } else {
+            return invalid();
+        }
+        return true;
+    }
+
     if (section == "wireless") {
         auto set_int = [&](int* destination) {
             if (!parse_int(value, &integer)) return false;
             *destination = integer;
             return true;
         };
-        auto set_double = [&](double* destination) {
-            if (!parse_double(value, &decimal)) return false;
-            *destination = decimal;
-            return true;
-        };
-        if (key == "enable_wireless_stream") return parse_bool(value, &config->wireless.enable_wireless_stream) || invalid();
-        if (key == "enable_recording") return parse_bool(value, &config->wireless.enable_recording) || invalid();
-        if (key == "recording_path") { config->wireless.recording_path = value; return true; }
-        if (key == "recording_fps") return set_double(&config->wireless.recording_fps) || invalid();
-        if (key == "draw_visualization") return parse_bool(value, &config->wireless.draw_visualization) || invalid();
-        if (key == "draw_vision_debug") return parse_bool(value, &config->wireless.draw_vision_debug) || invalid();
-        if (key == "rtsp_url") { config->wireless.stream.rtsp_url = value; return true; }
-        if (key == "rtsp_transport") { config->wireless.stream.rtsp_transport = value; return true; }
-        if (key == "width") return set_int(&config->wireless.stream.width) || invalid();
-        if (key == "height") return set_int(&config->wireless.stream.height) || invalid();
-        if (key == "fps") return set_int(&config->wireless.stream.fps) || invalid();
-        if (key == "bitrate") return set_int(&config->wireless.stream.bitrate) || invalid();
-        if (key == "gop_size") return set_int(&config->wireless.stream.gop_size) || invalid();
+        if (key == "rtsp_url") { config->wireless.rtsp_url = value; return true; }
+        if (key == "rtsp_transport") { config->wireless.rtsp_transport = value; return true; }
+        if (key == "width") return set_int(&config->wireless.width) || invalid();
+        if (key == "height") return set_int(&config->wireless.height) || invalid();
+        if (key == "fps") return set_int(&config->wireless.fps) || invalid();
+        if (key == "bitrate") return set_int(&config->wireless.bitrate) || invalid();
+        if (key == "gop_size") return set_int(&config->wireless.gop_size) || invalid();
         if (key == "rtsp_timeout_ms") {
             int timeout_ms = 0;
             if (!parse_int(value, &timeout_ms) || timeout_ms <= 0) return invalid();
-            config->wireless.stream.rtsp_timeout_us =
+            config->wireless.rtsp_timeout_us =
                 static_cast<std::int64_t>(timeout_ms) * 1'000;
             return true;
         }
-        if (key == "encoder_name") { config->wireless.stream.encoder_name = value; return true; }
+        if (key == "encoder_name") { config->wireless.encoder_name = value; return true; }
         return invalid();
     }
 
@@ -557,17 +577,26 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.guidance.png_guidance.maximum_command_acceleration < 0.0) {
         return fail_global(path, "制导参数无效", error);
     }
-    if (config.wireless.enable_recording &&
-        config.wireless.recording_path.empty()) {
-        return fail_global(path, "启用录像时 recording_path 不能为空", error);
+    if (config.output.mode != output::OutputMode::rtsp &&
+        config.output.recording_path.empty()) {
+        return fail_global(path, "debug/match 模式要求 output.recording_path 不能为空",
+                           error);
     }
-    if (config.wireless.recording_fps <= 0.0 ||
-        config.wireless.stream.width <= 0 || config.wireless.stream.height <= 0 ||
-        config.wireless.stream.width % 2 != 0 ||
-        config.wireless.stream.height % 2 != 0 ||
-        config.wireless.stream.fps <= 0 || config.wireless.stream.bitrate <= 0 ||
-        config.wireless.stream.gop_size <= 0 ||
-        config.wireless.stream.rtsp_timeout_us <= 0) {
+    if (config.output.mode == output::OutputMode::match &&
+        !output::match_window_fits_memory(
+            config.camera.width, config.camera.height, config.camera.fps,
+            config.output.match_window_duration_ms)) {
+        return fail_global(
+            path,
+            "match 窗口时长无效或超过图像缓存内存上限（output.match_window_duration_ms）",
+            error);
+    }
+    if (config.output.mode == output::OutputMode::rtsp &&
+        (config.wireless.width <= 0 || config.wireless.height <= 0 ||
+         config.wireless.width % 2 != 0 ||
+         config.wireless.height % 2 != 0 || config.wireless.fps <= 0 ||
+         config.wireless.bitrate <= 0 || config.wireless.gop_size <= 0 ||
+         config.wireless.rtsp_timeout_us <= 0)) {
         return fail_global(path, "无线图传参数无效", error);
     }
     return true;
@@ -605,6 +634,7 @@ bool AppConfigLoader::load(const std::filesystem::path& path, AppConfig* config,
                 (section != "camera" && section != "imu" &&
                  section != "command" && section != "serial" &&
                  section != "guidance" &&
+                 section != "output" &&
                  section != "wireless")) {
                 return fail(path, line_number, "未知配置节: " + section, error);
             }
@@ -631,6 +661,10 @@ bool AppConfigLoader::load(const std::filesystem::path& path, AppConfig* config,
     if (!input.eof() && input.fail()) {
         return fail_global(path, "读取配置文件时发生错误", error);
     }
+    if (seen.find("output.mode") == seen.end()) {
+        return fail_global(path, "必须显式配置 output.mode=rtsp|debug|match",
+                           error);
+    }
     if (loaded.camera.camera_matrix_configured) {
         loaded.guidance.camera_intrinsics.fx = loaded.camera.camera_matrix.m00;
         loaded.guidance.camera_intrinsics.fy = loaded.camera.camera_matrix.m11;
@@ -645,11 +679,11 @@ bool AppConfigLoader::load(const std::filesystem::path& path, AppConfig* config,
     if (!validate(path, loaded, error)) {
         return false;
     }
-    if (!loaded.wireless.recording_path.empty()) {
+    if (!loaded.output.recording_path.empty()) {
         const std::filesystem::path absolute_path =
             std::filesystem::absolute(path).parent_path() /
-            loaded.wireless.recording_path;
-        loaded.wireless.recording_path = absolute_path.lexically_normal().string();
+            loaded.output.recording_path;
+        loaded.output.recording_path = absolute_path.lexically_normal().string();
     }
     loaded.guidance.camera_capture =
         runtime::CameraCaptureConfig{loaded.camera.capture_mode};

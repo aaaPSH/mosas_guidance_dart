@@ -87,26 +87,6 @@ std::string format_source_error(const char* source_name,
     return message;
 }
 
-const char* vision_debug_stage_name(VisionDebugStage stage) noexcept {
-    switch (stage) {
-        case VisionDebugStage::not_processed:
-            return "not_processed";
-        case VisionDebugStage::invalid_frame:
-            return "invalid_frame";
-        case VisionDebugStage::invalid_roi:
-            return "invalid_roi";
-        case VisionDebugStage::mask_empty:
-            return "mask_empty";
-        case VisionDebugStage::candidate_rejected:
-            return "candidate_rejected";
-        case VisionDebugStage::found:
-            return "found";
-        case VisionDebugStage::processing_error:
-            return "processing_error";
-    }
-    return "unknown";
-}
-
 std::string format_imu_source_diagnostics(
     const ImuSourceDiagnostics& diagnostics) {
     if (!diagnostics.available) {
@@ -267,6 +247,8 @@ bool GuidanceRuntime::start() {
         info_logger_.stop();
         return false;
     }
+    command_sink_->set_active_generation(0);
+    active_launch_generation_.store(0);
     if (!command_sink_->start()) {
         set_fault("command sink start failed");
         imu_source_->stop();
@@ -339,6 +321,12 @@ void GuidanceRuntime::stop() noexcept {
     output_queue_.close();
     if (output_thread_.joinable()) {
         output_thread_.join();
+    }
+    if (frame_sink_ != nullptr) {
+        const std::string output_error = frame_sink_->last_error();
+        if (!output_error.empty() && !faulted_.load()) {
+            set_fault("frame output failed during stop: " + output_error);
+        }
     }
     if (command_sink_ != nullptr) {
         command_sink_->stop();
@@ -509,6 +497,8 @@ void GuidanceRuntime::cancel_sources() noexcept {
 
 void GuidanceRuntime::imu_worker() {
     try {
+        std::uint64_t estimator_generation =
+            active_launch_generation_.load();
         while (!stop_requested_.load()) {
             ImuAngularVelocitySample sample{};
             if (!imu_source_->try_pop(&sample)) {
@@ -526,31 +516,46 @@ void GuidanceRuntime::imu_worker() {
                 set_fault("imu source returned an invalid kinematic sample");
                 return;
             }
-            const AttitudeEstimate attitude =
-                attitude_estimator_.update(sample);
-            if (!attitude.valid) {
-                set_fault("imu source returned an acceleration sample without a valid attitude");
-                return;
-            }
-            if (!angular_velocity_history_.push(sample)) {
-                set_fault("imu angular velocity timestamp is not increasing");
-                return;
-            }
-            if (!attitude_history_.push({sample.timestamp_ns,
-                                         attitude.pitch_rad,
-                                         attitude.body_to_navigation,
-                                         attitude.launched})) {
-                set_fault("imu attitude timestamp is not increasing");
-                return;
-            }
             ImuStateSnapshot snapshot{};
-            snapshot.timestamp_ns = sample.timestamp_ns;
-            snapshot.acceleration = sample.acceleration;
-            snapshot.angular_velocity = sample.angular_velocity;
-            snapshot.body_to_navigation = attitude.body_to_navigation;
-            snapshot.pitch_rad = attitude.pitch_rad;
-            snapshot.attitude_valid = attitude.valid;
-            snapshot.launched = attitude.launched;
+            {
+                // 与代际切换线性化，防止新周期样本被写入旧周期历史。
+                std::lock_guard<std::mutex> generation_lock(
+                    launch_generation_mutex_);
+                const std::uint64_t active_generation =
+                    active_launch_generation_.load();
+                if (active_generation != estimator_generation) {
+                    attitude_estimator_.reset();
+                    estimator_generation = active_generation;
+                }
+                const AttitudeEstimate attitude =
+                    attitude_estimator_.update(sample);
+                if (!attitude.valid) {
+                    set_fault("imu source returned an acceleration sample without a valid attitude");
+                    return;
+                }
+                if (!angular_velocity_history_.push(sample)) {
+                    set_fault("imu angular velocity timestamp is not increasing");
+                    return;
+                }
+                if (!attitude_history_.push({sample.timestamp_ns,
+                                             attitude.pitch_rad,
+                                             attitude.body_to_navigation,
+                                             attitude.launched,
+                                             attitude.launch_timestamp_ns,
+                                             estimator_generation})) {
+                    set_fault("imu attitude timestamp is not increasing");
+                    return;
+                }
+                snapshot.timestamp_ns = sample.timestamp_ns;
+                snapshot.acceleration = sample.acceleration;
+                snapshot.angular_velocity = sample.angular_velocity;
+                snapshot.body_to_navigation = attitude.body_to_navigation;
+                snapshot.pitch_rad = attitude.pitch_rad;
+                snapshot.attitude_valid = attitude.valid;
+                snapshot.launched = attitude.launched;
+                snapshot.launch_timestamp_ns = attitude.launch_timestamp_ns;
+                snapshot.launch_generation = estimator_generation;
+            }
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
                 latest_state_ = snapshot;
@@ -864,6 +869,10 @@ void GuidanceRuntime::processing_worker() {
             result.imu_state.pitch_rad = attitude_lookup->pitch_rad;
             result.imu_state.attitude_valid = true;
             result.imu_state.launched = attitude_lookup->launched;
+            result.imu_state.launch_timestamp_ns =
+                attitude_lookup->launch_timestamp_ns;
+            result.imu_state.launch_generation =
+                attitude_lookup->launch_generation;
             result.overlay.attitude_valid = true;
             result.overlay.attitude_pitch_rad = attitude_lookup->pitch_rad;
             result.overlay.launched = attitude_lookup->launched;
@@ -873,18 +882,6 @@ void GuidanceRuntime::processing_worker() {
             record_timing(TimingStage::vision,
                           std::chrono::steady_clock::now() - vision_started);
             if (!result.vision_result.found) {
-                std::ostringstream details;
-                details << "camera_timestamp_ns=" << timestamp_ns
-                        << ", debug_stage="
-                        << vision_debug_stage_name(
-                               result.vision_result.debug_stage)
-                        << ", mask_pixel_count="
-                        << result.vision_result.mask_pixel_count
-                        << ", component_count="
-                        << result.vision_result.component_count
-                        << ", candidate_count="
-                        << result.vision_result.candidate_count;
-                log_output_diagnostic("视觉未找到目标", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -903,12 +900,9 @@ void GuidanceRuntime::processing_worker() {
                 TimingStage::line_of_sight,
                 std::chrono::steady_clock::now() - line_of_sight_started);
             if (!line_of_sight.valid) {
-                std::ostringstream details;
-                details << "camera_timestamp_ns=" << timestamp_ns
-                        << ", vision_debug_stage="
-                        << vision_debug_stage_name(
-                               result.vision_result.debug_stage);
-                log_output_diagnostic("视线角计算无效", details.str());
+                const std::string details =
+                    "camera_timestamp_ns=" + std::to_string(timestamp_ns);
+                log_output_diagnostic("视线角计算无效", details);
                 rate_estimator.reset();
                 has_frame_timestamp = false;
                 if (!enqueue_processed_frame()) {
@@ -1014,11 +1008,23 @@ void GuidanceRuntime::processing_worker() {
                 result.overlay.body_overload_z_g =
                     result.guidance.body_overload.z;
                 const auto command_started = std::chrono::steady_clock::now();
-                const bool sent = command_sink_->try_submit(
-                    {timestamp_ns, result.guidance});
+                bool generation_is_current = false;
+                bool sent = true;
+                {
+                    std::lock_guard<std::mutex> lock(
+                        launch_generation_mutex_);
+                    generation_is_current =
+                        active_launch_generation_.load() ==
+                        attitude_lookup->launch_generation;
+                    if (generation_is_current && !stop_requested_.load()) {
+                        sent = command_sink_->try_submit(
+                            {timestamp_ns, result.guidance,
+                             attitude_lookup->launch_generation});
+                    }
+                }
                 record_timing(TimingStage::command,
                               std::chrono::steady_clock::now() - command_started);
-                if (!sent) {
+                if (generation_is_current && !sent) {
                     set_fault("guidance command submit failed");
                     return;
                 }
@@ -1061,6 +1067,11 @@ void GuidanceRuntime::output_worker() {
             if (stop_requested_.load()) {
                 break;
             }
+            if (result.imu_state.launch_generation !=
+                active_launch_generation_.load()) {
+                result = ProcessedFrame{};
+                continue;
+            }
             if (frame_sink_ != nullptr) {
                 result.overlay.processing_fps =
                     processing_fps_meter_.snapshot();
@@ -1070,6 +1081,14 @@ void GuidanceRuntime::output_worker() {
                                           result.overlay)) {
                     set_fault("frame output failed");
                     return;
+                }
+                if (frame_sink_->take_rearm_request()) {
+                    std::lock_guard<std::mutex> lock(
+                        launch_generation_mutex_);
+                    const std::uint64_t next_generation =
+                        active_launch_generation_.load() + 1;
+                    command_sink_->set_active_generation(next_generation);
+                    active_launch_generation_.store(next_generation);
                 }
                 record_timing(TimingStage::output,
                               std::chrono::steady_clock::now() - output_started);

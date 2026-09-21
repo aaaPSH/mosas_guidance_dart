@@ -138,6 +138,11 @@ public:
         return false;
     }
 
+    // 起飞周期切换后，异步 sink 应丢弃尚未发送的旧周期命令。
+    virtual void set_active_generation(std::uint64_t generation) noexcept {
+        (void)generation;
+    }
+
     virtual void cancel() noexcept {}
     virtual void stop() noexcept {}
 
@@ -163,6 +168,12 @@ public:
 
     // 输出线程退出时释放网络、录像等资源。
     virtual void stop() noexcept {}
+
+    // 输出模块完成一段起飞窗口落盘后，请求运行时切换起飞周期。
+    virtual bool take_rearm_request() noexcept { return false; }
+
+    // 停止和刷新输出时报告最后一次录像/推流错误。
+    virtual std::string last_error() const { return {}; }
 
     virtual bool publish(const CameraFrame& frame,
                          const VisionResult& vision_result,

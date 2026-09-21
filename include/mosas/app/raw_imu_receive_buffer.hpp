@@ -57,7 +57,7 @@ private:
     runtime::SpscRing<runtime::RawSerialChunk> queue_;
     std::mutex wait_mutex_;
     std::condition_variable wait_condition_;
-    bool closed_ = true;
+    bool closed_ = false;
     std::uint64_t wait_generation_ = 0;
     std::uint64_t next_sequence_ = 0;
     std::atomic<std::uint64_t> received_chunk_count_{0};

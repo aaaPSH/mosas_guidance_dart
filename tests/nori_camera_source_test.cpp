@@ -258,7 +258,8 @@ void test_callback_queue_capacity_is_configurable() {
                << "receive_realtime_priority=42\n"
                << "require_realtime_priority=true\n"
                << "[guidance]\nmax_camera_future_ms=7\n"
-               << "max_camera_age_ms=800\n";
+               << "max_camera_age_ms=800\n"
+               << "[output]\nmode=rtsp\n";
     }
 
     mosas::app::AppConfig config;

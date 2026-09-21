@@ -27,6 +27,7 @@ struct AttitudeEstimate {
     double pitch_rad = 0.0;
     bool launched = false;
     bool valid = false;
+    TimestampNs launch_timestamp_ns = -1;
 };
 
 class AttitudeEstimator final {
@@ -74,6 +75,7 @@ private:
     bool has_launch_baseline_ = false;
     bool has_timestamp_ = false;
     bool launched_ = false;
+    TimestampNs launch_timestamp_ns_ = -1;
     AttitudeEstimate last_estimate_{};
 };
 

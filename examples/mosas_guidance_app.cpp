@@ -2,11 +2,8 @@
 #include <mosas/app/host_adapters.hpp>
 #include <mosas/app/nori_camera_source.hpp>
 #include <mosas/app/serial_imu_source.hpp>
+#include <mosas/output/output_controller.hpp>
 #include <mosas/runtime/guidance_runtime.hpp>
-
-#if defined(MOSAS_APP_HAS_WIRELESS)
-#include <mosas/wireless/rtsp_frame_sink.hpp>
-#endif
 
 #include <chrono>
 #include <csignal>
@@ -16,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -164,6 +162,12 @@ int main(int argc, char** argv) {
         std::cerr << "加载配置失败: " << error << '\n';
         return 2;
     }
+#if !defined(MOSAS_APP_HAS_WIRELESS)
+    if (config.output.mode == mosas::output::OutputMode::rtsp) {
+        std::cerr << "当前构建未启用无线图传，output.mode 不能设为 rtsp\n";
+        return 2;
+    }
+#endif
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
@@ -212,22 +216,18 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::unique_ptr<mosas::runtime::FrameSink> frame_sink;
-#if defined(MOSAS_APP_HAS_WIRELESS)
-    if (config.wireless.enable_wireless_stream ||
-        config.wireless.enable_recording) {
-        frame_sink = std::make_unique<mosas::wireless::RtspFrameSink>(
-            config.wireless,
-            cv::Point2d(config.guidance.camera_intrinsics.cx,
-                        config.guidance.camera_intrinsics.cy));
-    }
-#else
-    if (config.wireless.enable_wireless_stream ||
-        config.wireless.enable_recording) {
-        std::cerr << "当前构建未启用无线图传模块\n";
-        return 2;
-    }
-#endif
+    mosas::output::OutputControllerConfig output_config;
+    output_config.output = config.output;
+    output_config.wireless = config.wireless;
+    output_config.camera_width = config.camera.width;
+    output_config.camera_height = config.camera.height;
+    output_config.camera_fps = config.camera.fps;
+    output_config.line_of_sight_reference_point = cv::Point2d(
+        config.guidance.camera_intrinsics.cx,
+        config.guidance.camera_intrinsics.cy);
+    std::unique_ptr<mosas::runtime::FrameSink> frame_sink =
+        std::make_unique<mosas::output::OutputController>(
+            std::move(output_config));
 
     mosas::runtime::GuidanceRuntime runtime(
         std::move(imu_source), std::move(camera_source),
