@@ -56,7 +56,7 @@
 IMU 三轴加速度、三轴角速度
           ↓
     AttitudeEstimator
-    ├─ 未起飞：低通加速度估计 roll/pitch，不积分陀螺
+    ├─ 未起飞：加速度估计 roll/pitch，不积分陀螺
     └─ 起飞锁存后：积分三轴机体系角速度，维护 R_navigation_from_body
           ↓
     姿态历史（按相机时间插值）

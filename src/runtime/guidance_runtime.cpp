@@ -137,10 +137,12 @@ bool valid_vision_config(const VisionConfig& config) {
 }
 
 bool valid_los_filter_config(const LineOfSightRateFilterConfig& config) {
-    return is_finite(config.process_noise) &&
-           is_finite(config.measurement_noise) &&
-           is_finite(config.initial_covariance) && config.process_noise >= 0.0 &&
-           config.measurement_noise > 0.0 && config.initial_covariance >= 0.0;
+    return is_finite(config.sigma_a) && config.sigma_a > 0.0 &&
+           is_finite(config.sigma_q) && config.sigma_q > 0.0 &&
+           is_finite(config.initial_covariance) &&
+           config.initial_covariance >= 0.0 &&
+           is_finite(config.sigma_a_pitch) && config.sigma_a_pitch >= 0.0 &&
+           is_finite(config.sigma_a_yaw) && config.sigma_a_yaw >= 0.0;
 }
 
 bool valid_png_config(const PngGuidanceConfig& config) {
@@ -156,9 +158,13 @@ bool valid_png_config(const PngGuidanceConfig& config) {
 
 bool valid_attitude_config(const AttitudeEstimatorConfig& config) {
     return is_finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
-           is_finite(config.acceleration_filter_alpha) &&
-           config.acceleration_filter_alpha > 0.0 &&
-           config.acceleration_filter_alpha <= 1.0 &&
+           is_finite(config.stationary_acceleration_tolerance_mps2) &&
+           config.stationary_acceleration_tolerance_mps2 > 0.0 &&
+           is_finite(config.gyro_stationary_threshold_rad_s) &&
+           config.gyro_stationary_threshold_rad_s > 0.0 &&
+           is_finite(config.gyro_bias_filter_alpha) &&
+           config.gyro_bias_filter_alpha > 0.0 &&
+           config.gyro_bias_filter_alpha <= 1.0 &&
            is_finite(config.launch_ax_threshold_mps2) &&
            config.launch_ax_threshold_mps2 > 0.0 &&
            config.launch_confirm_ns > 0;
@@ -533,7 +539,10 @@ void GuidanceRuntime::imu_worker() {
                     set_fault("imu source returned an acceleration sample without a valid attitude");
                     return;
                 }
-                if (!angular_velocity_history_.push(sample)) {
+                const ImuAngularVelocitySample corrected_sample{
+                    sample.timestamp_ns, sample.acceleration,
+                    attitude.corrected_angular_velocity};
+                if (!angular_velocity_history_.push(corrected_sample)) {
                     set_fault("imu angular velocity timestamp is not increasing");
                     return;
                 }
@@ -548,7 +557,7 @@ void GuidanceRuntime::imu_worker() {
                 }
                 snapshot.timestamp_ns = sample.timestamp_ns;
                 snapshot.acceleration = sample.acceleration;
-                snapshot.angular_velocity = sample.angular_velocity;
+                snapshot.angular_velocity = attitude.corrected_angular_velocity;
                 snapshot.body_to_navigation = attitude.body_to_navigation;
                 snapshot.pitch_rad = attitude.pitch_rad;
                 snapshot.attitude_valid = attitude.valid;

@@ -227,7 +227,8 @@ if(BUILD_TESTING)
     # 导引与视觉测试
     foreach(MOSAS_GUIDANCE_TEST IN ITEMS
             guidance_body_frame_test
-            png_guidance_formula_test)
+            png_guidance_formula_test
+            los_kalman_filter_test)
         add_executable(${MOSAS_GUIDANCE_TEST}
             tests/${MOSAS_GUIDANCE_TEST}.cpp
         )

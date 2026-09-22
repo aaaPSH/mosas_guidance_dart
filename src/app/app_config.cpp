@@ -421,11 +421,15 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "camera_fy") return set_double(&config->guidance.camera_intrinsics.fy) || invalid();
         if (key == "camera_cx") return set_double(&config->guidance.camera_intrinsics.cx) || invalid();
         if (key == "camera_cy") return set_double(&config->guidance.camera_intrinsics.cy) || invalid();
-        if (key == "los_process_noise") return set_double(&config->guidance.los_rate_filter.process_noise) || invalid();
-        if (key == "los_measurement_noise") return set_double(&config->guidance.los_rate_filter.measurement_noise) || invalid();
+        if (key == "los_kalman_sigma_a" || key == "los_process_noise") return set_double(&config->guidance.los_rate_filter.sigma_a) || invalid();
+        if (key == "los_kalman_sigma_q" || key == "los_measurement_noise") return set_double(&config->guidance.los_rate_filter.sigma_q) || invalid();
+        if (key == "los_kalman_sigma_a_pitch") return set_double(&config->guidance.los_rate_filter.sigma_a_pitch) || invalid();
+        if (key == "los_kalman_sigma_a_yaw") return set_double(&config->guidance.los_rate_filter.sigma_a_yaw) || invalid();
         if (key == "los_initial_covariance") return set_double(&config->guidance.los_rate_filter.initial_covariance) || invalid();
         if (key == "los_enable_filter") return parse_bool(value, &config->guidance.los_rate_filter.enable_filter) || invalid();
-        if (key == "attitude_acceleration_filter_alpha") return set_double(&config->guidance.attitude.acceleration_filter_alpha) || invalid();
+        if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&config->guidance.attitude.stationary_acceleration_tolerance_mps2) || invalid();
+        if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&config->guidance.attitude.gyro_stationary_threshold_rad_s) || invalid();
+        if (key == "attitude_gyro_bias_filter_alpha") return set_double(&config->guidance.attitude.gyro_bias_filter_alpha) || invalid();
         if (key == "launch_ax_threshold_mps2") return set_double(&config->guidance.attitude.launch_ax_threshold_mps2) || invalid();
         if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &config->guidance.attitude.launch_confirm_ns) || invalid();
         if (key == "accelerometer_specific_force") return parse_bool(value, &config->guidance.attitude.accelerometer_specific_force) || invalid();
@@ -563,10 +567,16 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         vision.min_fill_ratio <= 0.0 ||
         config.guidance.camera_intrinsics.fx <= 0.0 ||
         config.guidance.camera_intrinsics.fy <= 0.0 ||
-        config.guidance.los_rate_filter.measurement_noise <= 0.0 ||
+        config.guidance.los_rate_filter.sigma_a <= 0.0 ||
+        config.guidance.los_rate_filter.sigma_q <= 0.0 ||
+        config.guidance.los_rate_filter.sigma_a_pitch < 0.0 ||
+        config.guidance.los_rate_filter.sigma_a_yaw < 0.0 ||
+        config.guidance.los_rate_filter.initial_covariance < 0.0 ||
         config.guidance.attitude.gravity_mps2 <= 0.0 ||
-        config.guidance.attitude.acceleration_filter_alpha <= 0.0 ||
-        config.guidance.attitude.acceleration_filter_alpha > 1.0 ||
+        config.guidance.attitude.stationary_acceleration_tolerance_mps2 <= 0.0 ||
+        config.guidance.attitude.gyro_stationary_threshold_rad_s <= 0.0 ||
+        config.guidance.attitude.gyro_bias_filter_alpha <= 0.0 ||
+        config.guidance.attitude.gyro_bias_filter_alpha > 1.0 ||
         config.guidance.attitude.launch_ax_threshold_mps2 <= 0.0 ||
         config.guidance.attitude.launch_confirm_ns <= 0 ||
         config.guidance.png_guidance.navigation_constant_y <= 0.0 ||

@@ -18,7 +18,6 @@ mosas::runtime::ImuAngularVelocitySample sample(
 mosas::runtime::AttitudeEstimatorConfig test_config() {
     mosas::runtime::AttitudeEstimatorConfig config;
     config.gravity_mps2 = kGravity;
-    config.acceleration_filter_alpha = 1.0;
     config.launch_ax_threshold_mps2 = 5.0;
     config.launch_confirm_ns = 20 * kMillisecondNs;
     config.accelerometer_specific_force = true;
@@ -48,16 +47,29 @@ void test_gravity_estimates_fixed_pitch() {
     assert(std::abs(estimate.pitch_rad - pitch) < 1e-12);
 }
 
-void test_prelaunch_does_not_integrate_angular_velocity() {
+void test_stationary_tolerance_accepts_gravity_attitude() {
+    auto config = test_config();
+    config.stationary_acceleration_tolerance_mps2 = 0.3;
+    mosas::runtime::AttitudeEstimator estimator(config);
+    estimator.update(sample(1, {0.0, kGravity, 0.0}));
+
+    const auto estimate = estimator.update(
+        sample(2, {0.0, kGravity - 0.1, 0.0}));
+
+    assert(estimate.valid);
+    assert(!estimate.launched);
+}
+
+void test_prelaunch_nonstationary_integrates_angular_velocity() {
     mosas::runtime::AttitudeEstimator estimator(test_config());
-    estimator.update(sample(1, {0.0, kGravity, 0.0}, {0.0, 0.0, 1.0}));
+    estimator.update(sample(1, {0.0, kGravity, 0.0}));
     const auto estimate = estimator.update(
         sample(1 + 100 * kMillisecondNs, {0.0, kGravity, 0.0},
                {0.0, 0.0, 1.0}));
 
     assert(estimate.valid);
     assert(!estimate.launched);
-    assert(std::abs(estimate.pitch_rad) < 1e-12);
+    assert(estimate.pitch_rad > 0.05);
 }
 
 void test_x_axis_acceleration_requires_confirmation_duration() {
@@ -70,6 +82,44 @@ void test_x_axis_acceleration_requires_confirmation_duration() {
     const auto confirmed = estimator.update(
         sample(35 * kMillisecondNs, {6.0, kGravity, 0.0}));
     assert(confirmed.launched);
+}
+
+void test_launch_thrust_is_not_used_as_gravity_pitch() {
+    auto config = test_config();
+    config.launch_ax_threshold_mps2 = 10.0;
+    mosas::runtime::AttitudeEstimator estimator(config);
+    estimator.update(sample(0, {0.0, kGravity, 0.0}));
+
+    const auto accelerating = estimator.update(
+        sample(10 * kMillisecondNs, {6.0, kGravity, 0.0}));
+    assert(accelerating.valid);
+    assert(std::abs(accelerating.pitch_rad) < 1e-12);
+
+    estimator.update(sample(35 * kMillisecondNs, {12.0, kGravity, 0.0}));
+    const auto launched = estimator.update(
+        sample(60 * kMillisecondNs, {12.0, kGravity, 0.0}));
+    assert(launched.launched);
+    assert(std::abs(launched.pitch_rad) < 1e-12);
+}
+
+void test_constant_gyro_bias_is_removed_after_launch() {
+    mosas::runtime::AttitudeEstimator estimator(test_config());
+    constexpr double kGyroBias = 0.1;
+    estimator.update(sample(0, {0.0, kGravity, 0.0},
+                            {0.0, 0.0, kGyroBias}));
+    estimator.update(sample(20 * kMillisecondNs, {6.0, kGravity, 0.0},
+                            {0.0, 0.0, kGyroBias}));
+    const auto launched = estimator.update(
+        sample(40 * kMillisecondNs, {6.0, kGravity, 0.0},
+               {0.0, 0.0, kGyroBias}));
+    assert(launched.launched);
+    assert(std::abs(launched.corrected_angular_velocity.z) < 1e-12);
+
+    const auto after_bias_only = estimator.update(
+        sample(1'040 * kMillisecondNs, {6.0, kGravity, 0.0},
+               {0.0, 0.0, kGyroBias}));
+    assert(std::abs(after_bias_only.corrected_angular_velocity.z) < 1e-12);
+    assert(std::abs(after_bias_only.pitch_rad) < 1e-3);
 }
 
 void test_launch_latches_and_integrates_body_rates_after_confirmation() {
@@ -160,8 +210,11 @@ void test_launch_confirmation_does_not_cross_sample_gap() {
 int main() {
     test_level_specific_force_estimates_zero_pitch();
     test_gravity_estimates_fixed_pitch();
-    test_prelaunch_does_not_integrate_angular_velocity();
+    test_stationary_tolerance_accepts_gravity_attitude();
+    test_prelaunch_nonstationary_integrates_angular_velocity();
     test_x_axis_acceleration_requires_confirmation_duration();
+    test_launch_thrust_is_not_used_as_gravity_pitch();
+    test_constant_gyro_bias_is_removed_after_launch();
     test_launch_latches_and_integrates_body_rates_after_confirmation();
     test_launch_integrates_all_body_axes();
     test_near_zero_acceleration_is_not_a_valid_prelaunch_attitude();

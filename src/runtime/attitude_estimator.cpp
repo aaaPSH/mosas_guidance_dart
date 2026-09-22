@@ -32,9 +32,13 @@ AttitudeEstimator::AttitudeEstimator(const AttitudeEstimatorConfig& config)
 bool AttitudeEstimator::valid_config(
     const AttitudeEstimatorConfig& config) noexcept {
     return finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
-           finite(config.acceleration_filter_alpha) &&
-           config.acceleration_filter_alpha > 0.0 &&
-           config.acceleration_filter_alpha <= 1.0 &&
+           finite(config.stationary_acceleration_tolerance_mps2) &&
+           config.stationary_acceleration_tolerance_mps2 > 0.0 &&
+           finite(config.gyro_stationary_threshold_rad_s) &&
+           config.gyro_stationary_threshold_rad_s > 0.0 &&
+           finite(config.gyro_bias_filter_alpha) &&
+           config.gyro_bias_filter_alpha > 0.0 &&
+           config.gyro_bias_filter_alpha <= 1.0 &&
            finite(config.launch_ax_threshold_mps2) &&
            config.launch_ax_threshold_mps2 > 0.0 &&
            config.launch_confirm_ns > 0;
@@ -42,6 +46,10 @@ bool AttitudeEstimator::valid_config(
 
 bool AttitudeEstimator::finite_vector(const Vector3& value) noexcept {
     return finite(value.x) && finite(value.y) && finite(value.z);
+}
+
+double AttitudeEstimator::vector_norm(const Vector3& value) noexcept {
+    return std::hypot(std::hypot(value.x, value.y), value.z);
 }
 
 AttitudeEstimator::Quaternion AttitudeEstimator::multiply(
@@ -118,8 +126,43 @@ AttitudeEstimate AttitudeEstimator::make_estimate(
     TimestampNs timestamp_ns, bool valid) const noexcept {
     const RotationMatrix3 matrix = to_matrix(orientation_);
     const double pitch = pitch_from_matrix(matrix);
-    return {timestamp_ns, matrix, pitch, launched_, valid,
-            launch_timestamp_ns_};
+    AttitudeEstimate estimate{};
+    estimate.timestamp_ns = timestamp_ns;
+    estimate.body_to_navigation = matrix;
+    estimate.pitch_rad = pitch;
+    estimate.launched = launched_;
+    estimate.valid = valid;
+    estimate.launch_timestamp_ns = launch_timestamp_ns_;
+    estimate.corrected_angular_velocity = corrected_angular_velocity_;
+    return estimate;
+}
+
+bool AttitudeEstimator::is_stationary(
+    const Vector3& acceleration,
+    const Vector3& angular_velocity) const noexcept {
+    const double acceleration_norm = vector_norm(acceleration);
+    const double angular_velocity_norm = vector_norm(angular_velocity);
+    return finite(acceleration_norm) && finite(angular_velocity_norm) &&
+           std::abs(acceleration_norm - config_.gravity_mps2) <=
+               config_.stationary_acceleration_tolerance_mps2 &&
+           angular_velocity_norm <= config_.gyro_stationary_threshold_rad_s;
+}
+
+void AttitudeEstimator::update_gyro_bias(
+    const Vector3& angular_velocity) noexcept {
+    if (!has_gyro_bias_) {
+        gyro_bias_ = angular_velocity;
+        has_gyro_bias_ = true;
+        return;
+    }
+
+    const double alpha = config_.gyro_bias_filter_alpha;
+    gyro_bias_.x = alpha * angular_velocity.x +
+                   (1.0 - alpha) * gyro_bias_.x;
+    gyro_bias_.y = alpha * angular_velocity.y +
+                   (1.0 - alpha) * gyro_bias_.y;
+    gyro_bias_.z = alpha * angular_velocity.z +
+                   (1.0 - alpha) * gyro_bias_.z;
 }
 
 bool AttitudeEstimator::update_prelaunch_attitude(
@@ -144,8 +187,9 @@ bool AttitudeEstimator::update_prelaunch_attitude(
     return true;
 }
 
-void AttitudeEstimator::update_launch_state(TimestampNs timestamp_ns) noexcept {
-    const double delta_x = filtered_acceleration_.x - launch_baseline_x_;
+void AttitudeEstimator::update_launch_state(
+    double current_ax, TimestampNs timestamp_ns) noexcept {
+    const double delta_x = current_ax - launch_baseline_x_;
     if (delta_x < config_.launch_ax_threshold_mps2) {
         launch_candidate_start_ns_ = -1;
         return;
@@ -181,58 +225,63 @@ AttitudeEstimate AttitudeEstimator::update(
         launch_candidate_start_ns_ = -1;
     }
 
-    if (!has_filtered_acceleration_) {
-        filtered_acceleration_ = sample.acceleration;
-        has_filtered_acceleration_ = true;
-        launch_baseline_x_ = filtered_acceleration_.x;
+    if (!has_launch_baseline_) {
+        launch_baseline_x_ = sample.acceleration.x;
         has_launch_baseline_ = true;
-    } else {
-        const double alpha = config_.acceleration_filter_alpha;
-        filtered_acceleration_.x =
-            alpha * sample.acceleration.x +
-            (1.0 - alpha) * filtered_acceleration_.x;
-        filtered_acceleration_.y =
-            alpha * sample.acceleration.y +
-            (1.0 - alpha) * filtered_acceleration_.y;
-        filtered_acceleration_.z =
-            alpha * sample.acceleration.z +
-            (1.0 - alpha) * filtered_acceleration_.z;
     }
 
+    const bool was_launched = launched_;
+    const bool stationary =
+        !was_launched &&
+        is_stationary(sample.acceleration, sample.angular_velocity);
+    if (stationary) {
+        update_gyro_bias(sample.angular_velocity);
+    }
+    corrected_angular_velocity_ = {
+        sample.angular_velocity.x - gyro_bias_.x,
+        sample.angular_velocity.y - gyro_bias_.y,
+        sample.angular_velocity.z - gyro_bias_.z};
+
     bool attitude_valid = launched_ || last_estimate_.valid;
-    if (!launched_) {
-        if (has_launch_baseline_) {
-            update_launch_state(sample.timestamp_ns);
+    if (!was_launched && has_launch_baseline_) {
+        update_launch_state(sample.acceleration.x, sample.timestamp_ns);
+    }
+
+    const auto integrate = [&] {
+        if (!has_timestamp_) {
+            return;
         }
-        if (!launched_ && launch_candidate_start_ns_ < 0) {
-            attitude_valid =
-                update_prelaunch_attitude(filtered_acceleration_);
-            if (!attitude_valid) {
-                launch_candidate_start_ns_ = -1;
-            }
-        }
-        if (launched_ && has_timestamp_) {
-            const double dt_seconds = static_cast<double>(
-                                          sample.timestamp_ns -
-                                          last_timestamp_ns_) *
-                                      1e-9;
-            if (attitude_valid && finite(dt_seconds) && dt_seconds > 0.0 &&
-                timestamp_gap_valid) {
-                orientation_ = normalize(multiply(
-                    orientation_,
-                    delta_from_body_rate(sample.angular_velocity,
-                                         dt_seconds)));
-            }
-        }
-    } else if (has_timestamp_) {
         const double dt_seconds = static_cast<double>(
                                       sample.timestamp_ns - last_timestamp_ns_) *
                                   1e-9;
         if (finite(dt_seconds) && dt_seconds > 0.0 &&
-            timestamp_gap_valid) {
+            timestamp_gap_valid && attitude_valid) {
             orientation_ = normalize(multiply(
                 orientation_,
-                delta_from_body_rate(sample.angular_velocity, dt_seconds)));
+                delta_from_body_rate(corrected_angular_velocity_,
+                                     dt_seconds)));
+        }
+    };
+
+    if (!launched_ && stationary) {
+        attitude_valid = update_prelaunch_attitude(sample.acceleration);
+        if (!attitude_valid) {
+            launch_candidate_start_ns_ = -1;
+        }
+    } else {
+        // 静止时用重力初始化姿态，非静止时只积分去除零偏后的角速度。
+        const double acceleration_norm = vector_norm(sample.acceleration);
+        const bool prelaunch_low_specific_force =
+            !launched_ &&
+            (!finite(acceleration_norm) ||
+             acceleration_norm <
+                 config_.gravity_mps2 -
+                     config_.stationary_acceleration_tolerance_mps2);
+        if (prelaunch_low_specific_force) {
+            attitude_valid = false;
+            launch_candidate_start_ns_ = -1;
+        } else {
+            integrate();
         }
     }
 
@@ -244,12 +293,13 @@ AttitudeEstimate AttitudeEstimator::update(
 
 void AttitudeEstimator::reset() noexcept {
     orientation_ = {};
-    filtered_acceleration_ = {0.0, 0.0, 0.0};
+    gyro_bias_ = {0.0, 0.0, 0.0};
+    corrected_angular_velocity_ = {0.0, 0.0, 0.0};
     launch_baseline_x_ = 0.0;
     launch_candidate_start_ns_ = -1;
     last_timestamp_ns_ = -1;
-    has_filtered_acceleration_ = false;
     has_launch_baseline_ = false;
+    has_gyro_bias_ = false;
     has_timestamp_ = false;
     launched_ = false;
     launch_timestamp_ns_ = -1;

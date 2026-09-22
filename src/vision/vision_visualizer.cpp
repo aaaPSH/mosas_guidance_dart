@@ -104,13 +104,13 @@ void draw_result_impl(cv::Mat& frame, const VisionResult& result,
 }
 
 std::string format_value(bool valid, double value, double scale,
-                         const char* unit) {
+                         const char* unit, int precision = 2) {
     if (!valid || !std::isfinite(value)) {
         return "N/A";
     }
 
     std::ostringstream stream;
-    stream << std::fixed << std::setprecision(1) << value * scale << unit;
+    stream << std::fixed << std::setprecision(precision) << value * scale << unit;
     return stream.str();
 }
 
