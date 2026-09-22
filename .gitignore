@@ -10,6 +10,7 @@
 # 无线图传验收图片仅保留在本地，不提交到 Git。
 
 /assets/
+/data/
 
 # IDE 配置
 /.vscode/

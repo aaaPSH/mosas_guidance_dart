@@ -69,14 +69,28 @@ struct LineOfSightRateSample {
     LineOfSightAngularVelocity filtered_angular_velocity{false, 0.0, 0.0};
 };
 
-// Kalman 参数中的噪声均表示方差：角加速度过程噪声单位为
-// (rad/s^2)^2，视线角测量噪声单位为 rad^2，初始角速度协方差单位为
-// (rad/s)^2。
+// Kalman 滤波参数：角加速度过程噪声标准差 sigma_a 单位为 rad/s^2，
+// 视线角测量噪声标准差 sigma_q 单位为 rad，初始角速度协方差单位为 (rad/s)^2。
+// 可选支持俯仰 (pitch) 与偏航 (yaw) 通道过程噪声独立配置，<= 0 时回退使用 sigma_a。
 struct LineOfSightRateFilterConfig {
-    double process_noise = 0.01;
-    double measurement_noise = 0.25;
-    double initial_covariance = 1.0;
-    bool enable_filter = true;  // 是否启用 Kalman 滤波。
+    double sigma_a = 8.0;            // 默认综合角加速度过程噪声标准差 (rad/s^2)
+    double sigma_a_pitch = 0.0;      // 俯仰角加速度过程噪声标准差 (<=0 时使用 sigma_a)
+    double sigma_a_yaw = 0.0;        // 偏航角加速度过程噪声标准差 (<=0 时使用 sigma_a)
+    double sigma_q = 0.0035;         // 视线角测量噪声标准差 (rad)
+    double initial_covariance = 1.0; // 初始角速度协方差 ((rad/s)^2)
+    bool enable_filter = true;       // 是否启用 Kalman 滤波
+
+    LineOfSightRateFilterConfig() = default;
+
+    LineOfSightRateFilterConfig(double sa, double sq, double init_cov = 1.0,
+                                bool enable = true, double sa_pitch = 0.0,
+                                double sa_yaw = 0.0)
+        : sigma_a(sa),
+          sigma_a_pitch(sa_pitch),
+          sigma_a_yaw(sa_yaw),
+          sigma_q(sq),
+          initial_covariance(init_cov),
+          enable_filter(enable) {}
 };
 
 class GuidanceEstimator {
@@ -101,8 +115,9 @@ public:
 
     void reset();
 
-    // 第一次有效视线角仅建立差分基准，不产生有效角速度；第二帧开始将
-    // body_angular_velocity 对 LOS 的转动项加入观测角速度，再进行滤波。
+    // 第一次有效视线角仅建立差分/滤波基准，不产生有效角速度；
+    // 启用二状态滤波时，直接将相机角度作为测量更新，IMU 旋转补偿作为前馈已知输入；
+    // 丢帧时执行纯预测外推，保持角速度连续输出。
     LineOfSightAngularVelocity update(const LineOfSight& line_of_sight,
                                        const Vector3& body_angular_velocity,
                                        double dt);
@@ -113,28 +128,37 @@ public:
     LineOfSightRateSample sample() const;
 
 private:
-    class ScalarKalmanFilter {
+    class TwoStateLosKalmanFilter {
     public:
-        explicit ScalarKalmanFilter(
-            const LineOfSightRateFilterConfig& config);
+        TwoStateLosKalmanFilter(double sigma_a, double sigma_q,
+                                double initial_covariance);
 
         void reset();
-        void initialize(double rate);
-        double update(double measurement, double dt);
+        void initialize(double q_b, double initial_rate = 0.0);
+        double update(bool valid, double z_qb, double c_omega, double dt);
+        bool is_initialized() const { return initialized_; }
+        double estimated_angle() const { return q_b_; }
+        double estimated_rate() const { return q_dot_i_; }
 
     private:
-        LineOfSightRateFilterConfig config_;
-        double rate_ = 0.0;
-        double rate_covariance_ = 0.0;
+        double sigma_a_ = 8.0;
+        double r_ = 0.0035 * 0.0035;
+        double initial_covariance_ = 1.0;
+        bool initialized_ = false;
+        double q_b_ = 0.0;
+        double q_dot_i_ = 0.0;
+        double p00_ = 0.0;
+        double p01_ = 0.0;
+        double p10_ = 0.0;
+        double p11_ = 1.0;
     };
 
     bool has_previous_ = false;
-    bool has_rate_ = false;
     bool filter_enabled_ = true;
     double previous_q_y_ = 0.0;
     double previous_q_z_ = 0.0;
-    ScalarKalmanFilter q_y_filter_;
-    ScalarKalmanFilter q_z_filter_;
+    TwoStateLosKalmanFilter q_y_filter_;
+    TwoStateLosKalmanFilter q_z_filter_;
     LineOfSightAngularVelocity angular_velocity_{false, 0.0, 0.0};
     LineOfSightRateSample sample_{};
 };

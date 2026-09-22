@@ -29,7 +29,9 @@ std::filesystem::path write_config(const std::string& values) {
     const std::string marker = "[output]";
     std::string text = source.str();
     for (const char* key : std::array{
-             "attitude_acceleration_filter_alpha",
+             "attitude_stationary_acceleration_tolerance_mps2",
+             "attitude_gyro_stationary_threshold_rad_s",
+             "attitude_gyro_bias_filter_alpha",
              "launch_ax_threshold_mps2",
              "launch_confirm_ms",
              "accelerometer_specific_force",
@@ -65,7 +67,9 @@ std::filesystem::path write_config(const std::string& values) {
 
 void test_attitude_config_is_loaded() {
     const auto path = write_config(
-        "attitude_acceleration_filter_alpha=0.2\n"
+        "attitude_stationary_acceleration_tolerance_mps2=0.4\n"
+        "attitude_gyro_stationary_threshold_rad_s=0.25\n"
+        "attitude_gyro_bias_filter_alpha=0.1\n"
         "launch_ax_threshold_mps2=7.5\n"
         "launch_confirm_ms=30\n"
         "accelerometer_specific_force=false");
@@ -77,10 +81,21 @@ void test_attitude_config_is_loaded() {
     }
     assert(loaded);
     std::filesystem::remove(path);
-    assert(config.guidance.attitude.acceleration_filter_alpha == 0.2);
+    assert(config.guidance.attitude.stationary_acceleration_tolerance_mps2 ==
+           0.4);
+    assert(config.guidance.attitude.gyro_stationary_threshold_rad_s == 0.25);
+    assert(config.guidance.attitude.gyro_bias_filter_alpha == 0.1);
     assert(config.guidance.attitude.launch_ax_threshold_mps2 == 7.5);
     assert(config.guidance.attitude.launch_confirm_ns == 30'000'000);
     assert(!config.guidance.attitude.accelerometer_specific_force);
+}
+
+void test_removed_gravity_tolerance_config_is_rejected() {
+    const auto path = write_config("attitude_gravity_tolerance_mps2=0.037");
+    mosas::app::AppConfig config;
+    std::string error;
+    assert(!mosas::app::AppConfigLoader::load(path, &config, &error));
+    std::filesystem::remove(path);
 }
 
 void test_default_config_file_loads() {
@@ -88,13 +103,12 @@ void test_default_config_file_loads() {
     std::string error;
     assert(mosas::app::AppConfigLoader::load(
         default_config_path(), &config, &error));
-    assert(config.guidance.attitude.acceleration_filter_alpha == 1.0);
     assert(config.guidance.attitude.gravity_mps2 ==
            config.guidance.png_guidance.gravity);
 }
 
 void test_invalid_attitude_config_is_rejected() {
-    const auto path = write_config("attitude_acceleration_filter_alpha=0");
+    const auto path = write_config("attitude_gyro_bias_filter_alpha=0");
     mosas::app::AppConfig config;
     std::string error;
     assert(!mosas::app::AppConfigLoader::load(path, &config, &error));
@@ -116,6 +130,7 @@ void test_png_gravity_is_shared_with_attitude_estimator() {
 int main() {
     test_default_config_file_loads();
     test_attitude_config_is_loaded();
+    test_removed_gravity_tolerance_config_is_rejected();
     test_invalid_attitude_config_is_rejected();
     test_png_gravity_is_shared_with_attitude_estimator();
     return 0;

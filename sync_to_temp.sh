@@ -81,6 +81,7 @@ if ! rsync --archive --recursive \
   --include='/scripts/***' \
   --include='/serial_forward_test/***' \
   --include='/src/***' \
+  --include='/tests/***' \
   --include='/.gitignore' \
   --include='/CMakeLists.txt' \
   --include='/sync_to_temp.sh' \
