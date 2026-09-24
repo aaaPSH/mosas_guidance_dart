@@ -157,15 +157,18 @@ class VisionReplayPipeline:
     def __init__(self, params: VisionParams):
         self.params = params
         self.current_roi = params.initial_roi()
+        self.is_tracking = False
 
     def reset(self) -> None:
         """恢复到当前滑动条对应的初始 ROI。"""
         self.current_roi = self.params.initial_roi()
+        self.is_tracking = False
 
     def update_params(self, params: VisionParams) -> None:
         """更新参数；初始 ROI 变化时同步重置当前 ROI。"""
         if params.initial_roi() != self.params.initial_roi():
             self.current_roi = params.initial_roi()
+            self.is_tracking = False
         self.params = params
 
     @staticmethod
@@ -194,6 +197,147 @@ class VisionReplayPipeline:
             and fill_ratio >= self.params.min_fill_ratio
         )
 
+    def _scan_roi(
+        self, frame: np.ndarray, roi: tuple[int, int, int, int]
+    ) -> Optional[VisionBlob]:
+        frame_height, frame_width = frame.shape[:2]
+        x, y, width, height = clip_roi(roi, frame_width, frame_height)
+        if width <= 0 or height <= 0:
+            return None
+
+        roi_image = frame[y : y + height, x : x + width].copy()
+        hsv = cv2.cvtColor(roi_image, cv2.COLOR_BGR2HSV)
+        h_min, h_max = sorted(
+            (int(np.clip(self.params.h_min, 0, 179)),
+             int(np.clip(self.params.h_max, 0, 179)))
+        )
+        s_min, s_max = sorted(
+            (int(np.clip(self.params.s_min, 0, 255)),
+             int(np.clip(self.params.s_max, 0, 255)))
+        )
+        v_min, v_max = sorted(
+            (int(np.clip(self.params.v_min, 0, 255)),
+             int(np.clip(self.params.v_max, 0, 255)))
+        )
+        mask = cv2.inRange(
+            hsv,
+            np.array((h_min, s_min, v_min), dtype=np.uint8),
+            np.array((h_max, s_max, v_max), dtype=np.uint8),
+        )
+        if cv2.countNonZero(mask) == 0:
+            return None
+
+        label_count, labels, stats, centroids = (
+            cv2.connectedComponentsWithStats(
+                mask, connectivity=8, ltype=cv2.CV_32S
+            )
+        )
+        del labels
+        best_blob = VisionBlob()
+        for label in range(1, int(label_count)):
+            candidate = VisionBlob(
+                x=int(stats[label, cv2.CC_STAT_LEFT]) + x,
+                y=int(stats[label, cv2.CC_STAT_TOP]) + y,
+                width=int(stats[label, cv2.CC_STAT_WIDTH]),
+                height=int(stats[label, cv2.CC_STAT_HEIGHT]),
+                area=int(stats[label, cv2.CC_STAT_AREA]),
+                center_x=float(centroids[label, 0]) + x,
+                center_y=float(centroids[label, 1]) + y,
+            )
+            if self._is_candidate(candidate):
+                if candidate.area > best_blob.area:
+                    best_blob = candidate
+
+        return best_blob if best_blob.area > 0 else None
+
+    def _scan_coarse_pooled(
+        self, frame: np.ndarray
+    ) -> Optional[tuple[int, int, int, int]]:
+        frame_height, frame_width = frame.shape[:2]
+        if frame_width < 2 or frame_height < 2:
+            return None
+
+        pooled_w = frame_width // 2
+        pooled_h = frame_height // 2
+        pooled_frame = cv2.resize(
+            frame, (pooled_w, pooled_h), interpolation=cv2.INTER_AREA
+        )
+        pooled_hsv = cv2.cvtColor(pooled_frame, cv2.COLOR_BGR2HSV)
+        h_min, h_max = sorted(
+            (int(np.clip(self.params.h_min, 0, 179)),
+             int(np.clip(self.params.h_max, 0, 179)))
+        )
+        s_min, s_max = sorted(
+            (int(np.clip(self.params.s_min, 0, 255)),
+             int(np.clip(self.params.s_max, 0, 255)))
+        )
+        v_min, v_max = sorted(
+            (int(np.clip(self.params.v_min, 0, 255)),
+             int(np.clip(self.params.v_max, 0, 255)))
+        )
+        mask = cv2.inRange(
+            pooled_hsv,
+            np.array((h_min, s_min, v_min), dtype=np.uint8),
+            np.array((h_max, s_max, v_max), dtype=np.uint8),
+        )
+        if cv2.countNonZero(mask) == 0:
+            return None
+
+        label_count, labels, stats, centroids = (
+            cv2.connectedComponentsWithStats(
+                mask, connectivity=8, ltype=cv2.CV_32S
+            )
+        )
+        del labels
+
+        coarse_min_area = max(1, self.params.min_blob_area // 4)
+        best_label = -1
+        best_area = 0
+
+        for label in range(1, int(label_count)):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            w = int(stats[label, cv2.CC_STAT_WIDTH])
+            h = int(stats[label, cv2.CC_STAT_HEIGHT])
+            if area < coarse_min_area or w <= 0 or h <= 0:
+                continue
+
+            aspect_ratio = min(w / h, h / w)
+            fill_ratio = area / (w * h)
+            if (
+                aspect_ratio >= self.params.min_aspect_ratio * 0.7
+                and fill_ratio >= self.params.min_fill_ratio * 0.7
+            ):
+                if area > best_area:
+                    best_area = area
+                    best_label = label
+
+        if best_label < 0:
+            return None
+
+        c_x = int(stats[best_label, cv2.CC_STAT_LEFT])
+        c_y = int(stats[best_label, cv2.CC_STAT_TOP])
+        c_w = int(stats[best_label, cv2.CC_STAT_WIDTH])
+        c_h = int(stats[best_label, cv2.CC_STAT_HEIGHT])
+
+        full_x = c_x * 2
+        full_y = c_y * 2
+        full_w = c_w * 2
+        full_h = c_h * 2
+        margin_x = max(self.params.found_range_x, 2)
+        margin_y = max(self.params.found_range_y, 2)
+
+        coarse_roi = clip_roi(
+            (
+                full_x - margin_x,
+                full_y - margin_y,
+                full_w + 2 * margin_x,
+                full_h + 2 * margin_y,
+            ),
+            frame_width,
+            frame_height,
+        )
+        return coarse_roi if coarse_roi[2] > 0 and coarse_roi[3] > 0 else None
+
     def process(self, frame: np.ndarray) -> PipelineResult:
         """处理单帧并返回是否识别到目标及其位置。"""
         result = PipelineResult(next_roi=self.current_roi)
@@ -201,79 +345,40 @@ class VisionReplayPipeline:
             return result
 
         frame_height, frame_width = frame.shape[:2]
-        roi = clip_roi(self.current_roi, frame_width, frame_height)
-        result.roi = roi
-        result.next_roi = roi
-        x, y, width, height = roi
-        if width <= 0 or height <= 0:
-            self.current_roi = clip_roi(
-                self.params.initial_roi(), frame_width, frame_height
-            )
-            result.next_roi = self.current_roi
-            return result
 
         try:
-            roi_image = frame[y : y + height, x : x + width].copy()
-            hsv = cv2.cvtColor(roi_image, cv2.COLOR_BGR2HSV)
-            h_min, h_max = sorted(
-                (int(np.clip(self.params.h_min, 0, 179)),
-                 int(np.clip(self.params.h_max, 0, 179)))
-            )
-            s_min, s_max = sorted(
-                (int(np.clip(self.params.s_min, 0, 255)),
-                 int(np.clip(self.params.s_max, 0, 255)))
-            )
-            v_min, v_max = sorted(
-                (int(np.clip(self.params.v_min, 0, 255)),
-                 int(np.clip(self.params.v_max, 0, 255)))
-            )
-            mask = cv2.inRange(
-                hsv,
-                np.array((h_min, s_min, v_min), dtype=np.uint8),
-                np.array((h_max, s_max, v_max), dtype=np.uint8),
-            )
-            if cv2.countNonZero(mask) == 0:
-                self.current_roi = clip_roi(
-                    self.params.initial_roi(), frame_width, frame_height
-                )
-                result.next_roi = self.current_roi
-                return result
+            detected_blob: Optional[VisionBlob] = None
+            active_roi = self.current_roi
 
-            label_count, labels, stats, centroids = (
-                cv2.connectedComponentsWithStats(
-                    mask, connectivity=8, ltype=cv2.CV_32S
-                )
-            )
-            del labels
-            best_blob = VisionBlob()
-            for label in range(1, int(label_count)):
-                candidate = VisionBlob(
-                    x=int(stats[label, cv2.CC_STAT_LEFT]) + x,
-                    y=int(stats[label, cv2.CC_STAT_TOP]) + y,
-                    width=int(stats[label, cv2.CC_STAT_WIDTH]),
-                    height=int(stats[label, cv2.CC_STAT_HEIGHT]),
-                    area=int(stats[label, cv2.CC_STAT_AREA]),
-                    center_x=float(centroids[label, 0]) + x,
-                    center_y=float(centroids[label, 1]) + y,
-                )
-                if self._is_candidate(candidate):
-                    if candidate.area > best_blob.area:
-                        best_blob = candidate
+            if self.is_tracking:
+                active_roi = clip_roi(self.current_roi, frame_width, frame_height)
+                detected_blob = self._scan_roi(frame, active_roi)
+            else:
+                coarse_roi = self._scan_coarse_pooled(frame)
+                if coarse_roi is not None:
+                    active_roi = coarse_roi
+                    detected_blob = self._scan_roi(frame, coarse_roi)
 
-            if best_blob.area > 0:
+            result.roi = active_roi
+
+            if detected_blob is not None and detected_blob.area > 0:
                 result.found = True
-                result.blob = best_blob
+                result.blob = detected_blob
+                self.is_tracking = True
                 self.current_roi = expanded_roi(
-                    best_blob,
+                    detected_blob,
                     self.params.found_range_x,
                     self.params.found_range_y,
                     frame_width,
                     frame_height,
                 )
             else:
+                result.found = False
+                self.is_tracking = False
                 self.current_roi = clip_roi(
                     self.params.initial_roi(), frame_width, frame_height
                 )
+
             result.next_roi = self.current_roi
             return result
         except (cv2.error, ValueError):

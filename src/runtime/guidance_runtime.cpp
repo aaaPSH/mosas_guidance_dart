@@ -535,10 +535,6 @@ void GuidanceRuntime::imu_worker() {
                 }
                 const AttitudeEstimate attitude =
                     attitude_estimator_.update(sample);
-                if (!attitude.valid) {
-                    set_fault("imu source returned an acceleration sample without a valid attitude");
-                    return;
-                }
                 const ImuAngularVelocitySample corrected_sample{
                     sample.timestamp_ns, sample.acceleration,
                     attitude.corrected_angular_velocity};
@@ -546,14 +542,16 @@ void GuidanceRuntime::imu_worker() {
                     set_fault("imu angular velocity timestamp is not increasing");
                     return;
                 }
-                if (!attitude_history_.push({sample.timestamp_ns,
-                                             attitude.pitch_rad,
-                                             attitude.body_to_navigation,
-                                             attitude.launched,
-                                             attitude.launch_timestamp_ns,
-                                             estimator_generation})) {
-                    set_fault("imu attitude timestamp is not increasing");
-                    return;
+                if (attitude.valid) {
+                    if (!attitude_history_.push({sample.timestamp_ns,
+                                                 attitude.pitch_rad,
+                                                 attitude.body_to_navigation,
+                                                 attitude.launched,
+                                                 attitude.launch_timestamp_ns,
+                                                 estimator_generation})) {
+                        set_fault("imu attitude timestamp is not increasing");
+                        return;
+                    }
                 }
                 snapshot.timestamp_ns = sample.timestamp_ns;
                 snapshot.acceleration = sample.acceleration;
