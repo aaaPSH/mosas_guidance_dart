@@ -236,6 +236,7 @@ AttitudeEstimate AttitudeEstimator::update(
         is_stationary(sample.acceleration, sample.angular_velocity);
     if (stationary) {
         update_gyro_bias(sample.angular_velocity);
+        launch_baseline_x_ = sample.acceleration.x;
     }
     corrected_angular_velocity_ = {
         sample.angular_velocity.x - gyro_bias_.x,
@@ -271,13 +272,10 @@ AttitudeEstimate AttitudeEstimator::update(
     } else {
         // 静止时用重力初始化姿态，非静止时只积分去除零偏后的角速度。
         const double acceleration_norm = vector_norm(sample.acceleration);
-        const bool prelaunch_low_specific_force =
+        const bool prelaunch_near_zero_acceleration =
             !launched_ &&
-            (!finite(acceleration_norm) ||
-             acceleration_norm <
-                 config_.gravity_mps2 -
-                     config_.stationary_acceleration_tolerance_mps2);
-        if (prelaunch_low_specific_force) {
+            (!finite(acceleration_norm) || acceleration_norm < kEpsilon);
+        if (prelaunch_near_zero_acceleration) {
             attitude_valid = false;
             launch_candidate_start_ns_ = -1;
         } else {

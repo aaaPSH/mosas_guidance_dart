@@ -142,9 +142,78 @@ def compute_flight_summary(df: pd.DataFrame) -> Dict[str, Any]:
     pitch_min_deg = float(pitch_deg.min())
     pitch_max_deg = float(pitch_deg.max())
 
-    # 制导统计
+    # 制导与过载统计
     guidance_valid_count = int((df["guidance_valid"] == 1).sum())
     max_command_overload_g = float(df["command_overload_g"].max())
+
+    body_norm_overload = np.sqrt(
+        df["body_overload_y_g"] ** 2 + df["body_overload_z_g"] ** 2
+    )
+    max_body_norm_overload_g = float(body_norm_overload.max())
+    max_body_overload_x_g = float(df["body_overload_x_g"].abs().max())
+    max_body_overload_y_g = float(df["body_overload_y_g"].abs().max())
+    max_body_overload_z_g = float(df["body_overload_z_g"].abs().max())
+
+    guidance_mask = df["guidance_valid"] == 1
+    if guidance_mask.any():
+        overload_err = (
+            df.loc[guidance_mask, "command_overload_g"]
+            - body_norm_overload[guidance_mask]
+        )
+        overload_rmse = float(np.sqrt(np.mean(overload_err**2)))
+        overload_mean_err = float(np.mean(overload_err))
+        overload_max_err = float(np.max(np.abs(overload_err)))
+        cmd_phases = np.degrees(df.loc[guidance_mask, "command_phase_rad"])
+        phase_mean_deg = float(cmd_phases.mean())
+        phase_std_deg = float(cmd_phases.std())
+    else:
+        overload_rmse = 0.0
+        overload_mean_err = 0.0
+        overload_max_err = 0.0
+        phase_mean_deg = 0.0
+        phase_std_deg = 0.0
+
+    # 分时段细化统计
+    # 0.0-1.8s: 初始平稳/初导段, 1.8-2.5s: 剧烈扰动段, 2.5-6.2s: 主制导段, 6.2-10.0s: 末段/丢失段
+    segments = [
+        ("0.0s ~ 1.8s (初始飞行段)", 0.0, 1.8),
+        ("1.8s ~ 2.5s (剧烈机动段)", 1.8, 2.5),
+        ("2.5s ~ 6.2s (主导引收敛段)", 2.5, 6.2),
+        ("6.2s ~ 10.0s (末段平飞/丢失段)", 6.2, 10.0),
+    ]
+    segment_stats = []
+    for seg_name, t_start, t_end in segments:
+        m = (df["time_s"] >= t_start) & (df["time_s"] < t_end)
+        if m.any():
+            sub_df = df[m]
+            sub_acc = np.sqrt(
+                sub_df["imu_acceleration_x_mps2"] ** 2
+                + sub_df["imu_acceleration_y_mps2"] ** 2
+                + sub_df["imu_acceleration_z_mps2"] ** 2
+            ).max()
+            sub_gyro = np.sqrt(
+                sub_df["imu_angular_velocity_x_rad_s"] ** 2
+                + sub_df["imu_angular_velocity_y_rad_s"] ** 2
+                + sub_df["imu_angular_velocity_z_rad_s"] ** 2
+            ).max()
+            sub_cmd_g = sub_df["command_overload_g"].max()
+            sub_body_g = np.sqrt(
+                sub_df["body_overload_y_g"] ** 2 + sub_df["body_overload_z_g"] ** 2
+            ).max()
+            sub_g_valid = int((sub_df["guidance_valid"] == 1).sum())
+            sub_v_found = int((sub_df["vision_found"] == 1).sum())
+            segment_stats.append(
+                {
+                    "name": seg_name,
+                    "accel_max": float(sub_acc),
+                    "gyro_max": float(sub_gyro),
+                    "cmd_overload_max": float(sub_cmd_g),
+                    "body_overload_max": float(sub_body_g),
+                    "guidance_valid_frames": sub_g_valid,
+                    "vision_found_frames": sub_v_found,
+                    "total_frames": len(sub_df),
+                }
+            )
 
     return {
         "total_frames": total_frames,
@@ -163,6 +232,16 @@ def compute_flight_summary(df: pd.DataFrame) -> Dict[str, Any]:
         "pitch_range_deg": (pitch_min_deg, pitch_max_deg),
         "guidance_valid_count": guidance_valid_count,
         "max_command_overload_g": max_command_overload_g,
+        "max_body_norm_overload_g": max_body_norm_overload_g,
+        "max_body_overload_x_g": max_body_overload_x_g,
+        "max_body_overload_y_g": max_body_overload_y_g,
+        "max_body_overload_z_g": max_body_overload_z_g,
+        "overload_rmse": overload_rmse,
+        "overload_mean_err": overload_mean_err,
+        "overload_max_err": overload_max_err,
+        "phase_mean_deg": phase_mean_deg,
+        "phase_std_deg": phase_std_deg,
+        "segment_stats": segment_stats,
     }
 
 
@@ -421,6 +500,40 @@ def format_terminal_report(
             f"{channel:<18} | {var_red:<8} | {tv_red:<10} | {r_mean:<10} | {r_std:<10} | {lag:<10}"
         )
     lines.append("=" * 72)
+    lines.append("           IMU 与过载指令精细分析 (Detailed IMU & Overload)")
+    lines.append("=" * 72)
+    lines.append(f"最大指令过载 (Command):   {summary.get('max_command_overload_g', 0.0):.2f} g")
+    lines.append(f"最大机体法向过载 (|nyz|): {summary.get('max_body_norm_overload_g', 0.0):.2f} g")
+    lines.append(
+        f"机体各轴最大过载:         X: {summary.get('max_body_overload_x_g', 0.0):.2f}g, "
+        f"Y: {summary.get('max_body_overload_y_g', 0.0):.2f}g, "
+        f"Z: {summary.get('max_body_overload_z_g', 0.0):.2f}g"
+    )
+    lines.append(
+        f"过载指令跟踪误差 (RMSE):  {summary.get('overload_rmse', 0.0):.4f} g "
+        f"(均值: {summary.get('overload_mean_err', 0.0):.4f}g, 最大: {summary.get('overload_max_err', 0.0):.4f}g)"
+    )
+    lines.append(
+        f"指令相位分布 (Phase):     均值 {summary.get('phase_mean_deg', 0.0):.1f}°, "
+        f"标准差 {summary.get('phase_std_deg', 0.0):.1f}°"
+    )
+    lines.append("-" * 72)
+    lines.append("时段细分统计:")
+    lines.append(
+        f"{'时段划分':<24} | {'IMU加速度':<10} | {'IMU角速度':<10} | {'机体过载':<8} | {'指令过载':<8} | {'制导/总帧'}"
+    )
+    lines.append("-" * 72)
+    for seg in summary.get("segment_stats", []):
+        name = seg["name"]
+        acc_str = f"{seg['accel_max']:.1f} m/s²"
+        gyro_str = f"{seg['gyro_max']:.2f} rad/s"
+        body_g_str = f"{seg['body_overload_max']:.2f} g"
+        cmd_g_str = f"{seg['cmd_overload_max']:.2f} g"
+        frame_str = f"{seg['guidance_valid_frames']}/{seg['total_frames']}"
+        lines.append(
+            f"{name:<24} | {acc_str:<10} | {gyro_str:<10} | {body_g_str:<8} | {cmd_g_str:<8} | {frame_str}"
+        )
+    lines.append("=" * 72)
     return "\n".join(lines)
 
 
@@ -474,6 +587,20 @@ def plot_flight_overview(
             linewidth=2,
             label=f"Launch ({launch_t:.2f}s)",
         )
+    overload_active = (df["command_overload_g"] > 0.05) | (df["guidance_valid"] == 1)
+    if overload_active.any():
+        y2_min, y2_max = ax2.get_ylim()
+        ax2.fill_between(
+            t,
+            y2_min,
+            y2_max,
+            where=overload_active,
+            color="lightcoral",
+            alpha=0.2,
+            label="Overload Active",
+            zorder=0,
+        )
+        ax2.set_ylim(y2_min, y2_max)
     ax2.legend(loc="upper right")
 
     # 3. 视线角与角速率面板
@@ -590,6 +717,121 @@ def plot_filtering_comparison(
     plt.close(fig)
 
 
+def plot_imu_and_overload_detailed(
+    df: pd.DataFrame, output_path: Path | str, show: bool = False
+) -> None:
+    """绘制 IMU 动力学与过载控制指令高精度细分度图表并保存。"""
+    import matplotlib
+    if not show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import AutoMinorLocator, MultipleLocator
+
+    fig, axes = plt.subplots(4, 1, figsize=(16, 14), sharex=True)
+    t = df["time_s"]
+
+    # 1. IMU 三轴加速度 (细分度)
+    ax1 = axes[0]
+    ax1.plot(t, df["imu_acceleration_x_mps2"], label="Accel X (m/s²)", color="crimson", linewidth=1.2, alpha=0.85)
+    ax1.plot(t, df["imu_acceleration_y_mps2"], label="Accel Y (m/s²)", color="forestgreen", linewidth=1.2, alpha=0.85)
+    ax1.plot(t, df["imu_acceleration_z_mps2"], label="Accel Z (m/s²)", color="royalblue", linewidth=1.2, alpha=0.85)
+    accel_norm = np.sqrt(
+        df["imu_acceleration_x_mps2"] ** 2
+        + df["imu_acceleration_y_mps2"] ** 2
+        + df["imu_acceleration_z_mps2"] ** 2
+    )
+    ax1.plot(t, accel_norm, label="Total Accel Norm (m/s²)", color="black", linewidth=1.2, linestyle="--", alpha=0.7)
+    ax1.set_ylabel("Accel (m/s²)", fontsize=11)
+    ax1.set_title("1. IMU 3-Axis Acceleration & Total Norm (High-Precision Grid)", fontsize=12, fontweight="bold")
+
+    overload_active = (df["command_overload_g"] > 0.05) | (df["guidance_valid"] == 1)
+    if overload_active.any():
+        y1_min, y1_max = ax1.get_ylim()
+        ax1.fill_between(
+            t,
+            y1_min,
+            y1_max,
+            where=overload_active,
+            color="lightcoral",
+            alpha=0.18,
+            label="Overload Active",
+            zorder=0,
+        )
+        ax1.set_ylim(y1_min, y1_max)
+    ax1.legend(loc="upper right", ncol=5, framealpha=0.9)
+
+    # 2. IMU 三轴角速度 (细分度)
+    ax2 = axes[1]
+    ax2.plot(t, df["imu_angular_velocity_x_rad_s"], label="Gyro X (Roll, rad/s)", color="purple", linewidth=1.2, alpha=0.85)
+    ax2.plot(t, df["imu_angular_velocity_y_rad_s"], label="Gyro Y (Pitch, rad/s)", color="darkorange", linewidth=1.2, alpha=0.85)
+    ax2.plot(t, df["imu_angular_velocity_z_rad_s"], label="Gyro Z (Yaw, rad/s)", color="teal", linewidth=1.2, alpha=0.85)
+    ax2.set_ylabel("Angular Vel (rad/s)", fontsize=11)
+    ax2.set_title("2. IMU 3-Axis Angular Velocity (High-Precision Grid)", fontsize=12, fontweight="bold")
+
+    if overload_active.any():
+        y2_min, y2_max = ax2.get_ylim()
+        ax2.fill_between(
+            t,
+            y2_min,
+            y2_max,
+            where=overload_active,
+            color="lightcoral",
+            alpha=0.18,
+            label="Overload Active",
+            zorder=0,
+        )
+        ax2.set_ylim(y2_min, y2_max)
+    ax2.legend(loc="upper right", ncol=4, framealpha=0.9)
+
+    # 3. 机体过载与指令过载对比 (细分度)
+    ax3 = axes[2]
+    body_overload_norm = np.sqrt(
+        df["body_overload_y_g"] ** 2 + df["body_overload_z_g"] ** 2
+    )
+    ax3.plot(t, df["body_overload_y_g"], label="Body Overload Y (g)", color="mediumseagreen", linewidth=1.2, alpha=0.8)
+    ax3.plot(t, df["body_overload_z_g"], label="Body Overload Z (g)", color="mediumpurple", linewidth=1.2, alpha=0.8)
+    ax3.plot(t, body_overload_norm, label="Body Normal Overload |nyz| (g)", color="navy", linewidth=1.6, linestyle="-")
+    ax3.plot(t, df["command_overload_g"], label="Command Overload (g)", color="red", linewidth=2.0, linestyle="--")
+    ax3.set_ylabel("Overload (g)", fontsize=11)
+    ax3.set_title("3. Body Overload Response vs. Guidance Command Overload", fontsize=12, fontweight="bold")
+    ax3.legend(loc="upper right", ncol=4, framealpha=0.9)
+
+    # 4. 指令相位与制导有效性
+    ax4 = axes[3]
+    phase_deg = np.degrees(df["command_phase_rad"])
+    ax4.plot(t, phase_deg, label="Command Phase (°)", color="chocolate", linewidth=1.3)
+    ax4.set_ylabel("Phase Angle (°)", fontsize=11)
+    ax4.set_xlabel("Time (s)", fontsize=11)
+    ax4.set_title("4. Guidance Command Phase Angle & Valid Intervals", fontsize=12, fontweight="bold")
+
+    guidance_valid_mask = df["guidance_valid"] == 1
+    if guidance_valid_mask.any():
+        ax4.fill_between(
+            t, -180, 180, where=guidance_valid_mask, color="limegreen", alpha=0.18, label="Guidance Active"
+        )
+    ax4.set_ylim(-185, 185)
+    ax4.yaxis.set_major_locator(MultipleLocator(45))
+    ax4.yaxis.set_minor_locator(MultipleLocator(15))
+    ax4.legend(loc="upper right", ncol=2, framealpha=0.9)
+
+    # 精细化刻度与主次网格设置 (所有子图)
+    for i, ax in enumerate(axes):
+        ax.xaxis.set_major_locator(MultipleLocator(0.5))    # 主刻度 0.5s
+        ax.xaxis.set_minor_locator(MultipleLocator(0.1))    # 次刻度 0.1s
+        if i < 3:
+            ax.yaxis.set_minor_locator(AutoMinorLocator(2)) # Y 轴次刻度细分
+        ax.grid(True, which="major", color="#b0b0b0", linestyle="-", linewidth=0.7, alpha=0.75)
+        ax.grid(True, which="minor", color="#e0e0e0", linestyle=":", linewidth=0.5, alpha=0.7)
+        ax.minorticks_on()
+        ax.set_xlim(t.iloc[0], t.iloc[-1])
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
 def main() -> None:
     """CLI 入口点。"""
     parser = argparse.ArgumentParser(description="飞行数据与滤波对比分析工具")
@@ -617,12 +859,15 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         overview_path = output_dir / "flight_analysis_overview.png"
         filtering_path = output_dir / "flight_filtering_comparison.png"
+        detailed_imu_path = output_dir / "flight_imu_overload_detailed.png"
 
         plot_flight_overview(df_filt, overview_path, show=args.show)
         plot_filtering_comparison(df_filt, reports, filtering_path, show=args.show)
+        plot_imu_and_overload_detailed(df_filt, detailed_imu_path, show=args.show)
         print(f"\n图表已保存至: {output_dir}")
         print(f"  - 飞行综合概览: {overview_path}")
         print(f"  - 滤波对比分析: {filtering_path}")
+        print(f"  - IMU与过载精细图: {detailed_imu_path}")
 
 
 if __name__ == "__main__":

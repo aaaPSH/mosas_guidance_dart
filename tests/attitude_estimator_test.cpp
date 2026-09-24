@@ -205,6 +205,40 @@ void test_launch_confirmation_does_not_cross_sample_gap() {
     assert(!after_gap.launched);
 }
 
+void test_prelaunch_movement_with_varying_acceleration_maintains_valid_attitude() {
+    mosas::runtime::AttitudeEstimator estimator(test_config());
+    const auto initial = estimator.update(sample(0, {0.0, kGravity, 0.0}));
+    assert(initial.valid);
+
+    // 加速度模长由于运动/手持晃动降至 7.0 m/s^2 (< gravity - tolerance)，同时伴随角速度
+    const auto moving = estimator.update(
+        sample(20 * kMillisecondNs, {0.0, 7.0, 0.0}, {0.0, 0.0, 0.5}));
+    assert(moving.valid);
+    assert(!moving.launched);
+    assert(std::abs(moving.pitch_rad) > 0.001);
+}
+
+void test_reset_during_vigorous_motion_recovers_upon_becoming_stationary() {
+    mosas::runtime::AttitudeEstimator estimator(test_config());
+    const auto initial = estimator.update(sample(0, {0.0, kGravity, 0.0}));
+    assert(initial.valid);
+
+    // 录制完成触发 reset
+    estimator.reset();
+
+    // 重置后处于剧烈运动中（非静止）
+    const auto moving = estimator.update(
+        sample(20 * kMillisecondNs, {0.0, 15.0, 0.0}, {1.0, 2.0, 3.0}));
+    assert(!moving.valid);
+    assert(!moving.launched);
+
+    // 随后放回导轨重新静止
+    const auto settled = estimator.update(
+        sample(40 * kMillisecondNs, {0.0, kGravity, 0.0}, {0.0, 0.0, 0.0}));
+    assert(settled.valid);
+    assert(!settled.launched);
+}
+
 }  // namespace
 
 int main() {
@@ -220,5 +254,7 @@ int main() {
     test_near_zero_acceleration_is_not_a_valid_prelaunch_attitude();
     test_invalid_dt_does_not_create_nan_attitude();
     test_launch_confirmation_does_not_cross_sample_gap();
+    test_prelaunch_movement_with_varying_acceleration_maintains_valid_attitude();
+    test_reset_during_vigorous_motion_recovers_upon_becoming_stationary();
     return 0;
 }
