@@ -24,7 +24,9 @@ struct ImuFrameValues {
     double angular_velocity_x_rad_s = 0.0;
     double angular_velocity_y_rad_s = 0.0;
     double angular_velocity_z_rad_s = 0.0;
-    std::uint16_t initialization_g_raw = 0;
+    // 舵机 P/Y 控制参数，已从单字节 [0, 255] 归一化到 [-1, 1]。
+    double servo_control_p_normalized = 0.0;
+    double servo_control_y_normalized = 0.0;
     std::uint16_t crc = 0;
 };
 

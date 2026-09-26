@@ -24,12 +24,10 @@ constexpr std::string_view kFlightDataHeader =
     "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
     "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
     "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
+    "servo_control_p_normalized,servo_control_y_normalized,"
     "imu_pitch_rad,imu_attitude_valid,imu_launched,los_valid,"
     "los_q_y_rad,los_q_z_rad,los_rate_valid,los_rate_q_y_rad_s,"
     "los_rate_q_z_rad_s,guidance_valid,"
-    "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"
-    "navigation_acceleration_z_mps2,body_acceleration_x_mps2,"
-    "body_acceleration_y_mps2,body_acceleration_z_mps2,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
     "command_overload_g,command_phase_rad\n";
 
@@ -283,7 +281,10 @@ std::string LocalRecorder::make_csv_row(
         << imu_state.acceleration.y << ',' << imu_state.acceleration.z << ','
         << imu_state.angular_velocity.x << ','
         << imu_state.angular_velocity.y << ','
-        << imu_state.angular_velocity.z << ',' << imu_state.pitch_rad << ','
+        << imu_state.angular_velocity.z << ','
+        << imu_state.servo_control_p_normalized << ','
+        << imu_state.servo_control_y_normalized << ','
+        << imu_state.pitch_rad << ','
         << (imu_state.attitude_valid ? 1 : 0) << ','
         << (imu_state.launched ? 1 : 0) << ','
         << (overlay.line_of_sight_valid ? 1 : 0) << ','
@@ -293,12 +294,6 @@ std::string LocalRecorder::make_csv_row(
         << overlay.line_of_sight_rate_q_y_rad_s << ','
         << overlay.line_of_sight_rate_q_z_rad_s << ','
         << (guidance.valid ? 1 : 0) << ','
-        << guidance.navigation_acceleration.x << ','
-        << guidance.navigation_acceleration.y << ','
-        << guidance.navigation_acceleration.z << ','
-        << guidance.body_acceleration.x << ','
-        << guidance.body_acceleration.y << ','
-        << guidance.body_acceleration.z << ','
         << guidance.body_overload.x << ',' << guidance.body_overload.y << ','
         << guidance.body_overload.z << ',' << guidance.command_overload << ','
         << guidance.command_phase << '\n';

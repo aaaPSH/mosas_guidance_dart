@@ -57,9 +57,6 @@ public:
     void cancel() noexcept override;
     void stop() noexcept override;
 
-    // 该字段已不进入运行时状态；保留接口以兼容旧诊断调用方，始终返回 0。
-    std::uint16_t initialization_g_raw() const noexcept;
-
     // 返回有效 IMU 样本时间戳的间隔统计值；调用方应在读取线程停止后调用。
     SerialImuIntervalStatistics interval_statistics() const noexcept;
 

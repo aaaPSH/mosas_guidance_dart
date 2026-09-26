@@ -179,12 +179,10 @@ void test_csv_header_keeps_existing_schema() {
            "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
            "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
            "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
+           "servo_control_p_normalized,servo_control_y_normalized,"
            "imu_pitch_rad,imu_attitude_valid,imu_launched,los_valid,"
            "los_q_y_rad,los_q_z_rad,los_rate_valid,los_rate_q_y_rad_s,"
            "los_rate_q_z_rad_s,guidance_valid,"
-           "navigation_acceleration_x_mps2,navigation_acceleration_y_mps2,"
-           "navigation_acceleration_z_mps2,body_acceleration_x_mps2,"
-           "body_acceleration_y_mps2,body_acceleration_z_mps2,"
            "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
            "command_overload_g,command_phase_rad");
     recorder.stop();

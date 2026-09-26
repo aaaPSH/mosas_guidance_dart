@@ -11,6 +11,9 @@ struct ImuAngularVelocitySample {
     // 加速度单位为 m/s²，角速度单位为 rad/s。
     Vector3 acceleration{0.0, 0.0, 0.0};
     Vector3 angular_velocity{0.0, 0.0, 0.0};
+    // 舵机 P/Y 控制参数，范围 [-1, 1]。
+    double servo_control_p_normalized = 0.0;
+    double servo_control_y_normalized = 0.0;
 };
 
 }  // namespace mosas::runtime

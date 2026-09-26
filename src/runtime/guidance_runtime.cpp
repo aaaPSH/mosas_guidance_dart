@@ -518,7 +518,9 @@ void GuidanceRuntime::imu_worker() {
                 continue;
             }
             if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
-                !is_finite(sample.angular_velocity)) {
+                !is_finite(sample.angular_velocity) ||
+                !std::isfinite(sample.servo_control_p_normalized) ||
+                !std::isfinite(sample.servo_control_y_normalized)) {
                 set_fault("imu source returned an invalid kinematic sample");
                 return;
             }
@@ -537,7 +539,9 @@ void GuidanceRuntime::imu_worker() {
                     attitude_estimator_.update(sample);
                 const ImuAngularVelocitySample corrected_sample{
                     sample.timestamp_ns, sample.acceleration,
-                    attitude.corrected_angular_velocity};
+                    attitude.corrected_angular_velocity,
+                    sample.servo_control_p_normalized,
+                    sample.servo_control_y_normalized};
                 if (!angular_velocity_history_.push(corrected_sample)) {
                     set_fault("imu angular velocity timestamp is not increasing");
                     return;
@@ -556,6 +560,10 @@ void GuidanceRuntime::imu_worker() {
                 snapshot.timestamp_ns = sample.timestamp_ns;
                 snapshot.acceleration = sample.acceleration;
                 snapshot.angular_velocity = attitude.corrected_angular_velocity;
+                snapshot.servo_control_p_normalized =
+                    sample.servo_control_p_normalized;
+                snapshot.servo_control_y_normalized =
+                    sample.servo_control_y_normalized;
                 snapshot.body_to_navigation = attitude.body_to_navigation;
                 snapshot.pitch_rad = attitude.pitch_rad;
                 snapshot.attitude_valid = attitude.valid;
@@ -871,6 +879,10 @@ void GuidanceRuntime::processing_worker() {
                 angular_velocity_lookup->sample.acceleration;
             result.imu_state.angular_velocity =
                 angular_velocity_lookup->sample.angular_velocity;
+            result.imu_state.servo_control_p_normalized =
+                angular_velocity_lookup->sample.servo_control_p_normalized;
+            result.imu_state.servo_control_y_normalized =
+                angular_velocity_lookup->sample.servo_control_y_normalized;
             result.imu_state.body_to_navigation =
                 attitude_lookup->body_to_navigation;
             result.imu_state.pitch_rad = attitude_lookup->pitch_rad;

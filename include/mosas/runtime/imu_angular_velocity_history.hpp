@@ -58,6 +58,8 @@ private:
         std::atomic<std::uint64_t> angular_velocity_x_bits{0};
         std::atomic<std::uint64_t> angular_velocity_y_bits{0};
         std::atomic<std::uint64_t> angular_velocity_z_bits{0};
+        std::atomic<std::uint64_t> servo_control_p_bits{0};
+        std::atomic<std::uint64_t> servo_control_y_bits{0};
     };
 
     bool read_slot(std::size_t index,

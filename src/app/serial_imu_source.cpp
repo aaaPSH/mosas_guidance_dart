@@ -193,6 +193,10 @@ runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
             sample->timestamp_ns = angular_velocity.timestamp_ns;
             sample->acceleration = angular_velocity.acceleration;
             sample->angular_velocity = angular_velocity.angular_velocity;
+            sample->servo_control_p_normalized =
+                angular_velocity.servo_control_p_normalized;
+            sample->servo_control_y_normalized =
+                angular_velocity.servo_control_y_normalized;
             return {runtime::SourceStatus::ok, {}};
         }
         if (!raw_receive_buffer_.wait_for_data_until(deadline)) {
@@ -216,10 +220,6 @@ void SerialImuSource::cancel() noexcept {
 
 void SerialImuSource::stop() noexcept {
     cancel();
-}
-
-std::uint16_t SerialImuSource::initialization_g_raw() const noexcept {
-    return 0;
 }
 
 SerialImuIntervalStatistics
