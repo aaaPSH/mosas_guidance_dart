@@ -1,6 +1,7 @@
 # MOSAS Guidance 架构审查报告
 
-> 审查日期：2026-09-11  
+> 最近同步：2026-09-23，基于 `main` 的 `cb15bfc`。
+> 基线审查日期：2026-09-11；专项复审：2026-09-18。
 > 审查范围：项目目录、CMake 构建文件、主入口、核心模块、接口定义、配置文件、线程与通信代码、测试代码及辅助脚本。  
 > 审查性质：静态架构审查，不等同于实机可靠性认证。
 
@@ -75,30 +76,95 @@ IMU 三轴加速度、三轴角速度
 
 起飞由 `a_x` 相对启动基线的正向增量连续超过阈值确认并锁存；时间戳断流会清除候选计时。`png_navigation_constant_y` 与 `png_navigation_constant_z` 独立配置，Z 方向不再附加负号。姿态矩阵不参与 LOS 角速度计算，避免把重力姿态维护误接入视觉角速度补偿链路。
 
-> 说明：本文后续“第一部分”及更早章节是 2026-09-11 的改造前基线记录。其中关于 `FlightPhaseDetector`、`DartCondition`、姿态/速度状态和同步输出的描述不代表本次改造后的运行时主路径；当前判断以本节及最新源码为准。
+## 2026-09-23 当前架构与修改状态
 
-## 结论摘要
+本节按当前 `main` 分支源码同步，覆盖 2026-09-18 后的架构变更。以下是静态代码结论；没有据此推断目标硬件上的时序、可靠性或安全行为。
 
-当前项目是一个单进程、多线程、流水线式的视觉制导系统。总体架构方向合理，已经具备硬件接口抽象、有界队列、状态码、异常捕获和 Fake/Mock 测试基础。
+### 当前主数据流
 
-但当前架构还不能认为是低风险、易扩展的生产级架构。主要风险集中在：
+```text
+IMU 串口接收线程
+  └─ RawImuReceiveBuffer（有界 SPSC 原始字节块、序号和接收时间）
+       ↓
+     SerialImuSource / ImuStreamDecoder（解析、CRC、延迟修正）
+       ↓
+     GuidanceRuntime IMU worker
+       ├─ AttitudeEstimator → 姿态历史
+       └─ 角速度历史
 
-1. GuidanceRuntime 同时承担线程调度、状态估计、视觉识别、制导计算、控制输出、异常处理、日志和统计。
-2. 控制指令发送和同步日志进入实时处理路径，可能造成不可预测阻塞。
-3. 时间戳、数据年龄、状态所有权和安全降级策略不够统一。
-4. RtspFrameSink 同时负责推流、录像、CSV、可视化和调试数据。
-5. 测试目录、CMake 和源码接口已经出现漂移。
+Nori SDK callback
+  └─ 有界待处理帧队列、采集时间域转换和接收时间
+       ↓
+     capture worker → 有界最新帧队列
+       ↓
+     processing worker（帧预处理、按帧时间插值姿态/角速度）
+       ↓
+     VisionRecognizer（全局池化粗筛或局部 ROI 跟踪，再做原分辨率精检）
+       ↓
+     LOS / LOS 角速度 → PNG 制导
+       ├─ CommandSink::try_submit → 异步命令 sink → 串口或异步日志
+       └─ 输出队列 → output worker → OutputController
+                                      ├─ RTSP
+                                      └─ debug 连续录像 / match 起飞窗口录像
 
-建议保留单进程、多线程和 bounded queue 的总体形态，不建议引入微服务、事件总线或大型依赖注入框架。后续应采用小步重构，优先处理实时性、安全降级、时间体系和测试闭环。
+运行时诊断和命令日志 → 有界异步日志队列 → 日志线程
+```
 
-## 审查证据和验证结果
+### 相较基线的架构变化
 
-- 当前主工程的模块和调用关系已通过源码、头文件、配置及脚本检查。
-- tests/ 和 docs/ 物理存在，但被 .gitignore 忽略；其中部分测试与当前接口不一致。
-- 当前主 CMakeLists.txt 没有注册 enable_testing() 或 add_test()。
-- 当前主机为 x86_64，CMake 配置在 CMakeLists.txt:15 因 Nori SDK 仅支持 ARM64 而失败。
-- python3 scripts/vision_replay_test.py 的 7 个测试通过。
-- 本报告不把旧 build/ 目录中的缓存测试目标当作当前源码的测试结果。
+1. `FlightPhaseDetector` 和 `DartCondition` 已从当前构建与运行时移除。`AttitudeEstimator` 维护姿态和起飞判定，`GuidanceRuntime` 负责工作线程、历史数据、制导流水线和生命周期协调。
+2. 控制处理线程通过 `try_submit()` 提交最新命令；生产 `SerialCommandSink` 使用 `LatestValueMailbox` 和独立发送线程完成编码与串口写入，并按起飞 generation 丢弃旧周期命令。
+3. 运行时文本日志和命令日志通过有界 `AsyncInfoLogger` 队列写出；队列满时会计数并丢弃。运行时仍在提交侧构造文本，且其他错误路径需单独评估是否有同步输出。
+4. 输出实现拆为 `OutputController`、`LocalRecorder` 和 `RtspStreamer`。配置可选择 RTSP、连续 debug 录像或 match 起飞窗口录像；录像窗口带内存上限和重置流程。
+5. `GuidanceRuntimeTiming` 暴露采集、队列等待/延迟、预处理、视觉、LOS、制导、命令和输出阶段的分布统计（最小值、均值、P50/P95/P99、最大值）及相机/输出队列丢弃数。Nori 源和 IMU 源也有采集、队列与时间戳诊断。
+6. 相机时间戳包含来源、接收时间、配置的时钟域与固定偏置；相机 SDK 的分辨率、帧率、曝光和增益会读回并报告。时钟域、固定延迟和偏置仍需要实机标定。
+7. 视觉全局搜索采用宽高减半的池化图像粗筛，随后在原分辨率 ROI 精检；锁定后局部跟踪，丢失后回到全局搜索。`VisionResult` 不再携带调试 mask。
+8. CMake 已使用 CTest 注册当前 C++ 测试目标，并按目标处理器选择 Nori SDK 的 x64 或 ARM64 库。此处只确认构建配置和目标注册，未执行构建或测试。
+
+### 原审查问题的当前状态
+
+| 原问题 | 当前状态 | 当前判断 |
+|---|---|---|
+| P1-1 控制输出位于实时关键路径 | 已缓解 | 主路径已改为 mailbox 提交和独立发送线程；命令时效策略、watchdog 和下位机保持旧指令的行为仍需明确。 |
+| P1-2 同步日志阻塞实时线程 | 已缓解 | 运行时及命令日志 I/O 已异步化；提交侧仍构造文本，其他适配器错误输出未全部统一。 |
+| P1-3 `GuidanceRuntime` 职责过重 | 仍开放 | runtime 仍编排姿态、视觉、LOS、PNG、输出队列、故障、统计和线程生命周期。 |
+| P1-4 多个状态机没有统一所有者 | 原问题已过时 | `FlightPhaseDetector` / `DartCondition` 已删除；当前姿态和起飞判定归 `AttitudeEstimator`，runtime 仍持有历史与快照。 |
+| P1-5 传感器时间对齐证据不足 | 部分缓解 | 时钟域、接收时间、曝光偏置和 IMU 延迟均有显式模型；目标硬件的时钟语义和端到端延迟仍未标定。 |
+| P1-6 Nori callback 生命周期 | 部分缓解 | 当前有 callback owner 分离、在途 callback/capture 等待；SDK 停止和回调语义仍需设备验证。 |
+| P1-7 测试、CMake 与源码漂移 | 已改善 | 当前测试已注册到 CTest，SDK 架构选择也支持 x64/ARM64；本次未运行测试，测试质量和硬件覆盖仍需持续维护。 |
+| P1-8 可选无线输出故障影响 runtime | 仍开放 | 可选择本地输出避开 RTSP；选用 RTSP 时 `publish()` 失败仍会令 runtime fault，尚无 optional 输出策略。 |
+| P2-1 runtime 接口泄漏 OpenCV 类型 | 仍开放 | `CameraFrame` 和视觉接口仍直接使用 `cv::Mat` 与视觉领域类型。 |
+| P2-2 RTSP sink 职责过多 | 部分缓解 | 推流和本地录像已拆分；`OutputController` 仍承担模式分发、可视化和输出调用，输出错误仍汇入单一 `FrameSink` 结果。 |
+| P2-3 串口生命周期与 writer 契约 | 仍开放 | 当前应用是单读者/单发送 worker；串口 close 与读写的统一生命周期保护仍未建立。 |
+| P2-4 Nori SDK 进程级全局状态 | 仍开放 | SDK session 仍由进程级状态管理。 |
+| P2-5 配置重复表示和分散校验 | 部分缓解 | 相机矩阵会在加载时映射到制导内参；硬件、制导、输出配置仍由 `AppConfig` 组合并分段校验。 |
+| P2-6 队列、延迟和丢帧不可观测 | 已改善 | 已增加阶段分布、队列延迟和丢弃数；尚无统一健康快照覆盖全部数据年龄和源状态。 |
+| P2-7 重启后统计混入历史 | 仍开放 | `start()` 会重置队列、历史和估计器，但没有重置 runtime 的 FPS meter 与 timing distributions。 |
+| P2-8 视觉结果耦合调试 mask | 已解决 | 当前 `VisionResult` 只保留检测结果和 ROI；识别路径没有调试 mask 成员。 |
+| P3-1 FPS 启动阶段语义 | 部分缓解 | 少于两个采样点时返回 0；接口仍未提供有效标志，启动阶段速率会随短窗口变化。 |
+| P3-2 `FlightPhaseDetector` 配置回退 | 不再适用 | `FlightPhaseDetector` 已从当前源码移除。 |
+| P3-3 Python replay 与 C++ 视觉逻辑重复 | 仍开放 | 两套识别逻辑仍分别维护，需要持续同步参数和行为。 |
+| P3-4 测试访问 private 成员 | 仍开放 | 当前 `nori_camera_source_test.cpp` 和 `runtime_logging_test.cpp` 仍使用 `#define private public`。 |
+
+> 说明：下文“第一部分”至“第六部分”保留 2026-09-11 的架构基线和原始建议，避免丢失审查历史；其中的数据流、问题描述及评分不代表当前状态。需要判断现状时，以本节状态表和当前源码为准。
+
+## 当前结论
+
+项目仍是单进程、多线程、流水线式视觉制导系统。相较基线，控制串口写入和主要运行时日志已经移出制导处理线程；输出模式、本地录像、视觉粗筛/跟踪和运行时分位计时也已形成独立模块或接口。
+
+当前主要架构风险集中在：
+
+1. 目标硬件的相机时钟语义、IMU 测量延迟和传感器端到端时间偏差尚未完成标定。
+2. `GuidanceRuntime` 仍承担较多流水线与生命周期职责；RTSP 输出错误仍可能停止 runtime，且命令过期/watchdog 策略不完整。
+3. runtime 指标在重复启动时未统一 reset，OpenCV 类型仍穿过 runtime 接口，Python replay 与 C++ 视觉逻辑继续重复。
+
+建议保留单进程、多线程和 bounded queue 的总体形态，优先完成硬件时间标定、输出故障分级和命令时效策略，再逐步收窄 `GuidanceRuntime` 职责并补齐重启统计语义。
+
+## 本次同步的证据和验证范围
+
+- 本次对照了当前 `main` 的 CMake、runtime、app adapter、output、vision 和配置源码；当前 CMake 使用 `include(CTest)` 并注册 C++ 测试目标。
+- 本次只做静态文档同步，没有运行构建、CTest、Python 测试或实机验证。
+- 2026-09-11 基线中记录的构建和测试结果仅代表当时状态，不应作为当前 `main` 的验证结果。
 
 ---
 
