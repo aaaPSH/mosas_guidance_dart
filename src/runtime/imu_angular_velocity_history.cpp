@@ -29,6 +29,8 @@ bool ImuAngularVelocityHistory::push(
     const ImuAngularVelocitySample& sample) noexcept {
     if (sample.timestamp_ns < 0 || !finite_vector(sample.acceleration) ||
         !finite_vector(sample.angular_velocity) ||
+        !std::isfinite(sample.servo_control_p_normalized) ||
+        !std::isfinite(sample.servo_control_y_normalized) ||
         (has_timestamp_ && sample.timestamp_ns <= last_timestamp_ns_)) {
         return false;
     }
@@ -50,6 +52,12 @@ bool ImuAngularVelocityHistory::push(
         double_bits(sample.angular_velocity.y), std::memory_order_relaxed);
     slot.angular_velocity_z_bits.store(
         double_bits(sample.angular_velocity.z), std::memory_order_relaxed);
+    slot.servo_control_p_bits.store(
+        double_bits(sample.servo_control_p_normalized),
+        std::memory_order_relaxed);
+    slot.servo_control_y_bits.store(
+        double_bits(sample.servo_control_y_normalized),
+        std::memory_order_relaxed);
     slot.sequence.store(sequence + 2, std::memory_order_release);
 
     next_index_ = (next_index_ + 1) % capacity_;
@@ -117,11 +125,20 @@ ImuAngularVelocityHistory::find_interpolated(
         interpolate(lower.angular_velocity.x, upper.angular_velocity.x),
         interpolate(lower.angular_velocity.y, upper.angular_velocity.y),
         interpolate(lower.angular_velocity.z, upper.angular_velocity.z)};
-    if (!finite_vector(acceleration) || !finite_vector(angular_velocity)) {
+    const double servo_control_p_normalized =
+        interpolate(lower.servo_control_p_normalized,
+                    upper.servo_control_p_normalized);
+    const double servo_control_y_normalized =
+        interpolate(lower.servo_control_y_normalized,
+                    upper.servo_control_y_normalized);
+    if (!finite_vector(acceleration) || !finite_vector(angular_velocity) ||
+        !std::isfinite(servo_control_p_normalized) ||
+        !std::isfinite(servo_control_y_normalized)) {
         return std::nullopt;
     }
     return ImuAngularVelocityLookup{
-        {timestamp_ns, acceleration, angular_velocity}, true,
+        {timestamp_ns, acceleration, angular_velocity,
+         servo_control_p_normalized, servo_control_y_normalized}, true,
         lower.timestamp_ns, upper.timestamp_ns};
 }
 
@@ -141,6 +158,10 @@ void ImuAngularVelocityHistory::reset() noexcept {
                                                      std::memory_order_relaxed);
         slots_[index].angular_velocity_z_bits.store(0,
                                                      std::memory_order_relaxed);
+        slots_[index].servo_control_p_bits.store(0,
+                                                 std::memory_order_relaxed);
+        slots_[index].servo_control_y_bits.store(0,
+                                                 std::memory_order_relaxed);
     }
     next_index_ = 0;
     size_writer_ = 0;
@@ -173,6 +194,10 @@ bool ImuAngularVelocityHistory::read_slot(
         slot.angular_velocity_y_bits.load(std::memory_order_relaxed));
     sample->angular_velocity.z = bits_double(
         slot.angular_velocity_z_bits.load(std::memory_order_relaxed));
+    sample->servo_control_p_normalized = bits_double(
+        slot.servo_control_p_bits.load(std::memory_order_relaxed));
+    sample->servo_control_y_normalized = bits_double(
+        slot.servo_control_y_bits.load(std::memory_order_relaxed));
     const std::uint64_t second = slot.sequence.load(std::memory_order_acquire);
     return first == second && (second & 1U) == 0;
 }

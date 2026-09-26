@@ -111,7 +111,9 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
              values.acceleration_z_mps2},
             {values.angular_velocity_x_rad_s,
              values.angular_velocity_y_rad_s,
-             values.angular_velocity_z_rad_s}};
+             values.angular_velocity_z_rad_s},
+            values.servo_control_p_normalized,
+            values.servo_control_y_normalized};
         if (!publish(sample)) {
             dropped_sample_count_.fetch_add(1, std::memory_order_relaxed);
         }

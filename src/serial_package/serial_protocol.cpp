@@ -187,9 +187,11 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
     decoded.angular_velocity_z_rad_s =
         static_cast<double>(read_int16_le(data + 12)) * 0.1 *
         kDegreesToRadians;
-    decoded.initialization_g_raw =
-        static_cast<std::uint16_t>(data[14]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[15]) << 8u);
+    // 上行帧原 g 字段改为两个独立的舵机参数字节：P 在前，Y 在后。
+    decoded.servo_control_p_normalized =
+        static_cast<double>(data[14]) * (2.0 / 255.0) - 1.0;
+    decoded.servo_control_y_normalized =
+        static_cast<double>(data[15]) * (2.0 / 255.0) - 1.0;
     decoded.crc = received_crc;
     *values = decoded;
     if (error != nullptr) {

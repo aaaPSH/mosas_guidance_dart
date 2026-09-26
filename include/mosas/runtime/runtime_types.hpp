@@ -18,6 +18,8 @@ struct ImuSample {
     TimestampNs timestamp_ns;
     Vector3 acceleration;
     Vector3 angular_velocity;
+    double servo_control_p_normalized = 0.0;
+    double servo_control_y_normalized = 0.0;
 };
 
 struct CameraFrame {
@@ -31,6 +33,8 @@ struct ImuStateSnapshot {
     TimestampNs timestamp_ns = -1;
     Vector3 acceleration{0.0, 0.0, 0.0};
     Vector3 angular_velocity{0.0, 0.0, 0.0};
+    double servo_control_p_normalized = 0.0;
+    double servo_control_y_normalized = 0.0;
     RotationMatrix3 body_to_navigation{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
