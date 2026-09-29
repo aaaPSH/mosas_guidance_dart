@@ -1,6 +1,6 @@
 # MOSAS Guidance 架构审查报告
 
-> 最近同步：2026-09-23，基于 `main` 的 `cb15bfc`。
+> 最近同步：2026-09-28，基于当前工作区。
 > 基线审查日期：2026-09-11；专项复审：2026-09-18。
 > 审查范围：项目目录、CMake 构建文件、主入口、核心模块、接口定义、配置文件、线程与通信代码、测试代码及辅助脚本。  
 > 审查性质：静态架构审查，不等同于实机可靠性认证。
@@ -119,7 +119,7 @@ Nori SDK callback
 5. `GuidanceRuntimeTiming` 暴露采集、队列等待/延迟、预处理、视觉、LOS、制导、命令和输出阶段的分布统计（最小值、均值、P50/P95/P99、最大值）及相机/输出队列丢弃数。Nori 源和 IMU 源也有采集、队列与时间戳诊断。
 6. 相机时间戳包含来源、接收时间、配置的时钟域与固定偏置；相机 SDK 的分辨率、帧率、曝光和增益会读回并报告。时钟域、固定延迟和偏置仍需要实机标定。
 7. 视觉全局搜索采用宽高减半的池化图像粗筛，随后在原分辨率 ROI 精检；锁定后局部跟踪，丢失后回到全局搜索。`VisionResult` 不再携带调试 mask。
-8. CMake 已使用 CTest 注册当前 C++ 测试目标，并按目标处理器选择 Nori SDK 的 x64 或 ARM64 库。此处只确认构建配置和目标注册，未执行构建或测试。
+8. CMake 按目标处理器选择 Nori SDK 的 x64 或 ARM64 库；当前未引入 CTest，也未构建测试目标。
 
 ### 原审查问题的当前状态
 
@@ -131,7 +131,7 @@ Nori SDK callback
 | P1-4 多个状态机没有统一所有者 | 原问题已过时 | `FlightPhaseDetector` / `DartCondition` 已删除；当前姿态和起飞判定归 `AttitudeEstimator`，runtime 仍持有历史与快照。 |
 | P1-5 传感器时间对齐证据不足 | 部分缓解 | 时钟域、接收时间、曝光偏置和 IMU 延迟均有显式模型；目标硬件的时钟语义和端到端延迟仍未标定。 |
 | P1-6 Nori callback 生命周期 | 部分缓解 | 当前有 callback owner 分离、在途 callback/capture 等待；SDK 停止和回调语义仍需设备验证。 |
-| P1-7 测试、CMake 与源码漂移 | 已改善 | 当前测试已注册到 CTest，SDK 架构选择也支持 x64/ARM64；本次未运行测试，测试质量和硬件覆盖仍需持续维护。 |
+| P1-7 测试、CMake 与源码漂移 | 待恢复 | 当前工作区没有 C++ 测试源文件，CTest 集成和测试目标已移除；恢复有效测试后再纳入构建。 |
 | P1-8 可选无线输出故障影响 runtime | 仍开放 | 可选择本地输出避开 RTSP；选用 RTSP 时 `publish()` 失败仍会令 runtime fault，尚无 optional 输出策略。 |
 | P2-1 runtime 接口泄漏 OpenCV 类型 | 仍开放 | `CameraFrame` 和视觉接口仍直接使用 `cv::Mat` 与视觉领域类型。 |
 | P2-2 RTSP sink 职责过多 | 部分缓解 | 推流和本地录像已拆分；`OutputController` 仍承担模式分发、可视化和输出调用，输出错误仍汇入单一 `FrameSink` 结果。 |
@@ -144,7 +144,7 @@ Nori SDK callback
 | P3-1 FPS 启动阶段语义 | 部分缓解 | 少于两个采样点时返回 0；接口仍未提供有效标志，启动阶段速率会随短窗口变化。 |
 | P3-2 `FlightPhaseDetector` 配置回退 | 不再适用 | `FlightPhaseDetector` 已从当前源码移除。 |
 | P3-3 Python replay 与 C++ 视觉逻辑重复 | 仍开放 | 两套识别逻辑仍分别维护，需要持续同步参数和行为。 |
-| P3-4 测试访问 private 成员 | 仍开放 | 当前 `nori_camera_source_test.cpp` 和 `runtime_logging_test.cpp` 仍使用 `#define private public`。 |
+| P3-4 测试访问 private 成员 | 暂不适用 | 当前工作区没有 C++ 测试源文件；恢复测试后再检查访问方式。 |
 
 > 说明：下文“第一部分”至“第六部分”保留 2026-09-11 的架构基线和原始建议，避免丢失审查历史；其中的数据流、问题描述及评分不代表当前状态。需要判断现状时，以本节状态表和当前源码为准。
 
@@ -162,8 +162,8 @@ Nori SDK callback
 
 ## 本次同步的证据和验证范围
 
-- 本次对照了当前 `main` 的 CMake、runtime、app adapter、output、vision 和配置源码；当前 CMake 使用 `include(CTest)` 并注册 C++ 测试目标。
-- 本次只做静态文档同步，没有运行构建、CTest、Python 测试或实机验证。
+- 本次对照了当前工作区的 CMake、runtime、app adapter、output、vision 和配置源码；CMake 不再引入 CTest 或测试目标。
+- 本次构建了 `mosas_guidance_app`；没有运行 CTest、Python 测试或实机验证。
 - 2026-09-11 基线中记录的构建和测试结果仅代表当时状态，不应作为当前 `main` 的验证结果。
 
 ---
