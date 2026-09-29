@@ -94,6 +94,10 @@ double pitch_from_rotation(const RotationMatrix3& matrix) noexcept {
     return std::atan2(matrix.m10, std::hypot(matrix.m00, matrix.m20));
 }
 
+double roll_from_rotation(const RotationMatrix3& matrix) noexcept {
+    return std::atan2(-matrix.m12, matrix.m11);
+}
+
 }  // 匿名命名空间结束
 
 std::uint64_t AttitudeHistory::double_bits(double value) noexcept {
@@ -110,6 +114,7 @@ double AttitudeHistory::bits_double(std::uint64_t bits) noexcept {
 
 bool AttitudeHistory::push(const AttitudeSample& sample) noexcept {
     if (sample.timestamp_ns < 0 || !std::isfinite(sample.pitch_rad) ||
+        !std::isfinite(sample.roll_rad) ||
         !finite_rotation(sample.body_to_navigation) ||
         (has_timestamp_ && sample.timestamp_ns <= last_timestamp_ns_)) {
         return false;
@@ -122,6 +127,8 @@ bool AttitudeHistory::push(const AttitudeSample& sample) noexcept {
     slot.timestamp_ns.store(sample.timestamp_ns, std::memory_order_relaxed);
     slot.pitch_bits.store(double_bits(sample.pitch_rad),
                           std::memory_order_relaxed);
+    slot.roll_bits.store(double_bits(sample.roll_rad),
+                         std::memory_order_relaxed);
     slot.matrix_m00_bits.store(double_bits(sample.body_to_navigation.m00),
                                std::memory_order_relaxed);
     slot.matrix_m01_bits.store(double_bits(sample.body_to_navigation.m01),
@@ -175,10 +182,12 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
         if (candidate.timestamp_ns == timestamp_ns) {
             const double pitch = pitch_from_rotation(
                 candidate.body_to_navigation);
-            if (!std::isfinite(pitch)) {
+            const double roll = roll_from_rotation(
+                candidate.body_to_navigation);
+            if (!std::isfinite(pitch) || !std::isfinite(roll)) {
                 return std::nullopt;
             }
-            return AttitudeLookup{pitch,
+            return AttitudeLookup{pitch, roll,
                                   candidate.body_to_navigation, false,
                                   candidate.timestamp_ns,
                                   candidate.timestamp_ns, candidate.launched,
@@ -218,10 +227,11 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
         return std::nullopt;
     }
     const double pitch = pitch_from_rotation(matrix);
-    if (!std::isfinite(pitch)) {
+    const double roll = roll_from_rotation(matrix);
+    if (!std::isfinite(pitch) || !std::isfinite(roll)) {
         return std::nullopt;
     }
-    return AttitudeLookup{pitch, matrix, true, lower.timestamp_ns,
+    return AttitudeLookup{pitch, roll, matrix, true, lower.timestamp_ns,
                           upper.timestamp_ns, lower.launched,
                           lower.launch_timestamp_ns,
                           lower.launch_generation};
@@ -268,6 +278,8 @@ bool AttitudeHistory::read_slot(std::size_t index,
         slot.timestamp_ns.load(std::memory_order_relaxed);
     sample->pitch_rad =
         bits_double(slot.pitch_bits.load(std::memory_order_relaxed));
+    sample->roll_rad =
+        bits_double(slot.roll_bits.load(std::memory_order_relaxed));
     sample->body_to_navigation = {
         bits_double(slot.matrix_m00_bits.load(std::memory_order_relaxed)),
         bits_double(slot.matrix_m01_bits.load(std::memory_order_relaxed)),

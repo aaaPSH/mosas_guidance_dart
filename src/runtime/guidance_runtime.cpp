@@ -549,6 +549,7 @@ void GuidanceRuntime::imu_worker() {
                 if (attitude.valid) {
                     if (!attitude_history_.push({sample.timestamp_ns,
                                                  attitude.pitch_rad,
+                                                 attitude.roll_rad,
                                                  attitude.body_to_navigation,
                                                  attitude.launched,
                                                  attitude.launch_timestamp_ns,
@@ -566,6 +567,7 @@ void GuidanceRuntime::imu_worker() {
                     sample.servo_control_y_normalized;
                 snapshot.body_to_navigation = attitude.body_to_navigation;
                 snapshot.pitch_rad = attitude.pitch_rad;
+                snapshot.roll_rad = attitude.roll_rad;
                 snapshot.attitude_valid = attitude.valid;
                 snapshot.launched = attitude.launched;
                 snapshot.launch_timestamp_ns = attitude.launch_timestamp_ns;
@@ -886,6 +888,7 @@ void GuidanceRuntime::processing_worker() {
             result.imu_state.body_to_navigation =
                 attitude_lookup->body_to_navigation;
             result.imu_state.pitch_rad = attitude_lookup->pitch_rad;
+            result.imu_state.roll_rad = attitude_lookup->roll_rad;
             result.imu_state.attitude_valid = true;
             result.imu_state.launched = attitude_lookup->launched;
             result.imu_state.launch_timestamp_ns =
@@ -894,6 +897,7 @@ void GuidanceRuntime::processing_worker() {
                 attitude_lookup->launch_generation;
             result.overlay.attitude_valid = true;
             result.overlay.attitude_pitch_rad = attitude_lookup->pitch_rad;
+            result.overlay.attitude_roll_rad = attitude_lookup->roll_rad;
             result.overlay.launched = attitude_lookup->launched;
 
             const auto vision_started = std::chrono::steady_clock::now();
@@ -1002,7 +1006,8 @@ void GuidanceRuntime::processing_worker() {
             const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = PngGuidance::calculate(
                 line_of_sight, angular_velocity, config_.launch_speed_mps,
-                attitude_lookup->pitch_rad, config_.png_guidance);
+                attitude_lookup->pitch_rad, attitude_lookup->roll_rad,
+                config_.png_guidance);
             record_timing(TimingStage::guidance,
                           std::chrono::steady_clock::now() - guidance_started);
             if (!result.guidance.valid) {

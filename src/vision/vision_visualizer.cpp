@@ -67,6 +67,43 @@ void draw_reference_circle(cv::Mat& frame, const cv::Point2d& raw_center,
                radius_pixels, color, 1, cv::LINE_8);
 }
 
+void draw_roll_cross(cv::Mat& frame, double roll_rad) {
+    if (!std::isfinite(roll_rad)) {
+        return;
+    }
+
+    const double scale = static_cast<double>(std::min(frame.cols, frame.rows));
+    const double horizontal_half_length = scale * 0.16;
+    const double vertical_half_length = scale * 0.10;
+    const double cosine = std::cos(roll_rad);
+    const double sine = std::sin(roll_rad);
+    const double center_x = static_cast<double>(frame.cols) / 2.0;
+    const double center_y = static_cast<double>(frame.rows) / 2.0;
+    const auto rotate_to_frame = [&](double x, double y) {
+        return cv::Point(cvRound(center_x + x * cosine - y * sine),
+                         cvRound(center_y + x * sine + y * cosine));
+    };
+
+    const cv::Point horizontal_start =
+        rotate_to_frame(-horizontal_half_length, 0.0);
+    const cv::Point horizontal_end =
+        rotate_to_frame(horizontal_half_length, 0.0);
+    const cv::Point vertical_start =
+        rotate_to_frame(0.0, -vertical_half_length);
+    const cv::Point vertical_end =
+        rotate_to_frame(0.0, vertical_half_length);
+
+    // 深色描边让中心十字在明暗背景上都清晰可见。
+    cv::line(frame, horizontal_start, horizontal_end, {0, 0, 0}, 6,
+             cv::LINE_AA);
+    cv::line(frame, vertical_start, vertical_end, {0, 0, 0}, 6,
+             cv::LINE_AA);
+    cv::line(frame, horizontal_start, horizontal_end, {0, 255, 255}, 3,
+             cv::LINE_AA);
+    cv::line(frame, vertical_start, vertical_end, {0, 255, 255}, 3,
+             cv::LINE_AA);
+}
+
 void draw_result_impl(cv::Mat& frame, const VisionResult& result,
                       const cv::Point2d* line_of_sight_reference_point) {
     if (!is_valid_frame(frame)) {
@@ -154,7 +191,10 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             " z " +
             format_value(data.body_overload_valid, data.body_overload_z_g,
                          1.0, ""),
-        "Attitude(deg): pitch " +
+        "Attitude(deg): roll " +
+            format_value(data.attitude_valid, data.attitude_roll_rad,
+                         kRadiansToDegrees, "") +
+            " pitch " +
             format_value(data.attitude_valid, data.attitude_pitch_rad,
                          kRadiansToDegrees, "") +
             " phase " +
@@ -187,6 +227,9 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
                                               baseline},
                         cv::FONT_HERSHEY_SIMPLEX, 0.38, kOverlayColor, 1,
                         cv::LINE_AA);
+        }
+        if (data.attitude_valid) {
+            draw_roll_cross(frame, data.attitude_roll_rad);
         }
     } catch (const cv::Exception&) {
         return;
