@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""实时预览并采集相机标定用的棋盘格图片。"""
+"""采集相机标定用的棋盘格图片，支持窗口预览和无屏幕模式。"""
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union
@@ -31,6 +33,17 @@ def positive_integer(value: str) -> int:
     return number
 
 
+def positive_float(value: str) -> float:
+    """解析有限且大于零的命令行浮点数。"""
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("请输入数字") from error
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("数值必须是有限正数")
+    return number
+
+
 def corner_dimension(value: str) -> int:
     """解析至少包含三个角点的棋盘格尺寸。"""
     number = positive_integer(value)
@@ -42,7 +55,7 @@ def corner_dimension(value: str) -> int:
 def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """解析采集脚本的命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="预览摄像头画面，并保存检测到棋盘格的标定图片。"
+        description="采集摄像头画面中的棋盘格标定图片，支持窗口预览或无屏幕自动采集。"
     )
     parser.add_argument(
         "--camera",
@@ -79,6 +92,23 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=Path,
         default=Path("calibration_images"),
         help="图片会话目录的根目录，默认 calibration_images",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="无屏幕模式：检测到棋盘格后自动保存",
+    )
+    parser.add_argument(
+        "--target-count",
+        type=positive_integer,
+        default=20,
+        help="无屏幕模式的目标图片数，默认 20",
+    )
+    parser.add_argument(
+        "--save-interval",
+        type=positive_float,
+        default=2.0,
+        help="无屏幕模式两次保存的最小间隔秒数，默认 2",
     )
     return parser.parse_args(argv)
 
@@ -125,11 +155,79 @@ def detect_checkerboard(
     return True, refined_corners
 
 
+def run_headless_capture(
+    args: argparse.Namespace,
+    capture,
+    frame,
+    session_dir: Path,
+) -> int:
+    """在没有图形界面的环境中按间隔自动采集棋盘格图片。"""
+    saved_count = 0
+    next_save_time = 0.0
+    last_status_time = 0.0
+    print(
+        f"无屏幕采集：目标 {args.target_count} 张，"
+        f"保存间隔至少 {args.save_interval:g} 秒。"
+    )
+    print("请在镜头前持续改变棋盘格的位置、距离和倾角；按 Ctrl+C 可提前结束。")
+
+    while saved_count < args.target_count:
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            print("摄像头必须输出三通道 BGR 图像。", file=sys.stderr)
+            return 1
+
+        # 与主程序保持相同的 180 度相机帧方向。
+        oriented_frame = cv2.flip(frame, -1)
+        found, _ = detect_checkerboard(
+            oriented_frame, (args.columns, args.rows)
+        )
+        current_time = time.monotonic()
+
+        if found and current_time >= next_save_time:
+            image_path = session_dir / f"frame_{saved_count + 1:04d}.png"
+            save_error = None
+            try:
+                saved = cv2.imwrite(str(image_path), oriented_frame)
+            except cv2.error as error:
+                saved = False
+                save_error = str(error)
+
+            if not saved:
+                detail = f"：{save_error}" if save_error else ""
+                print(f"保存图片失败 {image_path}{detail}", file=sys.stderr)
+                return 1
+
+            saved_count += 1
+            next_save_time = current_time + args.save_interval
+            last_status_time = current_time
+            print(
+                f"已保存 {saved_count}/{args.target_count}：{image_path}；"
+                "请改变棋盘姿态后再继续采集。"
+            )
+            if saved_count >= args.target_count:
+                print("已达到目标张数，采集完成。")
+                return 0
+        elif current_time - last_status_time >= 5.0:
+            if found:
+                print("已检测到棋盘格，正在等待下一保存间隔；请改变棋盘姿态。")
+            else:
+                print("暂未检测到完整棋盘格，请将棋盘移入镜头并调整角度。")
+            last_status_time = current_time
+
+        ok, frame = capture.read()
+        if not ok or frame is None or frame.size == 0:
+            print("摄像头读取图像失败。", file=sys.stderr)
+            return 1
+
+    return 0
+
+
 def run_capture(args: argparse.Namespace) -> int:
-    """运行摄像头预览和键盘采集流程。"""
+    """运行摄像头预览采集或无屏幕自动采集流程。"""
     if cv2 is None:
+        package = "opencv-python-headless" if args.headless else "opencv-python"
         print(
-            "缺少 OpenCV Python 依赖，请安装带图形界面的 opencv-python。",
+            f"缺少 OpenCV Python 依赖，请运行 python3 -m pip install {package}。",
             file=sys.stderr,
         )
         return 1
@@ -159,6 +257,9 @@ def run_capture(args: argparse.Namespace) -> int:
         height, width = frame.shape[:2]
         print(f"摄像头：{args.camera}，实际分辨率：{width}x{height}")
         print(f"图片目录：{session_dir}")
+        if args.headless:
+            return run_headless_capture(args, capture, frame, session_dir)
+
         print("移动棋盘格以改变位置、大小和倾角；按空格保存，按 q 或 Esc 退出。")
 
         window_name = "Checkerboard Capture"
@@ -247,9 +348,13 @@ def run_capture(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(f"图像格式无效：{error}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\n采集已中断。")
+        return 130
     except cv2.error as error:
+        action = "图像处理" if args.headless else "预览或图像处理"
         print(
-            f"OpenCV 预览或图像处理失败，请确认安装了带图形界面的 opencv-python：{error}",
+            f"OpenCV {action}失败：{error}",
             file=sys.stderr,
         )
         return 1
