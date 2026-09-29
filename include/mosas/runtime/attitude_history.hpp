@@ -16,6 +16,7 @@ namespace mosas::runtime {
 struct AttitudeSample {
     TimestampNs timestamp_ns = -1;
     double pitch_rad = 0.0;
+    double roll_rad = 0.0;
     RotationMatrix3 body_to_navigation{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -27,6 +28,7 @@ struct AttitudeSample {
 
 struct AttitudeLookup {
     double pitch_rad = 0.0;
+    double roll_rad = 0.0;
     RotationMatrix3 body_to_navigation{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -72,6 +74,7 @@ private:
         std::atomic<std::uint64_t> sequence{0};
         std::atomic<TimestampNs> timestamp_ns{-1};
         std::atomic<std::uint64_t> pitch_bits{0};
+        std::atomic<std::uint64_t> roll_bits{0};
         std::atomic<std::uint64_t> matrix_m00_bits{0};
         std::atomic<std::uint64_t> matrix_m01_bits{0};
         std::atomic<std::uint64_t> matrix_m02_bits{0};

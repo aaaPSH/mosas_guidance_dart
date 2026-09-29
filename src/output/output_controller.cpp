@@ -1,18 +1,48 @@
 #include <mosas/output/output_controller.hpp>
 
+#include "recording_paths.hpp"
+
 #include <mosas/vision/vision_visualizer.hpp>
 
+#include <filesystem>
+#include <iostream>
 #include <utility>
 
 #include <opencv2/imgproc.hpp>
 
 namespace mosas::output {
+namespace {
+
+std::filesystem::path recording_path_for_run(
+    const std::string& configured_recording_path) {
+    std::filesystem::path configured_path(configured_recording_path);
+    if (configured_path.empty()) {
+        configured_path = "recordings/mosas_guidance.avi";
+    } else if (configured_path.filename().empty()) {
+        configured_path /= "mosas_guidance.avi";
+    }
+
+    std::string stem = configured_path.stem().string();
+    if (stem.empty()) {
+        stem = "recording";
+    }
+    const std::filesystem::path run_directory =
+        configured_path.parent_path() /
+        (stem + "_" + detail::make_session_id());
+    return run_directory / configured_path.filename();
+}
+
+}  // namespace
 
 OutputController::OutputController(OutputControllerConfig config)
     : config_(std::move(config)) {
     if (!validate_config()) {
         return;
     }
+    config_.output.recording_path =
+        recording_path_for_run(config_.output.recording_path).string();
+    imu_csv_recorder_ = std::make_unique<ImuCsvRecorder>(
+        config_.output.recording_path);
     if (config_.output.mode == OutputMode::rtsp) {
         return;
     }
@@ -47,6 +77,23 @@ bool OutputController::publish(
     const runtime::ImuStateSnapshot& imu_state,
     const PngGuidanceOutput& guidance, const VisionOverlayData& overlay) {
     return publish_impl(frame, vision_result, imu_state, guidance, &overlay);
+}
+
+bool OutputController::try_record_imu_sample(
+    const runtime::ImuAngularVelocitySample& sample) noexcept {
+    if (imu_csv_recorder_ == nullptr || !imu_csv_recorder_->try_record(sample)) {
+        if (imu_csv_recorder_ != nullptr) {
+            try {
+                const std::string error = imu_csv_recorder_->last_error();
+                if (!error.empty()) {
+                    std::clog << "IMU CSV 记录失败: " << error << '\n';
+                }
+            } catch (...) {
+            }
+        }
+        return false;
+    }
+    return true;
 }
 
 bool OutputController::publish_impl(
@@ -176,6 +223,9 @@ void OutputController::reset() noexcept {
     if (!validate_config()) {
         return;
     }
+    if (imu_csv_recorder_ != nullptr) {
+        imu_csv_recorder_->start();
+    }
     if (local_recorder_ != nullptr) {
         local_recorder_->reset();
     }
@@ -189,6 +239,9 @@ void OutputController::reset() noexcept {
 
 void OutputController::stop() noexcept {
     cancelled_.store(true);
+    if (imu_csv_recorder_ != nullptr) {
+        imu_csv_recorder_->stop();
+    }
 #if defined(MOSAS_OUTPUT_HAS_WIRELESS)
     std::unique_ptr<wireless::RtspStreamer> streamer;
     {
@@ -210,6 +263,12 @@ bool OutputController::take_rearm_request() noexcept {
 }
 
 std::string OutputController::last_error() const {
+    if (imu_csv_recorder_ != nullptr) {
+        const std::string error = imu_csv_recorder_->last_error();
+        if (!error.empty()) {
+            return error;
+        }
+    }
     if (local_recorder_ != nullptr &&
         !local_recorder_->last_error().empty()) {
         return local_recorder_->last_error();

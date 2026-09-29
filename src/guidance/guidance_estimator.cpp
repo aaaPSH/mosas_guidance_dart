@@ -482,7 +482,7 @@ LineOfSightRateSample LineOfSightRateEstimator::sample() const {
 PngGuidanceOutput PngGuidance::calculate(
     const LineOfSight& line_of_sight,
     const LineOfSightAngularVelocity& angular_velocity, double speed_mps,
-    double pitch_rad, const PngGuidanceConfig& config) {
+    double pitch_rad, double roll_rad, const PngGuidanceConfig& config) {
     const PngGuidanceOutput invalid_output{
         false, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 0.0,
         0.0};
@@ -490,6 +490,7 @@ PngGuidanceOutput PngGuidance::calculate(
         !is_finite(angular_velocity.q_y) ||
         !is_finite(angular_velocity.q_z) || !is_finite(speed_mps) ||
         speed_mps <= kEpsilon || !is_finite(pitch_rad) ||
+        !is_finite(roll_rad) ||
         !is_valid_png_config(config)) {
         return invalid_output;
     }
@@ -520,13 +521,13 @@ PngGuidanceOutput PngGuidance::calculate(
     }
 
     const double command_phase = std::atan2(lateral_overload, vertical_overload);
-    Vector3 body_acceleration{
+    Vector3 ballistic_acceleration{
         0.0, config.gravity * vertical_overload,
         config.gravity * lateral_overload};
-    if (!is_finite(body_acceleration)) {
+    if (!is_finite(ballistic_acceleration)) {
         return invalid_output;
     }
-    const double command_acceleration = vector_norm(body_acceleration);
+    const double command_acceleration = vector_norm(ballistic_acceleration);
     if (!is_finite(command_acceleration)) {
         return invalid_output;
     }
@@ -534,12 +535,20 @@ PngGuidanceOutput PngGuidance::calculate(
         command_acceleration > config.maximum_command_acceleration) {
         const double scale =
             config.maximum_command_acceleration / command_acceleration;
-        body_acceleration.x *= scale;
-        body_acceleration.y *= scale;
-        body_acceleration.z *= scale;
+        ballistic_acceleration.x *= scale;
+        ballistic_acceleration.y *= scale;
+        ballistic_acceleration.z *= scale;
         command_overload *= scale;
     }
 
+    const double cosine_roll = std::cos(roll_rad);
+    const double sine_roll = std::sin(roll_rad);
+    const Vector3 body_acceleration{
+        ballistic_acceleration.x,
+        cosine_roll * ballistic_acceleration.y +
+            sine_roll * ballistic_acceleration.z,
+        -sine_roll * ballistic_acceleration.y +
+            cosine_roll * ballistic_acceleration.z};
     const Vector3 body_overload{
         body_acceleration.x / config.gravity,
         body_acceleration.y / config.gravity,
@@ -547,6 +556,6 @@ PngGuidanceOutput PngGuidance::calculate(
     if (!is_finite(body_overload) || !is_finite(command_phase)) {
         return invalid_output;
     }
-    return {true, body_acceleration, body_acceleration, body_overload,
+    return {true, ballistic_acceleration, body_acceleration, body_overload,
             command_overload, command_phase};
 }

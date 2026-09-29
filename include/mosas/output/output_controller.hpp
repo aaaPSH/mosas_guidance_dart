@@ -2,6 +2,7 @@
 #define MOSAS_OUTPUT_OUTPUT_CONTROLLER_HPP
 
 #include <mosas/output/local_recorder.hpp>
+#include <mosas/output/imu_csv_recorder.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 #include <mosas/wireless/rtsp_streamer.hpp>
 
@@ -44,6 +45,9 @@ public:
                  const PngGuidanceOutput& guidance,
                  const VisionOverlayData& overlay) override;
 
+    bool try_record_imu_sample(
+        const runtime::ImuAngularVelocitySample& sample) noexcept override;
+
     void cancel() noexcept override;
     void reset() noexcept override;
     void stop() noexcept override;
@@ -62,6 +66,7 @@ private:
 
     OutputControllerConfig config_;
     std::unique_ptr<LocalRecorder> local_recorder_;
+    std::unique_ptr<ImuCsvRecorder> imu_csv_recorder_;
     cv::Mat rendered_frame_;
     cv::Mat rtsp_frame_;
 #if defined(MOSAS_OUTPUT_HAS_WIRELESS)

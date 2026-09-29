@@ -40,7 +40,7 @@ struct LineOfSightAngularVelocity {
 
 // PNG 律参数。镖体系 Y/Z 方向导航系数独立配置且无量纲，重力加速度单位为
 // m/s²；
-// maximum_command_overload 是镖体系 Y/Z 合成过载上限（单位 g），
+// maximum_command_overload 是弹道系 Y/Z 合成过载上限（单位 g），
 // maximum_command_acceleration 是镖体系指令加速度模长上限（单位 m/s²）。
 struct PngGuidanceConfig {
     double navigation_constant_y = 3.0;
@@ -51,8 +51,8 @@ struct PngGuidanceConfig {
         std::numeric_limits<double>::infinity();
 };
 
-// 二维解耦 PNG 律输出。过载先在弹道系计算，再转换到导航系和弹体系；
-// 输出保留转换后的加速度，过载为弹体系分量除以重力加速度。
+// 二维解耦 PNG 律输出。过载先在弹道系计算，再按 roll 转到镖体系；
+// navigation_acceleration 保留转换前的弹道系加速度，body 字段为转换结果。
 struct PngGuidanceOutput {
     bool valid;
     Vector3 navigation_acceleration;
@@ -163,15 +163,14 @@ private:
     LineOfSightRateSample sample_{};
 };
 
-// 使用二维解耦 PNG 律，在恒速度、小攻角假设下直接在镖体系计算过载。
+// 使用二维解耦 PNG 律在弹道系计算过载，再按维护的 roll 角转到镖体系。
 class PngGuidance {
 public:
-    // 速度方向固定为镖体系 +x；pitch_rad 是姿态维护得到的俯仰角，
-    // 输出的 navigation/body 字段均为镖体系数值，不进行姿态矩阵旋转。
+    // 速度方向固定为镖体系 +x；角度使用相机时刻插值得到的姿态估计。
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,
-        double speed_mps, double pitch_rad,
+        double speed_mps, double pitch_rad, double roll_rad,
         const PngGuidanceConfig& config = {});
 };
 

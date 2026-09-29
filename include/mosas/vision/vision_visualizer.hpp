@@ -15,7 +15,7 @@ public:
     static void draw_result(cv::Mat& frame, const VisionResult& result,
                             const cv::Point2d& line_of_sight_reference_point);
 
-    // 在画面左上角以透明背景绘制绿色引导关键数据。
+    // 在画面左上角绘制引导数据，并在中心按 roll 角绘制大十字。
     static void draw_guidance_overlay(cv::Mat& frame,
                                       const VisionOverlayData& data);
 };

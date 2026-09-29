@@ -72,11 +72,16 @@ AttitudeEstimator::Quaternion AttitudeEstimator::normalize(
     return {value.w / norm, value.x / norm, value.y / norm, value.z / norm};
 }
 
-AttitudeEstimator::Quaternion AttitudeEstimator::from_pitch(
-    double pitch_rad) noexcept {
+AttitudeEstimator::Quaternion AttitudeEstimator::from_roll_pitch(
+    double roll_rad, double pitch_rad) noexcept {
+    const double half_roll = 0.5 * roll_rad;
     const double half_pitch = 0.5 * pitch_rad;
-    return normalize(
-        {std::cos(half_pitch), 0.0, 0.0, std::sin(half_pitch)});
+    const Quaternion roll{std::cos(half_roll), std::sin(half_roll), 0.0,
+                          0.0};
+    const Quaternion pitch{std::cos(half_pitch), 0.0, 0.0,
+                           std::sin(half_pitch)};
+    // 使用 pitch 绕 Z、roll 绕 X 的顺序重建无航向初始化姿态。
+    return normalize(multiply(pitch, roll));
 }
 
 AttitudeEstimator::Quaternion AttitudeEstimator::delta_from_body_rate(
@@ -122,14 +127,21 @@ double AttitudeEstimator::pitch_from_matrix(
     return std::atan2(matrix.m10, std::hypot(matrix.m00, matrix.m20));
 }
 
+double AttitudeEstimator::roll_from_matrix(
+    const RotationMatrix3& matrix) noexcept {
+    return std::atan2(-matrix.m12, matrix.m11);
+}
+
 AttitudeEstimate AttitudeEstimator::make_estimate(
     TimestampNs timestamp_ns, bool valid) const noexcept {
     const RotationMatrix3 matrix = to_matrix(orientation_);
     const double pitch = pitch_from_matrix(matrix);
+    const double roll = roll_from_matrix(matrix);
     AttitudeEstimate estimate{};
     estimate.timestamp_ns = timestamp_ns;
     estimate.body_to_navigation = matrix;
     estimate.pitch_rad = pitch;
+    estimate.roll_rad = roll;
     estimate.launched = launched_;
     estimate.valid = valid;
     estimate.launch_timestamp_ns = launch_timestamp_ns_;
@@ -179,11 +191,12 @@ bool AttitudeEstimator::update_prelaunch_attitude(
 
     const double pitch = std::atan2(
         up_force.x, std::hypot(up_force.y, up_force.z));
-    if (!finite(pitch)) {
+    const double roll = std::atan2(-up_force.z, up_force.y);
+    if (!finite(pitch) || !finite(roll)) {
         return false;
     }
-    // 重力只用于俯仰初始化。
-    orientation_ = from_pitch(pitch);
+    // 重力只用于滚转和俯仰初始化，航向保持初始值。
+    orientation_ = from_roll_pitch(roll, pitch);
     return true;
 }
 
