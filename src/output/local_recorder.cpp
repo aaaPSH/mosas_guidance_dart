@@ -1,9 +1,8 @@
 #include <mosas/output/local_recorder.hpp>
 
-#include <atomic>
-#include <chrono>
+#include "recording_paths.hpp"
+
 #include <cmath>
-#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -30,24 +29,6 @@ constexpr std::string_view kFlightDataHeader =
     "los_rate_q_z_rad_s,guidance_valid,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
     "command_overload_g,command_phase_rad\n";
-
-std::string make_session_id() {
-    static std::atomic<std::uint64_t> next_id{0};
-    const auto now = std::chrono::system_clock::now();
-    const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
-    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
-                            now - seconds)
-                            .count();
-    const std::time_t time = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time{};
-    localtime_r(&time, &local_time);
-
-    std::ostringstream stream;
-    stream << std::put_time(&local_time, "%Y%m%d_%H%M%S") << '_'
-           << std::setfill('0') << std::setw(6) << micros << '_'
-           << std::setfill('0') << std::setw(6) << next_id.fetch_add(1);
-    return stream.str();
-}
 
 std::filesystem::path timestamped_video_path(
     const std::filesystem::path& configured_path,
@@ -318,7 +299,7 @@ bool LocalRecorder::open_recording() {
     release_recording();
     const std::filesystem::path configured_path(config_.recording_path);
     const std::filesystem::path video_path =
-        timestamped_video_path(configured_path, make_session_id());
+        timestamped_video_path(configured_path, detail::make_session_id());
     std::filesystem::path csv_path = video_path;
     csv_path.replace_extension(".csv");
 

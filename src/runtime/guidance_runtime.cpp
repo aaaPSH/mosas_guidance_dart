@@ -329,6 +329,7 @@ void GuidanceRuntime::stop() noexcept {
         output_thread_.join();
     }
     if (frame_sink_ != nullptr) {
+        frame_sink_->stop();
         const std::string output_error = frame_sink_->last_error();
         if (!output_error.empty() && !faulted_.load()) {
             set_fault("frame output failed during stop: " + output_error);
@@ -576,6 +577,11 @@ void GuidanceRuntime::imu_worker() {
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
                 latest_state_ = snapshot;
+            }
+            if (frame_sink_ != nullptr &&
+                !frame_sink_->try_record_imu_sample(sample)) {
+                set_fault("failed to record IMU sample");
+                return;
             }
         }
     } catch (const std::exception& exception) {
@@ -1066,16 +1072,6 @@ void GuidanceRuntime::processing_worker() {
 }
 
 void GuidanceRuntime::output_worker() {
-    struct FrameSinkStopGuard {
-        FrameSink* sink;
-
-        ~FrameSinkStopGuard() {
-            if (sink != nullptr) {
-                sink->stop();
-            }
-        }
-    } stop_guard{frame_sink_.get()};
-
     try {
         ProcessedFrame result{};
         while (true) {

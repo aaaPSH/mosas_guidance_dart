@@ -148,6 +148,7 @@ if(MOSAS_BUILD_WIRELESS)
 endif()
 
 add_library(mosas_output STATIC
+    src/output/imu_csv_recorder.cpp
     src/output/local_recorder.cpp
     src/output/output_controller.cpp
 )
