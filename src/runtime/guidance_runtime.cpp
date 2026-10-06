@@ -480,6 +480,16 @@ void GuidanceRuntime::set_error(const std::string& message) {
 void GuidanceRuntime::set_fault(const std::string& message) {
     if (!faulted_.exchange(true)) {
         set_error(message);
+        const auto state = latest_state();
+        if (command_sink_ != nullptr && state.has_value() && state->launched) {
+            std::lock_guard<std::mutex> lock(launch_generation_mutex_);
+            if (active_launch_generation_.load() == state->launch_generation) {
+                // 运行时故障时尽力清零，避免下位机继续保持上一条非零指令。
+                command_sink_->try_submit(
+                    {monotonic_timestamp_ns(), PngGuidanceOutput{},
+                     state->launch_generation});
+            }
+        }
     }
     stop_requested_.store(true);
     if (frame_sink_ != nullptr) {
@@ -526,6 +536,7 @@ void GuidanceRuntime::imu_worker() {
                 return;
             }
             ImuStateSnapshot snapshot{};
+            const char* history_error = nullptr;
             {
                 // 与代际切换线性化，防止新周期样本被写入旧周期历史。
                 std::lock_guard<std::mutex> generation_lock(
@@ -544,35 +555,41 @@ void GuidanceRuntime::imu_worker() {
                     sample.servo_control_p_normalized,
                     sample.servo_control_y_normalized};
                 if (!angular_velocity_history_.push(corrected_sample)) {
-                    set_fault("imu angular velocity timestamp is not increasing");
-                    return;
+                    history_error =
+                        "imu angular velocity timestamp is not increasing";
                 }
-                if (attitude.valid) {
-                    if (!attitude_history_.push({sample.timestamp_ns,
-                                                 attitude.pitch_rad,
-                                                 attitude.roll_rad,
-                                                 attitude.body_to_navigation,
-                                                 attitude.launched,
-                                                 attitude.launch_timestamp_ns,
-                                                 estimator_generation})) {
-                        set_fault("imu attitude timestamp is not increasing");
-                        return;
-                    }
+                if (history_error == nullptr && attitude.valid &&
+                    !attitude_history_.push({sample.timestamp_ns,
+                                             attitude.pitch_rad,
+                                             attitude.roll_rad,
+                                             attitude.body_to_navigation,
+                                             attitude.launched,
+                                             attitude.launch_timestamp_ns,
+                                             estimator_generation})) {
+                    history_error = "imu attitude timestamp is not increasing";
                 }
-                snapshot.timestamp_ns = sample.timestamp_ns;
-                snapshot.acceleration = sample.acceleration;
-                snapshot.angular_velocity = attitude.corrected_angular_velocity;
-                snapshot.servo_control_p_normalized =
-                    sample.servo_control_p_normalized;
-                snapshot.servo_control_y_normalized =
-                    sample.servo_control_y_normalized;
-                snapshot.body_to_navigation = attitude.body_to_navigation;
-                snapshot.pitch_rad = attitude.pitch_rad;
-                snapshot.roll_rad = attitude.roll_rad;
-                snapshot.attitude_valid = attitude.valid;
-                snapshot.launched = attitude.launched;
-                snapshot.launch_timestamp_ns = attitude.launch_timestamp_ns;
-                snapshot.launch_generation = estimator_generation;
+                if (history_error == nullptr) {
+                    snapshot.timestamp_ns = sample.timestamp_ns;
+                    snapshot.acceleration = sample.acceleration;
+                    snapshot.angular_velocity =
+                        attitude.corrected_angular_velocity;
+                    snapshot.servo_control_p_normalized =
+                        sample.servo_control_p_normalized;
+                    snapshot.servo_control_y_normalized =
+                        sample.servo_control_y_normalized;
+                    snapshot.body_to_navigation = attitude.body_to_navigation;
+                    snapshot.pitch_rad = attitude.pitch_rad;
+                    snapshot.roll_rad = attitude.roll_rad;
+                    snapshot.attitude_valid = attitude.valid;
+                    snapshot.launched = attitude.launched;
+                    snapshot.launch_timestamp_ns =
+                        attitude.launch_timestamp_ns;
+                    snapshot.launch_generation = estimator_generation;
+                }
+            }
+            if (history_error != nullptr) {
+                set_fault(history_error);
+                return;
             }
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
@@ -708,6 +725,41 @@ void GuidanceRuntime::processing_worker() {
             return output_queue_.push(std::move(result));
         };
 
+        const auto submit_neutral_command =
+            [this](TimestampNs timestamp_ns,
+                   std::optional<std::uint64_t> launch_generation =
+                       std::nullopt) {
+                if (!launch_generation.has_value()) {
+                    const auto state = latest_state();
+                    if (!state.has_value() || !state->launched) {
+                        return true;
+                    }
+                    launch_generation = state->launch_generation;
+                }
+
+                bool generation_is_current = false;
+                bool sent = true;
+                {
+                    std::lock_guard<std::mutex> lock(
+                        launch_generation_mutex_);
+                    generation_is_current =
+                        active_launch_generation_.load() ==
+                        *launch_generation;
+                    if (generation_is_current && !stop_requested_.load() &&
+                        !faulted_.load()) {
+                        // 无法形成可靠引导量时主动发送全零，清除下位机保持的旧指令。
+                        sent = command_sink_->try_submit(
+                            {timestamp_ns, PngGuidanceOutput{},
+                             *launch_generation});
+                    }
+                }
+                if (generation_is_current && !sent) {
+                    set_fault("guidance command submit failed");
+                    return false;
+                }
+                return true;
+            };
+
         ProcessedFrame result{};
         QueuedCameraFrame queued_frame{};
         while (true) {
@@ -736,6 +788,9 @@ void GuidanceRuntime::processing_worker() {
             }
             if (prepare_result.status != SourceStatus::ok) {
                 if (prepare_result.status == SourceStatus::timeout) {
+                    if (!submit_neutral_command(result.frame.timestamp_ns)) {
+                        return;
+                    }
                     result = ProcessedFrame{};
                     continue;
                 }
@@ -775,6 +830,9 @@ void GuidanceRuntime::processing_worker() {
                 log_output_diagnostic("相机帧时间戳不递增", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
+                if (!submit_neutral_command(timestamp_ns)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -845,6 +903,9 @@ void GuidanceRuntime::processing_worker() {
                     next_imu_match_log = now + std::chrono::seconds(1);
                 }
                 imu_match_failure_active = true;
+                if (!submit_neutral_command(timestamp_ns)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -875,6 +936,9 @@ void GuidanceRuntime::processing_worker() {
                 log_output_diagnostic(
                     "姿态历史无法匹配相机曝光时刻",
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns));
+                if (!submit_neutral_command(timestamp_ns)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -913,6 +977,11 @@ void GuidanceRuntime::processing_worker() {
             if (!result.vision_result.found) {
                 rate_estimator.reset();
                 has_frame_timestamp = false;
+                if (attitude_lookup->launched &&
+                    !submit_neutral_command(
+                        timestamp_ns, attitude_lookup->launch_generation)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -934,6 +1003,11 @@ void GuidanceRuntime::processing_worker() {
                 log_output_diagnostic("视线角计算无效", details);
                 rate_estimator.reset();
                 has_frame_timestamp = false;
+                if (attitude_lookup->launched &&
+                    !submit_neutral_command(
+                        timestamp_ns, attitude_lookup->launch_generation)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -959,6 +1033,11 @@ void GuidanceRuntime::processing_worker() {
                 }
                 previous_frame_timestamp_ns = timestamp_ns;
                 has_frame_timestamp = true;
+                if (attitude_lookup->launched &&
+                    !submit_neutral_command(
+                        timestamp_ns, attitude_lookup->launch_generation)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -981,6 +1060,11 @@ void GuidanceRuntime::processing_worker() {
                 log_output_diagnostic("视线角速度时间步长无效", details.str());
                 rate_estimator.reset();
                 has_frame_timestamp = false;
+                if (attitude_lookup->launched &&
+                    !submit_neutral_command(
+                        timestamp_ns, attitude_lookup->launch_generation)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -999,6 +1083,11 @@ void GuidanceRuntime::processing_worker() {
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
                 log_output_diagnostic("视线角速度暂不可用", details.str());
+                if (attitude_lookup->launched &&
+                    !submit_neutral_command(
+                        timestamp_ns, attitude_lookup->launch_generation)) {
+                    return;
+                }
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -1027,9 +1116,13 @@ void GuidanceRuntime::processing_worker() {
                         << static_cast<double>(bracket_age_ns) / 1e6;
                 log_output_diagnostic("PNG 引导输出无效", details.str());
             }
+            if (attitude_lookup->launched && !result.guidance.valid &&
+                !submit_neutral_command(
+                    timestamp_ns, attitude_lookup->launch_generation)) {
+                return;
+            }
             if (attitude_lookup->launched && result.guidance.valid &&
-                !faulted_.load() &&
-                !stop_requested_.load()) {
+                !faulted_.load() && !stop_requested_.load()) {
                 result.overlay.body_overload_valid = true;
                 result.overlay.body_overload_x_g =
                     result.guidance.body_overload.x;
