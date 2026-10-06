@@ -123,9 +123,9 @@ bool LoggingCommandSink::try_submit(
     runtime::RuntimeLogEvent event{};
     event.kind = runtime::RuntimeLogEventKind::guidance_command;
     event.timestamp_ns = command.timestamp_ns;
-    event.value0 = command.output.body_overload.x;
-    event.value1 = command.output.body_overload.y;
-    event.value2 = command.output.body_overload.z;
+    event.value0 = command.output.valid ? command.output.body_overload.x : 0.0;
+    event.value1 = command.output.valid ? command.output.body_overload.y : 0.0;
+    event.value2 = command.output.valid ? command.output.body_overload.z : 0.0;
     if (!logger_.try_submit(event)) {
         return false;
     }
@@ -263,8 +263,9 @@ void SerialCommandSink::worker_loop() noexcept {
         std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
         std::string error;
         const serial_package::ControlFrameValues values{
-            0.0, command.output.body_overload.z,
-            command.output.body_overload.y};
+            0.0,
+            command.output.valid ? command.output.body_overload.z : 0.0,
+            command.output.valid ? command.output.body_overload.y : 0.0};
         if (!serial_package::encode_control_frame(values, &frame, &error) ||
             !port_->write_all(frame.data(), frame.size())) {
             send_failure_count_.fetch_add(1, std::memory_order_relaxed);

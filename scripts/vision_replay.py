@@ -213,7 +213,7 @@ def load_overlay_mask(
         raise ValueError("相机主点坐标必须是有限数值")
     radius = math.ceil(math.sqrt(max(0, min_blob_area) / math.pi)) + 3
     return OverlayMask(
-        min(frame_width, 340),
+        min(frame_width, 380),
         min(frame_height, 100),
         min(frame_height, 26),
         round(center_x),
