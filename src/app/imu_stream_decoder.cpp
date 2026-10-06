@@ -1,5 +1,7 @@
 #include <mosas/app/imu_stream_decoder.hpp>
 
+#include <mosas/domain/imu_time_model.hpp>
+
 #include <serial_package/serial_protocol.hpp>
 
 #include <algorithm>
@@ -21,17 +23,6 @@ runtime::TimestampNs saturating_add(runtime::TimestampNs left,
         return std::numeric_limits<runtime::TimestampNs>::min();
     }
     return left + right;
-}
-
-runtime::TimestampNs saturating_subtract(runtime::TimestampNs left,
-                                         runtime::TimestampNs right) noexcept {
-    if (right == std::numeric_limits<runtime::TimestampNs>::min()) {
-        if (left >= 0) {
-            return std::numeric_limits<runtime::TimestampNs>::max();
-        }
-        return left - right;
-    }
-    return saturating_add(left, -right);
 }
 
 }  // namespace
@@ -92,8 +83,10 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
             continue;
         }
 
-        runtime::TimestampNs timestamp = buffer_first_timestamp_ns_;
-        timestamp = saturating_subtract(timestamp, measurement_latency_ns_);
+        const runtime::TimestampNs timestamp =
+            mosas::domain::estimate_imu_sample_time(
+                buffer_first_timestamp_ns_, measurement_latency_ns_)
+                .monotonic_ns;
         if (timestamp < 0) {
             parse_error_count_.fetch_add(1, std::memory_order_relaxed);
             discard_prefix(serial_package::kImuFrameSize);

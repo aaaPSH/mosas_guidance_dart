@@ -24,6 +24,7 @@ function(configure_mosas_target target)
 endfunction()
 
 add_library(mosas_contract_core STATIC
+    src/domain/imu_time_model.cpp
     src/runtime/clock.cpp
     src/runtime/frame_timing.cpp
     src/serial_package/serial_protocol.cpp
@@ -268,4 +269,12 @@ if(BUILD_TESTING)
     configure_mosas_target(serial_protocol_test)
     target_link_libraries(serial_protocol_test PRIVATE mosas_contract_core)
     add_test(NAME serial_protocol_test COMMAND serial_protocol_test)
+
+    add_executable(imu_time_model_test
+        tests/imu_time_model_test.cpp
+        src/app/imu_stream_decoder.cpp
+    )
+    configure_mosas_target(imu_time_model_test)
+    target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
+    add_test(NAME imu_time_model_test COMMAND imu_time_model_test)
 endif()
