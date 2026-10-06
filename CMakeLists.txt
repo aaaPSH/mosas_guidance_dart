@@ -4,7 +4,33 @@ project(mosas_guidance LANGUAGES CXX)
 include(GNUInstallDirs)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
+option(MOSAS_BUILD_APPLICATION "构建 Nori/视觉设备应用" ON)
+include(CTest)
 
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+function(configure_mosas_target target)
+    target_compile_features(${target} PUBLIC cxx_std_17)
+    target_compile_options(${target} PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+    target_include_directories(${target}
+        PUBLIC
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+endfunction()
+
+add_library(mosas_contract_core STATIC
+    src/runtime/clock.cpp
+    src/runtime/frame_timing.cpp
+    src/serial_package/serial_protocol.cpp
+)
+configure_mosas_target(mosas_contract_core)
+
+if(MOSAS_BUILD_APPLICATION)
 # 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
 set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
     "Nori 相机 SDK 根目录")
@@ -68,28 +94,11 @@ if(MOSAS_BUILD_WIRELESS)
     )
 endif()
 
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-function(configure_mosas_target target)
-    target_compile_features(${target} PUBLIC cxx_std_17)
-    target_compile_options(${target} PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
-    target_include_directories(${target}
-        PUBLIC
-            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    )
-endfunction()
-
 add_library(serial_package STATIC
     src/serial_package/serial_port.cpp
-    src/serial_package/serial_protocol.cpp
 )
 configure_mosas_target(serial_package)
-target_link_libraries(serial_package PUBLIC Threads::Threads)
+target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads)
 
 add_library(mosas_vision STATIC
     src/vision/vision_recognizer.cpp
@@ -114,8 +123,6 @@ target_link_libraries(mosas_guidance
 add_library(mosas_runtime STATIC
     src/runtime/attitude_estimator.cpp
     src/runtime/attitude_history.cpp
-    src/runtime/clock.cpp
-    src/runtime/frame_timing.cpp
     src/runtime/imu_angular_velocity_history.cpp
     src/runtime/async_info_logger.cpp
     src/runtime/guidance_runtime.cpp
@@ -128,6 +135,7 @@ target_include_directories(mosas_runtime
 target_link_libraries(mosas_runtime
     PUBLIC
         mosas_guidance
+        mosas_contract_core
         Threads::Threads
 )
 
@@ -207,6 +215,7 @@ if(MOSAS_BUILD_WIRELESS)
 endif()
 
 set(MOSAS_INSTALL_TARGETS
+    mosas_contract_core
     serial_package
     mosas_vision
     mosas_guidance
@@ -235,3 +244,13 @@ install(PROGRAMS scripts/run_guidance.sh
 install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+endif()  # MOSAS_BUILD_APPLICATION
+
+if(BUILD_TESTING)
+    add_executable(host_build_smoke_test
+        tests/host_build_smoke_test.cpp
+    )
+    configure_mosas_target(host_build_smoke_test)
+    target_link_libraries(host_build_smoke_test PRIVATE mosas_contract_core)
+    add_test(NAME host_build_smoke_test COMMAND host_build_smoke_test)
+endif()
