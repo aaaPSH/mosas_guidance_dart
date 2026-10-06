@@ -2,8 +2,10 @@
 /build/
 /.worktrees/
 
-# 本地设计资料不提交到 Git
-/docs/
+# 正式架构与接口契约纳入版本控制，其余本地设计资料不提交到 Git
+/docs/*
+!/docs/ARCHITECTURE_DESIGN.md
+!/docs/INTERFACE_CONTRACTS.md
 /camera_sdk/
 /README.md
 
