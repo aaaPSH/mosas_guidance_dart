@@ -15,6 +15,14 @@ struct PixelPoint {
 
 enum class ObservationReason { found, not_found, invalid_frame, stale_frame };
 
+struct ImuKinematicSample {
+    SensorTime time{};
+    AccelerationDartMps2 acceleration{};
+    AngularVelocityDartRadPerSec angular_velocity{};
+    double servo_control_p_normalized = 0.0;
+    double servo_control_y_normalized = 0.0;
+};
+
 struct TargetObservation {
     std::uint64_t source_frame_id = 0;
     SensorTime time{};
@@ -28,6 +36,7 @@ struct AttitudeState {
     Rotation3<NavigationFrameTag, DartFrameTag> navigation_from_dart{};
     Quantity<Radian> pitch_rad{};
     Quantity<Radian> roll_rad{};
+    AngularVelocityDartRadPerSec corrected_angular_velocity{};
     bool valid = false;
 };
 
@@ -42,6 +51,8 @@ struct LaunchState {
 };
 
 struct FlightStateSnapshot {
+    SensorTime time{};
+    ImuKinematicSample imu_sample{};
     AttitudeState attitude{};
     LaunchState launch{};
 };

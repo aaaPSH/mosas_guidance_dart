@@ -260,6 +260,19 @@ if(BUILD_TESTING)
     target_link_libraries(domain_contracts_test PRIVATE mosas_contract_core)
     add_test(NAME domain_contracts_test COMMAND domain_contracts_test)
 
+    add_executable(image_frame_test tests/image_frame_test.cpp)
+    configure_mosas_target(image_frame_test)
+    target_link_libraries(image_frame_test PRIVATE mosas_contract_core)
+    add_test(NAME image_frame_test COMMAND image_frame_test)
+
+    add_executable(algorithm_port_contracts_test
+        tests/algorithm_port_contracts_test.cpp
+    )
+    configure_mosas_target(algorithm_port_contracts_test)
+    target_link_libraries(algorithm_port_contracts_test PRIVATE mosas_contract_core)
+    add_test(NAME algorithm_port_contracts_test
+        COMMAND algorithm_port_contracts_test)
+
     add_executable(camera_time_test tests/camera_time_test.cpp)
     configure_mosas_target(camera_time_test)
     target_link_libraries(camera_time_test PRIVATE mosas_contract_core)

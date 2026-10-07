@@ -10,6 +10,7 @@ struct DartFrameTag {};
 struct NavigationFrameTag {};
 struct BallisticFrameTag {};
 
+struct MetersPerSecond {};
 struct MetersPerSecondSquared {};
 struct RadiansPerSecond {};
 struct Radian {};
@@ -38,6 +39,10 @@ public:
     explicit constexpr Rotation3(std::array<double, 9> matrix) noexcept
         : matrix_(matrix) {}
 
+    constexpr const std::array<double, 9>& matrix() const noexcept {
+        return matrix_;
+    }
+
     template <class Unit>
     Vector3<ToFrame, Unit> apply(
         const Vector3<FromFrame, Unit>& value) const noexcept {
@@ -52,8 +57,11 @@ private:
     std::array<double, 9> matrix_;
 };
 
+using VelocityDartMps = Vector3<DartFrameTag, MetersPerSecond>;
 using AccelerationDartMps2 =
     Vector3<DartFrameTag, MetersPerSecondSquared>;
+using AccelerationBallisticMps2 =
+    Vector3<BallisticFrameTag, MetersPerSecondSquared>;
 using AngularVelocityDartRadPerSec =
     Vector3<DartFrameTag, RadiansPerSecond>;
 using DartOverloadG = Vector3<DartFrameTag, GravityG>;
