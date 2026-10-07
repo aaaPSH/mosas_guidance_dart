@@ -22,15 +22,17 @@ public:
     void stop() noexcept override;
 
     void release() noexcept;
+    std::size_t wait_count() const noexcept;
 
 private:
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::vector<runtime::ImuAngularVelocitySample> samples_;
     std::size_t next_sample_ = 0;
     bool started_ = false;
     bool released_ = false;
     bool cancelled_ = false;
+    std::size_t wait_count_ = 0;
 };
 
 }  // namespace mosas::test

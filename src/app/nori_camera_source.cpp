@@ -549,7 +549,8 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
         return fatal_result();
     }
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    if (!configured_) {
+    if (!configured_ ||
+        callback_context_->cancel_requested.load(std::memory_order_acquire)) {
         return {runtime::SourceStatus::cancelled,
                 "camera source is not configured"};
     }
@@ -586,8 +587,9 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
 }
 
 void NoriSdkCameraSource::cancel() noexcept {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    cancel_locked();
+    callback_context_->cancel_requested.store(true,
+                                               std::memory_order_release);
+    close_queue();
 }
 
 void NoriSdkCameraSource::cancel_locked() noexcept {

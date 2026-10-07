@@ -5,7 +5,7 @@
 
 namespace mosas::app {
 
-runtime::GuidanceRuntimeDependencies make_default_guidance_algorithms(
+runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
     const GuidanceAlgorithmConfig& config);
 
 }  // namespace mosas::app

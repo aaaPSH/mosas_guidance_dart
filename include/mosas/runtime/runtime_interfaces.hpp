@@ -68,8 +68,8 @@ public:
     virtual SourceResult start() = 0;
     virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept = 0;
     virtual bool wait_for_data() noexcept = 0;
+    // stop() 完成资源和线程清理；cancel() 仅非阻塞地发出取消并唤醒等待。
     virtual void stop() noexcept = 0;
-
     virtual void cancel() noexcept = 0;
 
     // 返回线程安全的接收诊断；通用或模拟数据源默认不提供该信息。
@@ -103,9 +103,8 @@ public:
         return {SourceStatus::ok, {}};
     }
 
-    // 仅请求取消并唤醒阻塞操作；source 资源由 stop() 最终释放。
+    // 非阻塞地请求取消并唤醒阻塞操作；资源由 stop() 最终释放。
     virtual void stop() noexcept {}
-
     virtual void cancel() noexcept = 0;
 };
 
@@ -123,6 +122,7 @@ public:
         (void)generation;
     }
 
+    // 非阻塞地请求取消，串口/文件等清理由 stop() 完成。
     virtual void cancel() noexcept {}
     virtual void stop() noexcept {}
 

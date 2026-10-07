@@ -10,6 +10,7 @@
 #include <mosas/ports/vision_detector.hpp>
 
 #include <deque>
+#include <thread>
 #include <utility>
 
 namespace mosas::test {
@@ -20,6 +21,7 @@ public:
         const domain::ImageView& image, std::uint64_t source_frame_id,
         const domain::SensorTime& time) override {
         ++call_count_;
+        last_thread_id_ = std::this_thread::get_id();
         last_image_width_ = image.width;
         last_image_height_ = image.height;
         last_first_pixel_ = image.data == nullptr ? 0 : image.data[0];
@@ -49,6 +51,7 @@ public:
         last_image_width_ = 0;
         last_image_height_ = 0;
         last_first_pixel_ = 0;
+        last_thread_id_ = {};
     }
 
     void push(domain::VisionDetection result) {
@@ -59,6 +62,7 @@ public:
     int last_image_width() const noexcept { return last_image_width_; }
     int last_image_height() const noexcept { return last_image_height_; }
     std::uint8_t last_first_pixel() const noexcept { return last_first_pixel_; }
+    std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     std::deque<domain::VisionDetection> results_;
@@ -66,6 +70,7 @@ private:
     int last_image_width_ = 0;
     int last_image_height_ = 0;
     std::uint8_t last_first_pixel_ = 0;
+    std::thread::id last_thread_id_{};
 };
 
 class FakeAttitudeEstimator final : public ports::IAttitudeEstimator {
@@ -125,6 +130,7 @@ public:
     domain::FlightStateSnapshot update(
         const domain::ImuKinematicSample& sample) override {
         ++call_count_;
+        last_thread_id_ = std::this_thread::get_id();
         last_timestamp_ns_ = sample.time.monotonic_ns;
         last_sample_ = sample;
         return result_;
@@ -134,6 +140,7 @@ public:
         call_count_ = 0;
         last_timestamp_ns_ = -1;
         last_sample_ = {};
+        last_thread_id_ = {};
         result_ = {};
     }
 
@@ -147,12 +154,14 @@ public:
     const domain::ImuKinematicSample& last_sample() const noexcept {
         return last_sample_;
     }
+    std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     domain::FlightStateSnapshot result_{};
     domain::ImuKinematicSample last_sample_{};
     std::size_t call_count_ = 0;
     std::int64_t last_timestamp_ns_ = -1;
+    std::thread::id last_thread_id_{};
 };
 
 class FakeLosEstimator final : public ports::ILosEstimator {
@@ -163,6 +172,7 @@ public:
         const domain::Rotation3<domain::DartFrameTag,
                                 domain::CameraFrameTag>& camera_to_dart) override {
         ++call_count_;
+        last_thread_id_ = std::this_thread::get_id();
         last_detection_ = detection;
         last_intrinsics_ = intrinsics;
         last_camera_to_dart_ = camera_to_dart;
@@ -182,6 +192,7 @@ public:
     last_camera_to_dart() const noexcept {
         return last_camera_to_dart_;
     }
+    std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     domain::LineOfSight result_{};
@@ -190,6 +201,7 @@ private:
     domain::Rotation3<domain::DartFrameTag, domain::CameraFrameTag>
         last_camera_to_dart_{};
     std::size_t call_count_ = 0;
+    std::thread::id last_thread_id_{};
 };
 
 class FakeLosRateFilter final : public ports::ILosRateFilter {
@@ -199,6 +211,7 @@ public:
         const domain::AngularVelocityDartRadPerSec& body_angular_velocity,
         double dt_seconds) override {
         ++call_count_;
+        last_thread_id_ = std::this_thread::get_id();
         sample_.line_of_sight = line_of_sight;
         sample_.filtered_angular_velocity = result_;
         last_body_angular_velocity_ = body_angular_velocity;
@@ -211,6 +224,7 @@ public:
     void reset() noexcept override {
         call_count_ = 0;
         sample_ = {};
+        last_thread_id_ = {};
         last_body_angular_velocity_ = {};
         last_dt_seconds_ = 0.0;
     }
@@ -224,6 +238,7 @@ public:
         return last_body_angular_velocity_;
     }
     double last_dt_seconds() const noexcept { return last_dt_seconds_; }
+    std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     domain::LineOfSightAngularVelocity result_{};
@@ -231,6 +246,7 @@ private:
     domain::AngularVelocityDartRadPerSec last_body_angular_velocity_{};
     double last_dt_seconds_ = 0.0;
     std::size_t call_count_ = 0;
+    std::thread::id last_thread_id_{};
 };
 
 class FakeGuidanceLaw final : public ports::IGuidanceLaw {
@@ -238,6 +254,7 @@ public:
     domain::GuidanceOutput calculate(
         const domain::GuidanceInput& input) override {
         ++call_count_;
+        last_thread_id_ = std::this_thread::get_id();
         last_input_ = input;
         return result_;
     }
@@ -249,11 +266,13 @@ public:
     const domain::GuidanceInput& last_input() const noexcept {
         return last_input_;
     }
+    std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     domain::GuidanceOutput result_{};
     domain::GuidanceInput last_input_{};
     std::size_t call_count_ = 0;
+    std::thread::id last_thread_id_{};
 };
 
 }  // namespace mosas::test

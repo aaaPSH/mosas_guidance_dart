@@ -163,6 +163,7 @@ bool OutputController::publish_rtsp(const runtime::CameraFrame& frame,
                 std::make_unique<wireless::RtspStreamer>(config_.wireless);
         }
         streamer = rtsp_streamer_.get();
+        rtsp_streamer_ptr_.store(streamer, std::memory_order_release);
     }
     if (cancelled_.load()) {
         return true;
@@ -223,9 +224,10 @@ bool OutputController::validate_config() {
 void OutputController::cancel() noexcept {
     cancelled_.store(true);
 #if defined(MOSAS_OUTPUT_HAS_WIRELESS)
-    std::lock_guard<std::mutex> lock(rtsp_mutex_);
-    if (rtsp_streamer_ != nullptr) {
-        rtsp_streamer_->cancel();
+    wireless::RtspStreamer* streamer =
+        rtsp_streamer_ptr_.load(std::memory_order_acquire);
+    if (streamer != nullptr) {
+        streamer->cancel();
     }
 #endif
 }
@@ -260,6 +262,7 @@ void OutputController::stop() noexcept {
     {
         std::lock_guard<std::mutex> lock(rtsp_mutex_);
         streamer = std::move(rtsp_streamer_);
+        rtsp_streamer_ptr_.store(nullptr, std::memory_order_release);
     }
     if (streamer != nullptr) {
         streamer->stop();

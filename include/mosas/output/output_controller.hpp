@@ -67,6 +67,7 @@ private:
 #if defined(MOSAS_OUTPUT_HAS_WIRELESS)
     mutable std::mutex rtsp_mutex_;
     std::unique_ptr<wireless::RtspStreamer> rtsp_streamer_;
+    std::atomic<wireless::RtspStreamer*> rtsp_streamer_ptr_{nullptr};
 #endif
     std::atomic<bool> cancelled_{false};
     std::string last_error_;

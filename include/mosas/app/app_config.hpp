@@ -3,7 +3,7 @@
 
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/attitude_estimator.hpp>
-#include <mosas/runtime/guidance_runtime.hpp>
+#include <mosas/runtime/runtime_supervisor.hpp>
 #include <mosas/output/output_config.hpp>
 #include <mosas/wireless/rtsp_streamer.hpp>
 #include <serial_package/serial_port.hpp>
@@ -92,7 +92,7 @@ struct AppConfig {
     serial_package::SerialPortConfig serial{};
     // 是否在程序退出时输出 IMU 数据帧间隔统计摘要。
     bool enable_serial_interval_statistics = false;
-    runtime::GuidanceRuntimeConfig guidance{};
+    runtime::RuntimeSupervisorConfig guidance{};
     GuidanceAlgorithmConfig algorithms{};
     output::OutputConfig output{};
     wireless::RtspStreamConfig wireless{};

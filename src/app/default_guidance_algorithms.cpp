@@ -9,9 +9,9 @@
 
 namespace mosas::app {
 
-runtime::GuidanceRuntimeDependencies make_default_guidance_algorithms(
+runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
     const GuidanceAlgorithmConfig& config) {
-    runtime::GuidanceRuntimeDependencies dependencies;
+    runtime::RuntimeSupervisorDependencies dependencies;
     dependencies.vision_detector =
         std::make_unique<vision::OpenCvVisionDetector>(config.vision_config);
     dependencies.flight_state_estimator =

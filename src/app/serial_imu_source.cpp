@@ -122,13 +122,17 @@ void SerialImuSource::cancel() noexcept {
     cancelled_.store(true, std::memory_order_release);
     raw_receive_buffer_.close();
     if (port_ != nullptr) {
-        port_->stop_receive();
+        port_->request_stop_receive();
     }
     started_.store(false, std::memory_order_release);
 }
 
 void SerialImuSource::stop() noexcept {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     cancel();
+    if (port_ != nullptr) {
+        port_->stop_receive();
+    }
 }
 
 SerialImuIntervalStatistics

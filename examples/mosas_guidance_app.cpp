@@ -4,7 +4,7 @@
 #include <mosas/app/serial_imu_source.hpp>
 #include <mosas/app/default_guidance_algorithms.hpp>
 #include <mosas/output/output_controller.hpp>
-#include <mosas/runtime/guidance_runtime.hpp>
+#include <mosas/runtime/runtime_supervisor.hpp>
 
 #include <chrono>
 #include <csignal>
@@ -39,7 +39,7 @@ void print_usage(const char* program) {
 
 void print_timing_stage(
     const char* name,
-    const mosas::runtime::GuidanceRuntimeTimingStage& stage) {
+    const mosas::runtime::RuntimeTimingStage& stage) {
     std::ostringstream output;
     output << std::fixed << std::setprecision(3)
            << "[TIMING] " << name << " n=" << stage.samples
@@ -68,7 +68,7 @@ void print_timing_stage_ns(
     std::cout << output.str() << '\n';
 }
 
-void print_timing(const mosas::runtime::GuidanceRuntimeTiming& timing) {
+void print_timing(const mosas::runtime::RuntimeTiming& timing) {
     std::cout << "[TIMING] P50/P95/P99 为对数直方图估值，分位桶最大相对误差约 0.8%\n";
     print_timing_stage("capture", timing.capture);
     print_timing_stage("capture_queue_wait", timing.capture_queue_wait);
@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
 
     auto algorithm_dependencies =
         mosas::app::make_default_guidance_algorithms(config.algorithms);
-    mosas::runtime::GuidanceRuntime runtime(
+    mosas::runtime::RuntimeSupervisor runtime(
         std::move(imu_source), std::move(camera_source),
         std::move(command_sink), config.guidance,
         std::move(algorithm_dependencies), std::move(frame_sink));

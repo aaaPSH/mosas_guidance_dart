@@ -85,6 +85,9 @@ public:
     bool start_receive(ReceiveCallback callback, void* context,
                        const ReceiveThreadConfig& config = {});
 
+    // 非阻塞请求异步读取线程在当前轮询超时后退出。
+    void request_stop_receive() noexcept;
+
     // 请求停止并等待异步读取线程退出。
     void stop_receive() noexcept;
 

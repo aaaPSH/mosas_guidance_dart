@@ -61,7 +61,10 @@ add_library(mosas_runtime STATIC
     src/runtime/attitude_history.cpp
     src/runtime/imu_angular_velocity_history.cpp
     src/runtime/async_info_logger.cpp
-    src/runtime/guidance_runtime.cpp
+    src/runtime/frame_pipeline.cpp
+    src/runtime/runtime_supervisor.cpp
+    src/runtime/imu_pipeline.cpp
+    src/runtime/output_dispatcher.cpp
 )
 configure_mosas_target(mosas_runtime)
 target_link_libraries(mosas_runtime
@@ -313,15 +316,41 @@ if(BUILD_TESTING)
     target_link_libraries(attitude_adapter_test PRIVATE mosas_runtime)
     add_test(NAME attitude_adapter_test COMMAND attitude_adapter_test)
 
-    add_executable(guidance_runtime_ports_test
-        tests/guidance_runtime_ports_test.cpp
+    add_executable(runtime_supervisor_test
+        tests/runtime_supervisor_test.cpp
         tests/fakes/fake_camera_source.cpp
         tests/fakes/fake_imu_source.cpp
     )
-    configure_mosas_target(guidance_runtime_ports_test)
-    target_link_libraries(guidance_runtime_ports_test PRIVATE mosas_runtime)
-    add_test(NAME guidance_runtime_ports_test
-        COMMAND guidance_runtime_ports_test)
+    configure_mosas_target(runtime_supervisor_test)
+    target_link_libraries(runtime_supervisor_test PRIVATE mosas_runtime)
+    add_test(NAME runtime_supervisor_test COMMAND runtime_supervisor_test)
+
+    add_executable(runtime_supervisor_lifecycle_test
+        tests/runtime_supervisor_lifecycle_test.cpp
+    )
+    configure_mosas_target(runtime_supervisor_lifecycle_test)
+    target_link_libraries(runtime_supervisor_lifecycle_test PRIVATE mosas_runtime)
+    add_test(NAME runtime_supervisor_lifecycle_test
+        COMMAND runtime_supervisor_lifecycle_test)
+
+    add_executable(output_dispatcher_test tests/output_dispatcher_test.cpp)
+    configure_mosas_target(output_dispatcher_test)
+    target_include_directories(output_dispatcher_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/runtime
+    )
+    target_link_libraries(output_dispatcher_test PRIVATE mosas_runtime)
+    add_test(NAME output_dispatcher_test COMMAND output_dispatcher_test)
+
+    add_executable(imu_pipeline_test
+        tests/imu_pipeline_test.cpp
+        tests/fakes/fake_imu_source.cpp
+    )
+    configure_mosas_target(imu_pipeline_test)
+    target_include_directories(imu_pipeline_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/runtime
+    )
+    target_link_libraries(imu_pipeline_test PRIVATE mosas_runtime)
+    add_test(NAME imu_pipeline_test COMMAND imu_pipeline_test)
 
     if(MOSAS_BUILD_APPLICATION)
         add_executable(command_adapter_test tests/command_adapter_test.cpp)

@@ -14,6 +14,7 @@ runtime::SourceResult FakeImuSource::start() {
     started_ = true;
     released_ = false;
     cancelled_ = false;
+    wait_count_ = 0;
     return {runtime::SourceStatus::ok, {}};
 }
 
@@ -33,6 +34,7 @@ bool FakeImuSource::try_pop(
 
 bool FakeImuSource::wait_for_data() noexcept {
     std::unique_lock<std::mutex> lock(mutex_);
+    ++wait_count_;
     condition_.wait(lock, [this] {
         return cancelled_ ||
                (released_ && next_sample_ < samples_.size());
@@ -52,6 +54,11 @@ void FakeImuSource::release() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     released_ = true;
     condition_.notify_all();
+}
+
+std::size_t FakeImuSource::wait_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return wait_count_;
 }
 
 }  // namespace mosas::test
