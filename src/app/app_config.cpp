@@ -243,6 +243,36 @@ bool valid_pixel_format(const std::string& value) {
            value == "YUYV";
 }
 
+bool valid_dart_from_camera(
+    const domain::Rotation3<domain::DartFrameTag,
+                            domain::CameraFrameTag>& rotation) {
+    const auto& matrix = rotation.matrix();
+    for (const double value : matrix) {
+        if (!std::isfinite(value)) {
+            return false;
+        }
+    }
+    const auto dot_columns = [&matrix](std::size_t lhs, std::size_t rhs) {
+        return matrix[lhs] * matrix[rhs] +
+               matrix[3 + lhs] * matrix[3 + rhs] +
+               matrix[6 + lhs] * matrix[6 + rhs];
+    };
+    const auto column_norm = [&dot_columns](std::size_t column) {
+        return std::sqrt(dot_columns(column, column));
+    };
+    const double determinant =
+        matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7]) -
+        matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6]) +
+        matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
+    return std::abs(column_norm(0) - 1.0) <= 1e-6 &&
+           std::abs(column_norm(1) - 1.0) <= 1e-6 &&
+           std::abs(column_norm(2) - 1.0) <= 1e-6 &&
+           std::abs(dot_columns(0, 1)) <= 1e-6 &&
+           std::abs(dot_columns(0, 2)) <= 1e-6 &&
+           std::abs(dot_columns(1, 2)) <= 1e-6 &&
+           std::abs(determinant - 1.0) <= 1e-6;
+}
+
 bool parse_key(const std::filesystem::path& path, std::size_t line,
                const std::string& section, const std::string& key,
                const std::string& value, AppConfig* config,
@@ -550,19 +580,24 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
     const auto& los_filter = config.algorithms.los_rate_filter;
     const auto& attitude = config.algorithms.attitude;
     const auto& png = config.algorithms.png_guidance;
-    if (config.guidance.launch_speed_mps <= 0.0 ||
+    const auto& intrinsics = config.guidance.camera_intrinsics;
+    if (!std::isfinite(config.guidance.launch_speed_mps) ||
+        config.guidance.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
         config.guidance.max_camera_future_ns < 0 ||
         config.guidance.max_camera_age_ns <= 0 ||
         config.guidance.capture_queue_capacity == 0 ||
         config.guidance.output_queue_capacity == 0 ||
+        config.guidance.info_log_queue_capacity == 0 ||
         vision.initial_roi.width <= 0 || vision.initial_roi.height <= 0 ||
         vision.found_range_x <= 0 || vision.found_range_y <= 0 ||
         vision.min_blob_area <= 0 || vision.min_aspect_ratio <= 0.0 ||
-        vision.min_fill_ratio <= 0.0 ||
-        config.guidance.camera_intrinsics.fx <= 0.0 ||
-        config.guidance.camera_intrinsics.fy <= 0.0 ||
+        vision.min_fill_ratio <= 0.0 || !std::isfinite(intrinsics.fx) ||
+        !std::isfinite(intrinsics.fy) || !std::isfinite(intrinsics.cx) ||
+        !std::isfinite(intrinsics.cy) || intrinsics.fx <= 0.0 ||
+        intrinsics.fy <= 0.0 ||
+        !valid_dart_from_camera(config.guidance.dart_from_camera) ||
         los_filter.sigma_a <= 0.0 || los_filter.sigma_q <= 0.0 ||
         los_filter.sigma_a_pitch < 0.0 || los_filter.sigma_a_yaw < 0.0 ||
         los_filter.initial_covariance < 0.0 ||
