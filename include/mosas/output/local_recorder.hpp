@@ -1,6 +1,7 @@
 #ifndef MOSAS_OUTPUT_LOCAL_RECORDER_HPP
 #define MOSAS_OUTPUT_LOCAL_RECORDER_HPP
 
+#include <mosas/domain/algorithm_results.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/output/output_config.hpp>
 
@@ -46,10 +47,10 @@ public:
     LocalRecorder& operator=(const LocalRecorder&) = delete;
 
     bool publish(const runtime::CameraFrame& frame,
-                 const VisionResult& vision_result,
-                 const runtime::ImuStateSnapshot& imu_state,
-                 const PngGuidanceOutput& guidance,
-                 const VisionOverlayData& overlay);
+                 const domain::VisionDetection& vision_detection,
+                 const domain::FlightStateSnapshot& flight_state,
+                 const domain::GuidanceOutput& guidance,
+                 const domain::GuidanceOverlay& overlay);
 
     // 提前停止时保存当前已缓存的数据；部分窗口会在标准错误流中说明。
     void stop() noexcept;
@@ -71,23 +72,23 @@ private:
 
     bool validate_config();
     bool publish_continuous(const runtime::CameraFrame& frame,
-                           const VisionResult& vision_result,
-                           const runtime::ImuStateSnapshot& imu_state,
-                           const PngGuidanceOutput& guidance,
-                           const VisionOverlayData& overlay);
+                           const domain::VisionDetection& vision_detection,
+                           const domain::FlightStateSnapshot& flight_state,
+                           const domain::GuidanceOutput& guidance,
+                           const domain::GuidanceOverlay& overlay);
     bool publish_launch_window(const runtime::CameraFrame& frame,
-                               const VisionResult& vision_result,
-                               const runtime::ImuStateSnapshot& imu_state,
-                               const PngGuidanceOutput& guidance,
-                               const VisionOverlayData& overlay);
+                               const domain::VisionDetection& vision_detection,
+                               const domain::FlightStateSnapshot& flight_state,
+                               const domain::GuidanceOutput& guidance,
+                               const domain::GuidanceOverlay& overlay);
     bool prepare_recording_frame(const runtime::CameraFrame& frame,
                                  cv::Mat* output);
     std::string make_csv_row(
         std::uint64_t frame_index, const runtime::CameraFrame& frame,
-        const VisionResult& vision_result,
-        const runtime::ImuStateSnapshot& imu_state,
-        const PngGuidanceOutput& guidance,
-        const VisionOverlayData& overlay) const;
+        const domain::VisionDetection& vision_detection,
+        const domain::FlightStateSnapshot& flight_state,
+        const domain::GuidanceOutput& guidance,
+        const domain::GuidanceOverlay& overlay) const;
     bool open_recording();
     bool write_recording_frame(const cv::Mat& image,
                                const std::string& csv_row);

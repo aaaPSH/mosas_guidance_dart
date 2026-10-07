@@ -2,6 +2,8 @@
 
 #include "recording_paths.hpp"
 
+#include <mosas/vision/opencv_image_frame.hpp>
+
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -83,9 +85,11 @@ bool LocalRecorder::validate_config() {
 }
 
 bool LocalRecorder::publish(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance, const VisionOverlayData& overlay) {
+    const runtime::CameraFrame& frame,
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) {
     if (stopped_) {
         return true;
     }
@@ -96,18 +100,18 @@ bool LocalRecorder::publish(
         failed_ = true;
         return false;
     }
-    if (frame.image.empty() || frame.image.type() != CV_8UC3) {
-        last_error_ = "camera frame must be a non-empty CV_8UC3 image";
+    if (vision::make_bgr8_mat_view(frame.image.view()).empty()) {
+        last_error_ = "camera frame must be a valid BGR8 image";
         failed_ = true;
         return false;
     }
 
     try {
         if (config_.mode == LocalRecordingMode::continuous) {
-            return publish_continuous(frame, vision_result, imu_state,
+            return publish_continuous(frame, vision_detection, flight_state,
                                       guidance, overlay);
         }
-        return publish_launch_window(frame, vision_result, imu_state,
+        return publish_launch_window(frame, vision_detection, flight_state,
                                      guidance, overlay);
     } catch (const cv::Exception& exception) {
         last_error_ = exception.what();
@@ -122,9 +126,11 @@ bool LocalRecorder::publish(
 }
 
 bool LocalRecorder::publish_continuous(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance, const VisionOverlayData& overlay) {
+    const runtime::CameraFrame& frame,
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) {
     if (!recording_writer_.isOpened() || !flight_data_writer_.is_open()) {
         if (!open_recording()) {
             failed_ = true;
@@ -136,8 +142,8 @@ bool LocalRecorder::publish_continuous(
         return false;
     }
     const std::string row = make_csv_row(recording_frame_index_, frame,
-                                         vision_result, imu_state, guidance,
-                                         overlay);
+                                         vision_detection, flight_state,
+                                         guidance, overlay);
     if (!write_recording_frame(recording_bgr_frame_, row)) {
         failed_ = true;
         release_recording();
@@ -148,9 +154,11 @@ bool LocalRecorder::publish_continuous(
 }
 
 bool LocalRecorder::publish_launch_window(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance, const VisionOverlayData& overlay) {
+    const runtime::CameraFrame& frame,
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) {
     if (launch_window_active_) {
         if (frame.timestamp_ns >= launch_window_end_ns_) {
             if (!persist_buffered_window(true)) {
@@ -163,24 +171,27 @@ bool LocalRecorder::publish_launch_window(
             return true;
         }
     } else {
-        if (!imu_state.launched || imu_state.launch_timestamp_ns < 0) {
+        const auto launch_timestamp_ns =
+            flight_state.launch.transition_time.monotonic_ns;
+        if (flight_state.launch.phase != domain::LaunchPhase::launched ||
+            launch_timestamp_ns < 0) {
             return true;
         }
         if (has_completed_launch_generation_ &&
-            imu_state.launch_generation <= completed_launch_generation_) {
+            flight_state.launch.generation <= completed_launch_generation_) {
             return true;
         }
-        if (imu_state.launch_timestamp_ns >
+        if (launch_timestamp_ns >
             std::numeric_limits<std::int64_t>::max() -
                 config_.window_duration_ns) {
             last_error_ = "launch-window end timestamp overflow";
             failed_ = true;
             return false;
         }
-        launch_window_start_ns_ = imu_state.launch_timestamp_ns;
+        launch_window_start_ns_ = launch_timestamp_ns;
         launch_window_end_ns_ = launch_window_start_ns_ +
                                 config_.window_duration_ns;
-        recording_launch_generation_ = imu_state.launch_generation;
+        recording_launch_generation_ = flight_state.launch.generation;
         recording_frame_index_ = 0;
         buffered_frames_.clear();
         buffered_pixel_bytes_ = 0;
@@ -219,7 +230,8 @@ bool LocalRecorder::publish_launch_window(
     BufferedFrame buffered;
     buffered.image = std::move(image);
     buffered.csv_row = make_csv_row(recording_frame_index_, frame,
-                                    vision_result, imu_state, guidance, overlay);
+                                    vision_detection, flight_state, guidance,
+                                    overlay);
     buffered_frames_.push_back(std::move(buffered));
     buffered_pixel_bytes_ += static_cast<std::size_t>(frame_bytes);
     ++recording_frame_index_;
@@ -231,11 +243,16 @@ bool LocalRecorder::prepare_recording_frame(
     if (output == nullptr) {
         return false;
     }
-    if (frame.image.cols != config_.width || frame.image.rows != config_.height) {
-        cv::resize(frame.image, *output, cv::Size(config_.width, config_.height),
+    const cv::Mat source = vision::make_bgr8_mat_view(frame.image.view());
+    if (source.empty()) {
+        last_error_ = "camera frame must be a valid BGR8 image";
+        return false;
+    }
+    if (source.cols != config_.width || source.rows != config_.height) {
+        cv::resize(source, *output, cv::Size(config_.width, config_.height),
                    0.0, 0.0, cv::INTER_LINEAR);
     } else {
-        frame.image.copyTo(*output);
+        source.copyTo(*output);
     }
     if (output->empty() || output->type() != CV_8UC3 ||
         output->size() != cv::Size(config_.width, config_.height)) {
@@ -247,38 +264,44 @@ bool LocalRecorder::prepare_recording_frame(
 
 std::string LocalRecorder::make_csv_row(
     std::uint64_t frame_index, const runtime::CameraFrame& frame,
-    const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance,
-    const VisionOverlayData& overlay) const {
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) const {
+    const auto& box = vision_detection.diagnostics.bounding_box;
+    const auto& sample = flight_state.imu_sample;
+    const auto& attitude = flight_state.attitude;
+    const auto& launch = flight_state.launch;
+    const auto& line_of_sight_rate = guidance.diagnostics;
     std::ostringstream row;
     row << frame_index << ',' << frame.timestamp_ns << ','
-        << frame.received_timestamp_ns << ',' << imu_state.timestamp_ns << ','
-        << (vision_result.found ? 1 : 0) << ',' << vision_result.blob.x << ','
-        << vision_result.blob.y << ',' << vision_result.blob.width << ','
-        << vision_result.blob.height << ',' << vision_result.blob.area << ','
-        << vision_result.blob.center_x << ',' << vision_result.blob.center_y
-        << ',' << imu_state.acceleration.x << ','
-        << imu_state.acceleration.y << ',' << imu_state.acceleration.z << ','
-        << imu_state.angular_velocity.x << ','
-        << imu_state.angular_velocity.y << ','
-        << imu_state.angular_velocity.z << ','
-        << imu_state.servo_control_p_normalized << ','
-        << imu_state.servo_control_y_normalized << ','
-        << imu_state.pitch_rad << ','
-        << imu_state.roll_rad << ','
-        << (imu_state.attitude_valid ? 1 : 0) << ','
-        << (imu_state.launched ? 1 : 0) << ','
+        << frame.received_timestamp_ns << ','
+        << flight_state.time.monotonic_ns << ','
+        << (vision_detection.observation.valid ? 1 : 0) << ',' << box.x << ','
+        << box.y << ',' << box.width << ',' << box.height << ','
+        << vision_detection.diagnostics.area_pixels << ','
+        << vision_detection.observation.center.u << ','
+        << vision_detection.observation.center.v << ','
+        << sample.acceleration.x << ',' << sample.acceleration.y << ','
+        << sample.acceleration.z << ',' << sample.angular_velocity.x << ','
+        << sample.angular_velocity.y << ',' << sample.angular_velocity.z << ','
+        << sample.servo_control_p_normalized << ','
+        << sample.servo_control_y_normalized << ','
+        << attitude.pitch_rad.value << ',' << attitude.roll_rad.value << ','
+        << (attitude.valid ? 1 : 0) << ','
+        << (launch.phase == domain::LaunchPhase::launched ? 1 : 0) << ','
         << (overlay.line_of_sight_valid ? 1 : 0) << ','
-        << overlay.line_of_sight_q_y_rad << ','
-        << overlay.line_of_sight_q_z_rad << ','
+        << overlay.line_of_sight_q_y.value << ','
+        << overlay.line_of_sight_q_z.value << ','
         << (overlay.line_of_sight_rate_valid ? 1 : 0) << ','
-        << overlay.line_of_sight_rate_q_y_rad_s << ','
-        << overlay.line_of_sight_rate_q_z_rad_s << ','
+        << overlay.line_of_sight_rate_q_y.value << ','
+        << overlay.line_of_sight_rate_q_z.value << ','
         << (guidance.valid ? 1 : 0) << ','
-        << guidance.body_overload.x << ',' << guidance.body_overload.y << ','
-        << guidance.body_overload.z << ',' << guidance.command_overload << ','
-        << guidance.command_phase << '\n';
+        << line_of_sight_rate.body_overload.x << ','
+        << line_of_sight_rate.body_overload.y << ','
+        << line_of_sight_rate.body_overload.z << ','
+        << line_of_sight_rate.command_overload.value << ','
+        << line_of_sight_rate.command_phase.value << '\n';
     return row.str();
 }
 

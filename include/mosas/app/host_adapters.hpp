@@ -27,7 +27,6 @@ public:
     runtime::SourceResult start() override;
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
     bool wait_for_data() noexcept override;
-    runtime::SourceResult read(runtime::ImuSample* sample) override;
     void cancel() noexcept override;
     void stop() noexcept override;
 
@@ -49,12 +48,10 @@ public:
 
     bool start() override;
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
-    bool send(const runtime::GuidanceCommand& command) override;
     void stop() noexcept override;
     Diagnostics diagnostics() const noexcept override;
 
 private:
-    std::ostream* output_;
     runtime::AsyncInfoLogger logger_;
     std::atomic<std::uint64_t> submitted_count_{0};
 };
@@ -69,7 +66,6 @@ public:
 
     bool start() override;
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
-    bool send(const runtime::GuidanceCommand& command) override;
     void set_active_generation(std::uint64_t generation) noexcept override;
     void cancel() noexcept override;
     void stop() noexcept override;

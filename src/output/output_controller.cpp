@@ -1,7 +1,9 @@
 #include <mosas/output/output_controller.hpp>
+#include <mosas/output/output_mapping.hpp>
 
 #include "recording_paths.hpp"
 
+#include <mosas/vision/opencv_image_frame.hpp>
 #include <mosas/vision/vision_visualizer.hpp>
 
 #include <filesystem>
@@ -66,22 +68,25 @@ OutputController::OutputController(OutputControllerConfig config)
 OutputController::~OutputController() { stop(); }
 
 bool OutputController::publish(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance) {
-    return publish_impl(frame, vision_result, imu_state, guidance, nullptr);
-}
-
-bool OutputController::publish(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance, const VisionOverlayData& overlay) {
-    return publish_impl(frame, vision_result, imu_state, guidance, &overlay);
+    const runtime::CameraFrame& frame,
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) {
+    return publish_impl(frame, vision_detection, flight_state, guidance, overlay);
 }
 
 bool OutputController::try_record_imu_sample(
-    const runtime::ImuAngularVelocitySample& sample) noexcept {
-    if (imu_csv_recorder_ == nullptr || !imu_csv_recorder_->try_record(sample)) {
+    const domain::ImuKinematicSample& sample) noexcept {
+    const runtime::ImuAngularVelocitySample legacy_sample{
+        sample.time.monotonic_ns,
+        {sample.acceleration.x, sample.acceleration.y, sample.acceleration.z},
+        {sample.angular_velocity.x, sample.angular_velocity.y,
+         sample.angular_velocity.z},
+        sample.servo_control_p_normalized,
+        sample.servo_control_y_normalized};
+    if (imu_csv_recorder_ == nullptr ||
+        !imu_csv_recorder_->try_record(legacy_sample)) {
         if (imu_csv_recorder_ != nullptr) {
             try {
                 const std::string error = imu_csv_recorder_->last_error();
@@ -97,29 +102,35 @@ bool OutputController::try_record_imu_sample(
 }
 
 bool OutputController::publish_impl(
-    const runtime::CameraFrame& frame, const VisionResult& vision_result,
-    const runtime::ImuStateSnapshot& imu_state,
-    const PngGuidanceOutput& guidance, const VisionOverlayData* overlay) {
+    const runtime::CameraFrame& frame,
+    const domain::VisionDetection& vision_detection,
+    const domain::FlightStateSnapshot& flight_state,
+    const domain::GuidanceOutput& guidance,
+    const domain::GuidanceOverlay& overlay) {
     if (cancelled_.load()) {
         return true;
     }
     if (!last_error_.empty()) {
         return false;
     }
-    if (frame.image.empty() || frame.image.type() != CV_8UC3) {
-        last_error_ = "camera frame must be a non-empty CV_8UC3 image";
+    cv::Mat source_image = vision::make_bgr8_mat_view(frame.image.view());
+    if (source_image.empty()) {
+        last_error_ = "camera frame must be a valid BGR8 image";
         return false;
     }
 
-    const cv::Mat* effective_image = &frame.image;
+    const VisionResult legacy_vision =
+        detail::make_legacy_vision_result(vision_detection);
+    const VisionOverlayData legacy_overlay =
+        detail::make_legacy_overlay(overlay, flight_state);
+    const cv::Mat* effective_image = &source_image;
     if (config_.output.draw_visualization) {
-        frame.image.copyTo(rendered_frame_);
+        source_image.copyTo(rendered_frame_);
         VisionVisualizer::draw_result(
-            rendered_frame_, vision_result,
+            rendered_frame_, legacy_vision,
             config_.line_of_sight_reference_point);
-        if (overlay != nullptr) {
-            VisionVisualizer::draw_guidance_overlay(rendered_frame_, *overlay);
-        }
+        VisionVisualizer::draw_guidance_overlay(rendered_frame_,
+                                                legacy_overlay);
         effective_image = &rendered_frame_;
     }
 
@@ -132,11 +143,13 @@ bool OutputController::publish_impl(
     }
 
     runtime::CameraFrame rendered_frame = frame;
-    rendered_frame.image = *effective_image;
-    const VisionOverlayData empty_overlay{};
-    return local_recorder_->publish(
-        rendered_frame, vision_result, imu_state, guidance,
-        overlay == nullptr ? empty_overlay : *overlay);
+    if (effective_image != &source_image &&
+        !vision::assign_bgr8_mat(&rendered_frame.image, *effective_image)) {
+        last_error_ = "failed to retain rendered camera frame";
+        return false;
+    }
+    return local_recorder_->publish(rendered_frame, vision_detection,
+                                     flight_state, guidance, overlay);
 }
 
 bool OutputController::publish_rtsp(const runtime::CameraFrame& frame,

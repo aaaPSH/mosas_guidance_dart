@@ -5,6 +5,7 @@ include(GNUInstallDirs)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 option(MOSAS_BUILD_APPLICATION "构建 Nori/视觉设备应用" ON)
+option(MOSAS_BUILD_OPENCV_ADAPTERS "构建 OpenCV 视觉适配器" OFF)
 include(CTest)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -30,6 +31,44 @@ add_library(mosas_contract_core STATIC
     src/serial_package/serial_protocol.cpp
 )
 configure_mosas_target(mosas_contract_core)
+
+find_package(Threads REQUIRED)
+
+if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
+    set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
+    find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
+
+    add_library(mosas_vision STATIC
+        src/vision/vision_recognizer.cpp
+        src/vision/vision_visualizer.cpp
+        src/vision/opencv_image_frame.cpp
+        src/vision/opencv_vision_detector.cpp
+    )
+    configure_mosas_target(mosas_vision)
+    target_include_directories(mosas_vision PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(mosas_vision PUBLIC ${OpenCV_LIBS})
+endif()
+
+add_library(mosas_guidance STATIC
+    src/guidance/guidance_estimator.cpp
+    src/guidance/default_algorithm_adapters.cpp
+)
+configure_mosas_target(mosas_guidance)
+
+add_library(mosas_runtime STATIC
+    src/runtime/attitude_estimator.cpp
+    src/runtime/legacy_flight_state_adapter.cpp
+    src/runtime/attitude_history.cpp
+    src/runtime/imu_angular_velocity_history.cpp
+    src/runtime/async_info_logger.cpp
+    src/runtime/guidance_runtime.cpp
+)
+configure_mosas_target(mosas_runtime)
+target_link_libraries(mosas_runtime
+    PUBLIC
+        mosas_contract_core
+        Threads::Threads
+)
 
 if(MOSAS_BUILD_APPLICATION)
 # 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
@@ -81,10 +120,6 @@ set_target_properties(mosas_camera_sdk PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${MOSAS_CAMERA_SDK_INCLUDE_DIR}"
 )
 
-set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
-find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
-find_package(Threads REQUIRED)
-
 if(MOSAS_BUILD_WIRELESS)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
@@ -100,45 +135,6 @@ add_library(serial_package STATIC
 )
 configure_mosas_target(serial_package)
 target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads)
-
-add_library(mosas_vision STATIC
-    src/vision/vision_recognizer.cpp
-    src/vision/vision_visualizer.cpp
-)
-configure_mosas_target(mosas_vision)
-target_include_directories(mosas_vision
-    PUBLIC
-        ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(mosas_vision PUBLIC ${OpenCV_LIBS})
-
-add_library(mosas_guidance STATIC
-    src/guidance/guidance_estimator.cpp
-)
-configure_mosas_target(mosas_guidance)
-target_link_libraries(mosas_guidance
-    PUBLIC
-        mosas_vision
-)
-
-add_library(mosas_runtime STATIC
-    src/runtime/attitude_estimator.cpp
-    src/runtime/attitude_history.cpp
-    src/runtime/imu_angular_velocity_history.cpp
-    src/runtime/async_info_logger.cpp
-    src/runtime/guidance_runtime.cpp
-)
-configure_mosas_target(mosas_runtime)
-target_include_directories(mosas_runtime
-    PUBLIC
-        ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(mosas_runtime
-    PUBLIC
-        mosas_guidance
-        mosas_contract_core
-        Threads::Threads
-)
 
 if(MOSAS_BUILD_WIRELESS)
     add_library(mosas_wireless STATIC
@@ -160,6 +156,7 @@ add_library(mosas_output STATIC
     src/output/imu_csv_recorder.cpp
     src/output/local_recorder.cpp
     src/output/output_controller.cpp
+    src/output/output_mapping.cpp
 )
 configure_mosas_target(mosas_output)
 target_include_directories(mosas_output
@@ -181,6 +178,8 @@ endif()
 
 add_library(mosas_app STATIC
     src/app/app_config.cpp
+    src/app/command_adapter.cpp
+    src/app/default_guidance_algorithms.cpp
     src/app/host_adapters.cpp
     src/app/imu_stream_decoder.cpp
     src/app/nori_camera_sdk.cpp
@@ -196,6 +195,7 @@ target_include_directories(mosas_app
 target_link_libraries(mosas_app
     PUBLIC
         mosas_runtime
+        mosas_guidance
         mosas_output
         serial_package
         mosas_camera_sdk
@@ -290,4 +290,59 @@ if(BUILD_TESTING)
     configure_mosas_target(imu_time_model_test)
     target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
     add_test(NAME imu_time_model_test COMMAND imu_time_model_test)
+
+    add_executable(guidance_adapter_test tests/guidance_adapter_test.cpp)
+    configure_mosas_target(guidance_adapter_test)
+    target_link_libraries(guidance_adapter_test PRIVATE mosas_guidance)
+    add_test(NAME guidance_adapter_test COMMAND guidance_adapter_test)
+
+    if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
+        add_executable(vision_adapter_test tests/vision_adapter_test.cpp)
+        configure_mosas_target(vision_adapter_test)
+        target_link_libraries(vision_adapter_test PRIVATE mosas_vision)
+        add_test(NAME vision_adapter_test COMMAND vision_adapter_test)
+
+        add_executable(image_adapter_test tests/image_adapter_test.cpp)
+        configure_mosas_target(image_adapter_test)
+        target_link_libraries(image_adapter_test PRIVATE mosas_vision)
+        add_test(NAME image_adapter_test COMMAND image_adapter_test)
+    endif()
+
+    add_executable(attitude_adapter_test tests/attitude_adapter_test.cpp)
+    configure_mosas_target(attitude_adapter_test)
+    target_link_libraries(attitude_adapter_test PRIVATE mosas_runtime)
+    add_test(NAME attitude_adapter_test COMMAND attitude_adapter_test)
+
+    add_executable(guidance_runtime_ports_test
+        tests/guidance_runtime_ports_test.cpp
+        tests/fakes/fake_camera_source.cpp
+        tests/fakes/fake_imu_source.cpp
+    )
+    configure_mosas_target(guidance_runtime_ports_test)
+    target_link_libraries(guidance_runtime_ports_test PRIVATE mosas_runtime)
+    add_test(NAME guidance_runtime_ports_test
+        COMMAND guidance_runtime_ports_test)
+
+    if(MOSAS_BUILD_APPLICATION)
+        add_executable(command_adapter_test tests/command_adapter_test.cpp)
+        configure_mosas_target(command_adapter_test)
+        target_link_libraries(command_adapter_test PRIVATE mosas_app)
+        add_test(NAME command_adapter_test COMMAND command_adapter_test)
+
+        add_executable(output_mapping_test tests/output_mapping_test.cpp)
+        configure_mosas_target(output_mapping_test)
+        target_link_libraries(output_mapping_test PRIVATE mosas_output)
+        add_test(NAME output_mapping_test COMMAND output_mapping_test)
+
+        add_executable(default_guidance_algorithms_test
+            tests/default_guidance_algorithms_test.cpp
+        )
+        configure_mosas_target(default_guidance_algorithms_test)
+        target_compile_definitions(default_guidance_algorithms_test PRIVATE
+            MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+        )
+        target_link_libraries(default_guidance_algorithms_test PRIVATE mosas_app)
+        add_test(NAME default_guidance_algorithms_test
+            COMMAND default_guidance_algorithms_test)
+    endif()
 endif()

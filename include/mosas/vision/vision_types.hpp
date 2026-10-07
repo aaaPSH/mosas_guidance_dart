@@ -3,8 +3,6 @@
 
 #include <cstdint>
 
-#include <opencv2/core/mat.hpp>
-
 struct VisionRoi {
     int x;
     int y;

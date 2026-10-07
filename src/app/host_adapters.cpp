@@ -1,4 +1,5 @@
 #include <mosas/app/host_adapters.hpp>
+#include <mosas/app/command_adapter.hpp>
 #include <serial_package/serial_protocol.hpp>
 
 #include <array>
@@ -72,34 +73,6 @@ bool SimulatedImuSource::wait_for_data() noexcept {
     return started_ && !cancelled_;
 }
 
-runtime::SourceResult SimulatedImuSource::read(runtime::ImuSample* sample) {
-    if (sample == nullptr) {
-        return {runtime::SourceStatus::fatal, "imu sample output is null"};
-    }
-    const runtime::SourceResult start_result = start();
-    if (start_result.status != runtime::SourceStatus::ok) {
-        return start_result;
-    }
-    std::unique_lock<std::mutex> lock(mutex_);
-    while (!cancelled_) {
-        const auto deadline = next_deadline_;
-        if (condition_.wait_until(lock, deadline,
-                                  [this] { return cancelled_; })) {
-            return {runtime::SourceStatus::cancelled, {}};
-        }
-        lock.unlock();
-        runtime::ImuAngularVelocitySample angular_velocity{};
-        if (try_pop(&angular_velocity)) {
-            sample->timestamp_ns = angular_velocity.timestamp_ns;
-            sample->acceleration = angular_velocity.acceleration;
-            sample->angular_velocity = angular_velocity.angular_velocity;
-            return {runtime::SourceStatus::ok, {}};
-        }
-        lock.lock();
-    }
-    return {runtime::SourceStatus::cancelled, {}};
-}
-
 void SimulatedImuSource::cancel() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     cancelled_ = true;
@@ -110,11 +83,10 @@ void SimulatedImuSource::stop() noexcept {
     cancel();
 }
 
-LoggingCommandSink::LoggingCommandSink()
-    : output_(&std::cout), logger_(std::cout) {}
+LoggingCommandSink::LoggingCommandSink() : logger_(std::cout) {}
 
 LoggingCommandSink::LoggingCommandSink(std::ostream& output)
-    : output_(&output), logger_(output) {}
+    : logger_(output) {}
 
 bool LoggingCommandSink::start() { return logger_.start(); }
 
@@ -122,25 +94,15 @@ bool LoggingCommandSink::try_submit(
     const runtime::GuidanceCommand& command) noexcept {
     runtime::RuntimeLogEvent event{};
     event.kind = runtime::RuntimeLogEventKind::guidance_command;
-    event.timestamp_ns = command.timestamp_ns;
-    event.value0 = command.output.valid ? command.output.body_overload.x : 0.0;
-    event.value1 = command.output.valid ? command.output.body_overload.y : 0.0;
-    event.value2 = command.output.valid ? command.output.body_overload.z : 0.0;
+    event.timestamp_ns = command.source_time.monotonic_ns;
+    event.value0 = command.valid ? command.overload_g.x : 0.0;
+    event.value1 = command.valid ? command.overload_g.y : 0.0;
+    event.value2 = command.valid ? command.overload_g.z : 0.0;
     if (!logger_.try_submit(event)) {
         return false;
     }
     submitted_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
-}
-
-bool LoggingCommandSink::send(const runtime::GuidanceCommand& command) {
-    if (try_submit(command)) {
-        return true;
-    }
-    if (!start()) {
-        return false;
-    }
-    return try_submit(command);
 }
 
 void LoggingCommandSink::stop() noexcept { logger_.stop(); }
@@ -188,7 +150,7 @@ bool SerialCommandSink::try_submit(
     const runtime::GuidanceCommand& command) noexcept {
     if (!running_.load(std::memory_order_acquire) ||
         cancel_requested_.load(std::memory_order_acquire) ||
-        command.launch_generation !=
+        command.generation !=
             active_generation_.load(std::memory_order_acquire)) {
         return false;
     }
@@ -197,13 +159,6 @@ bool SerialCommandSink::try_submit(
     }
     submitted_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
-}
-
-bool SerialCommandSink::send(const runtime::GuidanceCommand& command) {
-    if (!running_.load(std::memory_order_acquire) && !start()) {
-        return false;
-    }
-    return try_submit(command);
 }
 
 void SerialCommandSink::set_active_generation(
@@ -245,7 +200,7 @@ void SerialCommandSink::worker_loop() noexcept {
             continue;
         }
         std::lock_guard<std::mutex> send_lock(send_mutex_);
-        if (command.launch_generation !=
+        if (command.generation !=
             active_generation_.load(std::memory_order_acquire)) {
             continue;
         }
@@ -262,10 +217,8 @@ void SerialCommandSink::worker_loop() noexcept {
 
         std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
         std::string error;
-        const serial_package::ControlFrameValues values{
-            0.0,
-            command.output.valid ? command.output.body_overload.z : 0.0,
-            command.output.valid ? command.output.body_overload.y : 0.0};
+        const serial_package::ControlFrameValues values =
+            detail::make_control_frame_values(command);
         if (!serial_package::encode_control_frame(values, &frame, &error) ||
             !port_->write_all(frame.data(), frame.size())) {
             send_failure_count_.fetch_add(1, std::memory_order_relaxed);
@@ -282,9 +235,6 @@ void SerialCommandSink::worker_loop() noexcept {
     }
 }
 
-/*
- * 保留旧的编码逻辑说明：实际编码和写串口已移到 worker_loop。
- */
 bool SerialCommandSink::fail(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
     last_error_ = message;

@@ -1,6 +1,8 @@
 #ifndef MOSAS_RUNTIME_CLOCK_HPP
 #define MOSAS_RUNTIME_CLOCK_HPP
 
+#include <mosas/ports/clock.hpp>
+
 #include <cstdint>
 #include <optional>
 
@@ -17,6 +19,11 @@ std::optional<TimestampNs> timeval_to_nanoseconds(
 std::optional<TimestampNs> realtime_to_monotonic(
     TimestampNs source_ns, TimestampNs source_now_ns,
     TimestampNs target_now_ns) noexcept;
+
+class SystemMonotonicClock final : public ports::IMonotonicClock {
+public:
+    TimestampNs now_ns() const noexcept override;
+};
 
 }  // namespace mosas::runtime
 

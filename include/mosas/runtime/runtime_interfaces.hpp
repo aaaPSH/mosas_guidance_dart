@@ -1,15 +1,14 @@
 #ifndef MOSAS_RUNTIME_INTERFACES_HPP
 #define MOSAS_RUNTIME_INTERFACES_HPP
 
+#include <mosas/domain/algorithm_results.hpp>
+#include <mosas/domain/contracts.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/runtime/imu_angular_velocity.hpp>
-#include <mosas/vision/vision_types.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <thread>
 
 namespace mosas::runtime {
 
@@ -34,7 +33,6 @@ struct ImuSourceDiagnostics {
     std::size_t pending_frame_count = 0;
     std::size_t buffered_bytes = 0;
     std::uint64_t delivered_sample_count = 0;
-    std::uint64_t timeout_count = 0;
     std::uint64_t parse_error_count = 0;
     std::uint64_t backlog_event_count = 0;
     std::uint64_t received_chunk_count = 0;
@@ -66,21 +64,12 @@ class ImuSource {
 public:
     virtual ~ImuSource() = default;
 
-    // try_pop 用于非阻塞取样；没有样本时，调用方可等待数据源就绪。
-    virtual SourceResult start() { return {SourceStatus::ok, {}}; }
-    virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept {
-        (void)sample;
-        return false;
-    }
-    // 无数据时等待数据源通知；未实现通知的旧数据源使用短暂退避。
-    virtual bool wait_for_data() noexcept {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        return true;
-    }
-    virtual void stop() noexcept {}
+    // try_pop 用于非阻塞取样；没有样本时，调用方等待数据源就绪。
+    virtual SourceResult start() = 0;
+    virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept = 0;
+    virtual bool wait_for_data() noexcept = 0;
+    virtual void stop() noexcept = 0;
 
-    // 保留旧接口以兼容现有外部数据源；运行时主路径使用上面的异步接口。
-    virtual SourceResult read(ImuSample* sample) = 0;
     virtual void cancel() noexcept = 0;
 
     // 返回线程安全的接收诊断；通用或模拟数据源默认不提供该信息。
@@ -108,8 +97,7 @@ public:
 
     // 在处理线程完成颜色转换、缩放和相机安装方向修正等帧预处理。
     virtual SourceResult prepare(CameraFrame* frame) {
-        if (frame == nullptr || frame->image.empty() ||
-            frame->image.type() != CV_8UC3) {
+        if (frame == nullptr || !frame->image.is_valid()) {
             return {SourceStatus::fatal, "camera frame is invalid"};
         }
         return {SourceStatus::ok, {}};
@@ -125,18 +113,10 @@ class CommandSink {
 public:
     virtual ~CommandSink() = default;
 
-    virtual bool start() { return true; }
+    virtual bool start() = 0;
 
     // 只提交最新控制量；实现不得在调用线程执行串口/文件写入。
-    virtual bool try_submit(const GuidanceCommand& command) noexcept {
-        return send(command);
-    }
-
-    // 兼容旧的同步数据源；新的运行时路径不直接调用该接口。
-    virtual bool send(const GuidanceCommand& command) {
-        (void)command;
-        return false;
-    }
+    virtual bool try_submit(const GuidanceCommand& command) noexcept = 0;
 
     // 起飞周期切换后，异步 sink 应丢弃尚未发送的旧周期命令。
     virtual void set_active_generation(std::uint64_t generation) noexcept {
@@ -162,7 +142,7 @@ public:
 
     // 非阻塞提交一条已经通过运行时校验的 IMU 样本；默认不记录。
     virtual bool try_record_imu_sample(
-        const ImuAngularVelocitySample& sample) noexcept {
+        const domain::ImuKinematicSample& sample) noexcept {
         (void)sample;
         return true;
     }
@@ -182,20 +162,12 @@ public:
     // 停止和刷新输出时报告最后一次录像/推流错误。
     virtual std::string last_error() const { return {}; }
 
-    virtual bool publish(const CameraFrame& frame,
-                         const VisionResult& vision_result,
-                         const ImuStateSnapshot& imu_state,
-                         const PngGuidanceOutput& guidance) = 0;
-
-    // 携带视线角和视线角速度，供可视化接收；旧接口保持兼容。
-    virtual bool publish(const CameraFrame& frame,
-                         const VisionResult& vision_result,
-                         const ImuStateSnapshot& imu_state,
-                         const PngGuidanceOutput& guidance,
-                         const VisionOverlayData& overlay) {
-        (void)overlay;
-        return publish(frame, vision_result, imu_state, guidance);
-    }
+    virtual bool publish(
+        const CameraFrame& frame,
+        const domain::VisionDetection& vision_detection,
+        const domain::FlightStateSnapshot& flight_state,
+        const domain::GuidanceOutput& guidance,
+        const domain::GuidanceOverlay& overlay) = 0;
 };
 
 }  // namespace mosas::runtime

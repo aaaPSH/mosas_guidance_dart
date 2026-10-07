@@ -1,6 +1,8 @@
 #ifndef MOSAS_APP_CONFIG_HPP
 #define MOSAS_APP_CONFIG_HPP
 
+#include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/runtime/attitude_estimator.hpp>
 #include <mosas/runtime/guidance_runtime.hpp>
 #include <mosas/output/output_config.hpp>
 #include <mosas/wireless/rtsp_streamer.hpp>
@@ -74,6 +76,15 @@ struct CommandAppConfig {
     CommandMode mode = CommandMode::log;
 };
 
+struct GuidanceAlgorithmConfig {
+    VisionConfig vision_config{
+        {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
+        0.35};
+    LineOfSightRateFilterConfig los_rate_filter{};
+    PngGuidanceConfig png_guidance{};
+    runtime::AttitudeEstimatorConfig attitude{};
+};
+
 struct AppConfig {
     CameraAppConfig camera{};
     ImuAppConfig imu{};
@@ -82,6 +93,7 @@ struct AppConfig {
     // 是否在程序退出时输出 IMU 数据帧间隔统计摘要。
     bool enable_serial_interval_statistics = false;
     runtime::GuidanceRuntimeConfig guidance{};
+    GuidanceAlgorithmConfig algorithms{};
     output::OutputConfig output{};
     wireless::RtspStreamConfig wireless{};
 };

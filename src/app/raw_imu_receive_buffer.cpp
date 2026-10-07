@@ -53,18 +53,6 @@ bool RawImuReceiveBuffer::wait_for_data() noexcept {
     return !closed_ && wait_generation_ == generation;
 }
 
-bool RawImuReceiveBuffer::wait_for_data_until(
-    std::chrono::steady_clock::time_point deadline) noexcept {
-    std::unique_lock<std::mutex> lock(wait_mutex_);
-    const std::uint64_t generation = wait_generation_;
-    const bool awakened = wait_condition_.wait_until(
-        lock, deadline, [this, generation] {
-            return closed_ || wait_generation_ != generation ||
-                   !queue_.empty();
-    });
-    return awakened && !closed_ && wait_generation_ == generation;
-}
-
 void RawImuReceiveBuffer::close() noexcept {
     {
         std::lock_guard<std::mutex> lock(wait_mutex_);

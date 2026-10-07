@@ -8,7 +8,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <iosfwd>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,26 +23,11 @@ struct SerialImuIntervalStatistics {
 
 class SerialImuSource final : public runtime::ImuSource {
 public:
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms);
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms,
-                    std::ostream& output);
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms,
-                    bool enable_interval_statistics);
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms,
-                    bool enable_interval_statistics, std::ostream& output);
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms,
-                    bool enable_interval_statistics, std::ostream& output,
-                    runtime::TimestampNs measurement_latency_ns);
-    SerialImuSource(std::shared_ptr<serial_package::SerialPort> port,
-                    double sample_rate_hz, int read_timeout_ms,
-                    bool enable_interval_statistics, std::ostream& output,
-                    runtime::TimestampNs measurement_latency_ns,
-                    const serial_package::ReceiveThreadConfig& receive_config);
+    SerialImuSource(
+        std::shared_ptr<serial_package::SerialPort> port,
+        bool enable_interval_statistics,
+        runtime::TimestampNs measurement_latency_ns,
+        const serial_package::ReceiveThreadConfig& receive_config);
 
     // 启动串口原始字节接收线程；协议解析在消费样本的线程完成。
     runtime::SourceResult start() override;
@@ -52,8 +36,6 @@ public:
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override;
     bool wait_for_data() noexcept override;
 
-    // 兼容旧调用方：在普通调用线程等待并返回一个 IMU 运动样本。
-    runtime::SourceResult read(runtime::ImuSample* sample) override;
     void cancel() noexcept override;
     void stop() noexcept override;
 
@@ -69,11 +51,8 @@ private:
 
     bool deliver_sample(runtime::ImuAngularVelocitySample* sample) noexcept;
     runtime::SourceResult fatal_result(const char* message);
-    runtime::SourceResult timeout_result() noexcept;
 
     std::shared_ptr<serial_package::SerialPort> port_;
-    std::ostream* output_ = nullptr;
-    int read_timeout_ms_ = 0;
     runtime::TimestampNs measurement_latency_ns_ = 0;
     std::string configuration_error_;
     bool interval_statistics_enabled_ = false;
@@ -91,7 +70,6 @@ private:
 
     std::atomic<runtime::TimestampNs> last_sample_timestamp_ns_{-1};
     std::atomic<std::uint64_t> delivered_sample_count_{0};
-    std::atomic<std::uint64_t> timeout_count_{0};
 };
 
 }  // namespace mosas::app

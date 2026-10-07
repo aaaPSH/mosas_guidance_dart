@@ -1,5 +1,5 @@
 #include <mosas/runtime/guidance_runtime.hpp>
-#include <mosas/vision/vision_recognizer.hpp>
+#include <mosas/runtime/clock.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -8,8 +8,6 @@
 #include <sstream>
 #include <thread>
 #include <utility>
-
-#include <opencv2/core.hpp>
 
 namespace mosas::runtime {
 namespace {
@@ -34,26 +32,32 @@ bool is_finite(const Vector3& value) {
     return is_finite(value.x) && is_finite(value.y) && is_finite(value.z);
 }
 
-bool is_finite(const CameraIntrinsics& value) {
+bool is_finite(const domain::CameraIntrinsics& value) {
     return is_finite(value.fx) && is_finite(value.fy) && is_finite(value.cx) &&
            is_finite(value.cy);
 }
 
-bool is_finite(const RotationMatrix3& value) {
-    return is_finite(value.m00) && is_finite(value.m01) &&
-           is_finite(value.m02) && is_finite(value.m10) &&
-           is_finite(value.m11) && is_finite(value.m12) &&
-           is_finite(value.m20) && is_finite(value.m21) &&
-           is_finite(value.m22);
+bool is_finite(
+    const domain::Rotation3<domain::DartFrameTag,
+                            domain::CameraFrameTag>& rotation) {
+    for (const double value : rotation.matrix()) {
+        if (!is_finite(value)) {
+            return false;
+        }
+    }
+    return true;
 }
 
-bool valid_rotation(const RotationMatrix3& value) {
-    if (!is_finite(value)) {
+bool valid_rotation(
+    const domain::Rotation3<domain::DartFrameTag,
+                            domain::CameraFrameTag>& rotation) {
+    if (!is_finite(rotation)) {
         return false;
     }
-    const Vector3 column_0{value.m00, value.m10, value.m20};
-    const Vector3 column_1{value.m01, value.m11, value.m21};
-    const Vector3 column_2{value.m02, value.m12, value.m22};
+    const auto& value = rotation.matrix();
+    const Vector3 column_0{value[0], value[3], value[6]};
+    const Vector3 column_1{value[1], value[4], value[7]};
+    const Vector3 column_2{value[2], value[5], value[8]};
     const auto norm = [](const Vector3& vector) {
         return std::hypot(std::hypot(vector.x, vector.y), vector.z);
     };
@@ -61,9 +65,9 @@ bool valid_rotation(const RotationMatrix3& value) {
         return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
     };
     const double determinant =
-        value.m00 * (value.m11 * value.m22 - value.m12 * value.m21) -
-        value.m01 * (value.m10 * value.m22 - value.m12 * value.m20) +
-        value.m02 * (value.m10 * value.m21 - value.m11 * value.m20);
+        value[0] * (value[4] * value[8] - value[5] * value[7]) -
+        value[1] * (value[3] * value[8] - value[5] * value[6]) +
+        value[2] * (value[3] * value[7] - value[4] * value[6]);
     return std::abs(norm(column_0) - 1.0) <= 1e-6 &&
            std::abs(norm(column_1) - 1.0) <= 1e-6 &&
            std::abs(norm(column_2) - 1.0) <= 1e-6 &&
@@ -105,7 +109,6 @@ std::string format_imu_source_diagnostics(
             << ", latest_sample_timestamp_ns="
             << diagnostics.latest_sample_timestamp_ns
             << ", delivered_frames=" << diagnostics.delivered_sample_count
-            << ", timeout_count=" << diagnostics.timeout_count
             << ", parse_error_count=" << diagnostics.parse_error_count
             << ", backlog_event_count=" << diagnostics.backlog_event_count
             << ", received_chunks=" << diagnostics.received_chunk_count
@@ -125,49 +128,42 @@ std::string format_imu_source_diagnostics(
     return message.str();
 }
 
-bool valid_vision_config(const VisionConfig& config) {
-    return config.initial_roi.width > 0 && config.initial_roi.height > 0 &&
-           config.threshold.h_min <= config.threshold.h_max &&
-           config.threshold.s_min <= config.threshold.s_max &&
-           config.threshold.v_min <= config.threshold.v_max &&
-           config.found_range_x >= 0 && config.found_range_y >= 0 &&
-           config.min_blob_area >= 0 && is_finite(config.min_aspect_ratio) &&
-           config.min_aspect_ratio >= 0.0 && is_finite(config.min_fill_ratio) &&
-           config.min_fill_ratio >= 0.0;
+domain::SensorTime make_monotonic_time(TimestampNs timestamp_ns) {
+    domain::SensorTime time{};
+    time.monotonic_ns = timestamp_ns;
+    time.source_domain = domain::ClockDomain::monotonic;
+    return time;
 }
 
-bool valid_los_filter_config(const LineOfSightRateFilterConfig& config) {
-    return is_finite(config.sigma_a) && config.sigma_a > 0.0 &&
-           is_finite(config.sigma_q) && config.sigma_q > 0.0 &&
-           is_finite(config.initial_covariance) &&
-           config.initial_covariance >= 0.0 &&
-           is_finite(config.sigma_a_pitch) && config.sigma_a_pitch >= 0.0 &&
-           is_finite(config.sigma_a_yaw) && config.sigma_a_yaw >= 0.0;
+Vector3 to_runtime_vector(
+    const domain::AngularVelocityDartRadPerSec& value) {
+    return {value.x, value.y, value.z};
 }
 
-bool valid_png_config(const PngGuidanceConfig& config) {
-    return is_finite(config.navigation_constant_y) &&
-           is_finite(config.navigation_constant_z) &&
-           is_finite(config.gravity) && config.navigation_constant_y > 0.0 &&
-           config.navigation_constant_z > 0.0 && config.gravity > 0.0 &&
-           is_finite(config.maximum_command_overload) &&
-           config.maximum_command_overload >= 0.0 &&
-           !std::isnan(config.maximum_command_acceleration) &&
-           config.maximum_command_acceleration >= 0.0;
+RotationMatrix3 to_runtime_rotation(
+    const domain::Rotation3<domain::NavigationFrameTag,
+                            domain::DartFrameTag>& rotation) {
+    const auto& matrix = rotation.matrix();
+    return {matrix[0], matrix[1], matrix[2], matrix[3], matrix[4],
+            matrix[5], matrix[6], matrix[7], matrix[8]};
 }
 
-bool valid_attitude_config(const AttitudeEstimatorConfig& config) {
-    return is_finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
-           is_finite(config.stationary_acceleration_tolerance_mps2) &&
-           config.stationary_acceleration_tolerance_mps2 > 0.0 &&
-           is_finite(config.gyro_stationary_threshold_rad_s) &&
-           config.gyro_stationary_threshold_rad_s > 0.0 &&
-           is_finite(config.gyro_bias_filter_alpha) &&
-           config.gyro_bias_filter_alpha > 0.0 &&
-           config.gyro_bias_filter_alpha <= 1.0 &&
-           is_finite(config.launch_ax_threshold_mps2) &&
-           config.launch_ax_threshold_mps2 > 0.0 &&
-           config.launch_confirm_ns > 0;
+domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>
+to_domain_rotation(const RotationMatrix3& rotation) {
+    return domain::Rotation3<domain::NavigationFrameTag,
+                             domain::DartFrameTag>(
+        {rotation.m00, rotation.m01, rotation.m02,
+         rotation.m10, rotation.m11, rotation.m12,
+         rotation.m20, rotation.m21, rotation.m22});
+}
+
+domain::GuidanceCommand make_neutral_command(
+    TimestampNs timestamp_ns, std::uint64_t generation) {
+    domain::GuidanceCommand command{};
+    command.generation = generation;
+    command.source_time = make_monotonic_time(timestamp_ns);
+    command.invalid_reason = domain::GuidanceInvalidReason::stale_input;
+    return command;
 }
 
 }  // namespace
@@ -176,29 +172,33 @@ GuidanceRuntime::GuidanceRuntime(
     std::unique_ptr<ImuSource> imu_source,
     std::unique_ptr<CameraSource> camera_source,
     std::unique_ptr<CommandSink> command_sink,
-    const GuidanceRuntimeConfig& config, std::unique_ptr<FrameSink> frame_sink)
+    const GuidanceRuntimeConfig& config,
+    GuidanceRuntimeDependencies dependencies,
+    std::unique_ptr<FrameSink> frame_sink)
     : GuidanceRuntime(std::move(imu_source), std::move(camera_source),
-                      std::move(command_sink), config, std::move(frame_sink),
+                      std::move(command_sink), config,
+                      std::move(dependencies), std::move(frame_sink),
                       std::cerr) {}
 
 GuidanceRuntime::GuidanceRuntime(
     std::unique_ptr<ImuSource> imu_source,
     std::unique_ptr<CameraSource> camera_source,
     std::unique_ptr<CommandSink> command_sink,
-    const GuidanceRuntimeConfig& config, std::unique_ptr<FrameSink> frame_sink,
-    std::ostream& output)
+    const GuidanceRuntimeConfig& config,
+    GuidanceRuntimeDependencies dependencies,
+    std::unique_ptr<FrameSink> frame_sink, std::ostream& output)
     : imu_source_(std::move(imu_source)),
       camera_source_(std::move(camera_source)),
       command_sink_(std::move(command_sink)),
       frame_sink_(std::move(frame_sink)),
       config_(config),
+      dependencies_(std::move(dependencies)),
       output_(&output),
       info_logger_(output, config_.info_log_queue_capacity),
       capture_queue_(config_.capture_queue_capacity),
       output_queue_(config_.output_queue_capacity),
       angular_velocity_history_(config_.history_capacity),
-      attitude_history_(config_.history_capacity),
-      attitude_estimator_(config_.attitude) {}
+      attitude_history_(config_.history_capacity) {}
 
 GuidanceRuntime::~GuidanceRuntime() {
     stop();
@@ -207,18 +207,20 @@ GuidanceRuntime::~GuidanceRuntime() {
 bool GuidanceRuntime::validate_config() const {
     return imu_source_ != nullptr && camera_source_ != nullptr &&
            command_sink_ != nullptr &&
+           dependencies_.vision_detector != nullptr &&
+           dependencies_.flight_state_estimator != nullptr &&
+           dependencies_.los_estimator != nullptr &&
+           dependencies_.los_rate_filter != nullptr &&
+           dependencies_.guidance_law != nullptr &&
+           dependencies_.monotonic_clock != nullptr &&
            is_finite(config_.launch_speed_mps) && config_.launch_speed_mps >= 0.0 &&
            config_.history_capacity > 0 && config_.max_imu_age_ns > 0 &&
            config_.max_camera_future_ns >= 0 &&
            config_.max_camera_age_ns > 0 &&
-           valid_vision_config(config_.vision_config) &&
            is_finite(config_.camera_intrinsics) &&
            config_.camera_intrinsics.fx > 0.0 &&
            config_.camera_intrinsics.fy > 0.0 &&
-           valid_rotation(config_.camera_to_body) &&
-           valid_los_filter_config(config_.los_rate_filter) &&
-           valid_png_config(config_.png_guidance) &&
-           valid_attitude_config(config_.attitude) &&
+           valid_rotation(config_.dart_from_camera) &&
            config_.capture_queue_capacity > 0 &&
            config_.output_queue_capacity > 0 &&
            config_.info_log_queue_capacity > 0;
@@ -273,7 +275,9 @@ bool GuidanceRuntime::start() {
     output_queue_.reset();
     angular_velocity_history_.reset();
     attitude_history_.reset();
-    attitude_estimator_.reset();
+    dependencies_.vision_detector->reset();
+    dependencies_.flight_state_estimator->reset();
+    dependencies_.los_rate_filter->reset();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         latest_state_.reset();
@@ -456,7 +460,10 @@ void GuidanceRuntime::record_timing(
 
 void GuidanceRuntime::log(const std::string& message) {
     const std::string formatted = "[运行时] " + message;
-    if (info_logger_.try_submit_text(monotonic_timestamp_ns(), formatted)) {
+    const TimestampNs now_ns = dependencies_.monotonic_clock != nullptr
+                                   ? dependencies_.monotonic_clock->now_ns()
+                                   : monotonic_timestamp_ns();
+    if (info_logger_.try_submit_text(now_ns, formatted)) {
         return;
     }
     // 日志线程已经启动时，队列满只丢弃，不能把同步输出带回关键路径。
@@ -481,13 +488,16 @@ void GuidanceRuntime::set_fault(const std::string& message) {
     if (!faulted_.exchange(true)) {
         set_error(message);
         const auto state = latest_state();
-        if (command_sink_ != nullptr && state.has_value() && state->launched) {
+        if (command_sink_ != nullptr && state.has_value() &&
+            state->launch.phase == domain::LaunchPhase::launched) {
             std::lock_guard<std::mutex> lock(launch_generation_mutex_);
-            if (active_launch_generation_.load() == state->launch_generation) {
+            if (active_launch_generation_.load() ==
+                state->launch.generation) {
                 // 运行时故障时尽力清零，避免下位机继续保持上一条非零指令。
-                command_sink_->try_submit(
-                    {monotonic_timestamp_ns(), PngGuidanceOutput{},
-                     state->launch_generation});
+                const TimestampNs now_ns =
+                    dependencies_.monotonic_clock->now_ns();
+                command_sink_->try_submit(make_neutral_command(
+                    now_ns, state->launch.generation));
             }
         }
     }
@@ -535,7 +545,19 @@ void GuidanceRuntime::imu_worker() {
                 set_fault("imu source returned an invalid kinematic sample");
                 return;
             }
-            ImuStateSnapshot snapshot{};
+            domain::ImuKinematicSample domain_sample{};
+            domain_sample.time = make_monotonic_time(sample.timestamp_ns);
+            domain_sample.acceleration = {sample.acceleration.x,
+                                          sample.acceleration.y,
+                                          sample.acceleration.z};
+            domain_sample.angular_velocity = {sample.angular_velocity.x,
+                                               sample.angular_velocity.y,
+                                               sample.angular_velocity.z};
+            domain_sample.servo_control_p_normalized =
+                sample.servo_control_p_normalized;
+            domain_sample.servo_control_y_normalized =
+                sample.servo_control_y_normalized;
+            domain::FlightStateSnapshot snapshot{};
             const char* history_error = nullptr;
             {
                 // 与代际切换线性化，防止新周期样本被写入旧周期历史。
@@ -544,47 +566,44 @@ void GuidanceRuntime::imu_worker() {
                 const std::uint64_t active_generation =
                     active_launch_generation_.load();
                 if (active_generation != estimator_generation) {
-                    attitude_estimator_.reset();
+                    dependencies_.flight_state_estimator->reset();
                     estimator_generation = active_generation;
                 }
-                const AttitudeEstimate attitude =
-                    attitude_estimator_.update(sample);
+                snapshot = dependencies_.flight_state_estimator->update(
+                    domain_sample);
+                snapshot.time = domain_sample.time;
+                snapshot.imu_sample.time = domain_sample.time;
+                snapshot.attitude.time = domain_sample.time;
+                snapshot.launch.generation = estimator_generation;
+                snapshot.imu_sample.acceleration = domain_sample.acceleration;
+                snapshot.imu_sample.angular_velocity =
+                    snapshot.attitude.corrected_angular_velocity;
+                snapshot.imu_sample.servo_control_p_normalized =
+                    domain_sample.servo_control_p_normalized;
+                snapshot.imu_sample.servo_control_y_normalized =
+                    domain_sample.servo_control_y_normalized;
+
                 const ImuAngularVelocitySample corrected_sample{
                     sample.timestamp_ns, sample.acceleration,
-                    attitude.corrected_angular_velocity,
+                    to_runtime_vector(
+                        snapshot.attitude.corrected_angular_velocity),
                     sample.servo_control_p_normalized,
                     sample.servo_control_y_normalized};
                 if (!angular_velocity_history_.push(corrected_sample)) {
                     history_error =
                         "imu angular velocity timestamp is not increasing";
                 }
-                if (history_error == nullptr && attitude.valid &&
-                    !attitude_history_.push({sample.timestamp_ns,
-                                             attitude.pitch_rad,
-                                             attitude.roll_rad,
-                                             attitude.body_to_navigation,
-                                             attitude.launched,
-                                             attitude.launch_timestamp_ns,
-                                             estimator_generation})) {
+                if (history_error == nullptr && snapshot.attitude.valid &&
+                    !attitude_history_.push(
+                        {sample.timestamp_ns,
+                         snapshot.attitude.pitch_rad.value,
+                         snapshot.attitude.roll_rad.value,
+                         to_runtime_rotation(
+                             snapshot.attitude.navigation_from_dart),
+                         snapshot.launch.phase == domain::LaunchPhase::launched,
+                         snapshot.launch.transition_time.monotonic_ns,
+                         estimator_generation})) {
                     history_error = "imu attitude timestamp is not increasing";
-                }
-                if (history_error == nullptr) {
-                    snapshot.timestamp_ns = sample.timestamp_ns;
-                    snapshot.acceleration = sample.acceleration;
-                    snapshot.angular_velocity =
-                        attitude.corrected_angular_velocity;
-                    snapshot.servo_control_p_normalized =
-                        sample.servo_control_p_normalized;
-                    snapshot.servo_control_y_normalized =
-                        sample.servo_control_y_normalized;
-                    snapshot.body_to_navigation = attitude.body_to_navigation;
-                    snapshot.pitch_rad = attitude.pitch_rad;
-                    snapshot.roll_rad = attitude.roll_rad;
-                    snapshot.attitude_valid = attitude.valid;
-                    snapshot.launched = attitude.launched;
-                    snapshot.launch_timestamp_ns =
-                        attitude.launch_timestamp_ns;
-                    snapshot.launch_generation = estimator_generation;
                 }
             }
             if (history_error != nullptr) {
@@ -596,7 +615,7 @@ void GuidanceRuntime::imu_worker() {
                 latest_state_ = snapshot;
             }
             if (frame_sink_ != nullptr &&
-                !frame_sink_->try_record_imu_sample(sample)) {
+                !frame_sink_->try_record_imu_sample(domain_sample)) {
                 set_fault("failed to record IMU sample");
                 return;
             }
@@ -610,6 +629,7 @@ void GuidanceRuntime::imu_worker() {
 
 void GuidanceRuntime::capture_worker() {
     try {
+        std::uint64_t next_frame_id = 0;
         while (!stop_requested_.load()) {
             CameraFrame frame{};
             const auto capture_started = std::chrono::steady_clock::now();
@@ -640,10 +660,11 @@ void GuidanceRuntime::capture_worker() {
             if (stop_requested_.load()) {
                 return;
             }
-            if (frame.timestamp_ns < 0 || frame.image.empty()) {
+            if (frame.timestamp_ns < 0 || !frame.image.is_valid()) {
                 set_fault("camera source capture returned ok with invalid frame");
                 return;
             }
+            frame.source_frame_id = next_frame_id++;
             if (frame.received_timestamp_ns >= 0 &&
                 frame.timestamp_source != CameraTimestampSource::unknown &&
                 !validate_camera_timestamp(
@@ -691,8 +712,6 @@ void GuidanceRuntime::capture_worker() {
 
 void GuidanceRuntime::processing_worker() {
     try {
-        VisionRecognizer recognizer(config_.vision_config);
-        LineOfSightRateEstimator rate_estimator(config_.los_rate_filter);
         bool has_frame_timestamp = false;
         TimestampNs previous_frame_timestamp_ns = 0;
         std::uint64_t imu_match_failure_count = 0;
@@ -731,10 +750,11 @@ void GuidanceRuntime::processing_worker() {
                        std::nullopt) {
                 if (!launch_generation.has_value()) {
                     const auto state = latest_state();
-                    if (!state.has_value() || !state->launched) {
+                    if (!state.has_value() ||
+                        state->launch.phase != domain::LaunchPhase::launched) {
                         return true;
                     }
-                    launch_generation = state->launch_generation;
+                    launch_generation = state->launch.generation;
                 }
 
                 bool generation_is_current = false;
@@ -749,8 +769,8 @@ void GuidanceRuntime::processing_worker() {
                         !faulted_.load()) {
                         // 无法形成可靠引导量时主动发送全零，清除下位机保持的旧指令。
                         sent = command_sink_->try_submit(
-                            {timestamp_ns, PngGuidanceOutput{},
-                             *launch_generation});
+                            make_neutral_command(timestamp_ns,
+                                                 *launch_generation));
                     }
                 }
                 if (generation_is_current && !sent) {
@@ -811,14 +831,29 @@ void GuidanceRuntime::processing_worker() {
                     return enqueue_result(std::move(result));
                 };
             const TimestampNs timestamp_ns = result.frame.timestamp_ns;
-            result.vision_result = {};
-            result.vision_result.next_roi =
-                config_.vision_config.initial_roi;
-            result.vision_result.minimum_blob_area =
-                config_.vision_config.min_blob_area;
-            result.imu_state = {};
-            result.imu_state.timestamp_ns = timestamp_ns;
-            result.guidance = {false, {}, {}, {}, 0.0, 0.0};
+            const domain::SensorTime frame_time =
+                make_monotonic_time(timestamp_ns);
+            result.vision_detection = {};
+            result.vision_detection.observation.source_frame_id =
+                result.frame.source_frame_id;
+            result.vision_detection.observation.time = frame_time;
+            result.vision_detection.observation.reason =
+                domain::ObservationReason::not_found;
+            result.flight_state = {};
+            result.flight_state.time = frame_time;
+            result.flight_state.imu_sample.time = frame_time;
+            result.guidance = {};
+            result.guidance.command.source_frame_id =
+                result.frame.source_frame_id;
+            result.guidance.command.source_time = frame_time;
+            const auto mark_guidance_invalid =
+                [&result](domain::GuidanceInvalidReason reason) {
+                    result.guidance.valid = false;
+                    result.guidance.invalid_reason = reason;
+                    result.guidance.command.valid = false;
+                    result.guidance.command.invalid_reason = reason;
+                };
+            mark_guidance_invalid(domain::GuidanceInvalidReason::stale_input);
             result.overlay = {};
 
             if ((has_frame_timestamp &&
@@ -828,7 +863,7 @@ void GuidanceRuntime::processing_worker() {
                         << ", previous_camera_timestamp_ns="
                         << previous_frame_timestamp_ns;
                 log_output_diagnostic("相机帧时间戳不递增", details.str());
-                rate_estimator.reset();
+                dependencies_.los_rate_filter->reset();
                 has_frame_timestamp = false;
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
@@ -858,7 +893,7 @@ void GuidanceRuntime::processing_worker() {
                 if (!angular_velocity_lookup.has_value()) {
                     if (!latest.has_value()) {
                         reason = "IMU 角速度历史为空或没有完整插值区间";
-                    } else if (latest->timestamp_ns > timestamp_ns) {
+                    } else if (latest->time.monotonic_ns > timestamp_ns) {
                         reason = "没有覆盖相机曝光时刻的 IMU 角速度前后样本";
                     } else {
                         reason = "IMU 角速度历史中没有可匹配插值区间";
@@ -886,7 +921,7 @@ void GuidanceRuntime::processing_worker() {
                                 << static_cast<double>(bracket_age_ns) / 1e6;
                     } else if (latest.has_value()) {
                         message << ", latest_imu_timestamp_ns="
-                                << latest->timestamp_ns;
+                                << latest->time.monotonic_ns;
                     } else {
                         message << ", latest_imu_timestamp_ns=N/A";
                     }
@@ -903,6 +938,7 @@ void GuidanceRuntime::processing_worker() {
                     next_imu_match_log = now + std::chrono::seconds(1);
                 }
                 imu_match_failure_active = true;
+                mark_guidance_invalid(domain::GuidanceInvalidReason::stale_input);
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
                 }
@@ -933,6 +969,8 @@ void GuidanceRuntime::processing_worker() {
             const auto attitude_lookup =
                 attitude_history_.find_interpolated(timestamp_ns);
             if (!attitude_lookup.has_value()) {
+                mark_guidance_invalid(
+                    domain::GuidanceInvalidReason::invalid_attitude);
                 log_output_diagnostic(
                     "姿态历史无法匹配相机曝光时刻",
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns));
@@ -946,36 +984,57 @@ void GuidanceRuntime::processing_worker() {
                 continue;
             }
 
-            result.imu_state.timestamp_ns = timestamp_ns;
-            result.imu_state.acceleration =
-                angular_velocity_lookup->sample.acceleration;
-            result.imu_state.angular_velocity =
-                angular_velocity_lookup->sample.angular_velocity;
-            result.imu_state.servo_control_p_normalized =
-                angular_velocity_lookup->sample.servo_control_p_normalized;
-            result.imu_state.servo_control_y_normalized =
-                angular_velocity_lookup->sample.servo_control_y_normalized;
-            result.imu_state.body_to_navigation =
-                attitude_lookup->body_to_navigation;
-            result.imu_state.pitch_rad = attitude_lookup->pitch_rad;
-            result.imu_state.roll_rad = attitude_lookup->roll_rad;
-            result.imu_state.attitude_valid = true;
-            result.imu_state.launched = attitude_lookup->launched;
-            result.imu_state.launch_timestamp_ns =
-                attitude_lookup->launch_timestamp_ns;
-            result.imu_state.launch_generation =
+            result.flight_state.time = frame_time;
+            result.flight_state.imu_sample = {
+                frame_time,
+                {angular_velocity_lookup->sample.acceleration.x,
+                 angular_velocity_lookup->sample.acceleration.y,
+                 angular_velocity_lookup->sample.acceleration.z},
+                {angular_velocity_lookup->sample.angular_velocity.x,
+                 angular_velocity_lookup->sample.angular_velocity.y,
+                 angular_velocity_lookup->sample.angular_velocity.z},
+                angular_velocity_lookup->sample.servo_control_p_normalized,
+                angular_velocity_lookup->sample.servo_control_y_normalized};
+            result.flight_state.attitude.time = frame_time;
+            result.flight_state.attitude.navigation_from_dart =
+                to_domain_rotation(attitude_lookup->body_to_navigation);
+            result.flight_state.attitude.pitch_rad.value =
+                attitude_lookup->pitch_rad;
+            result.flight_state.attitude.roll_rad.value =
+                attitude_lookup->roll_rad;
+            result.flight_state.attitude.corrected_angular_velocity =
+                result.flight_state.imu_sample.angular_velocity;
+            result.flight_state.attitude.valid = true;
+            result.flight_state.launch.phase =
+                attitude_lookup->launched ? domain::LaunchPhase::launched
+                                          : domain::LaunchPhase::pre_launch;
+            result.flight_state.launch.transition_time =
+                attitude_lookup->launch_timestamp_ns >= 0
+                    ? make_monotonic_time(attitude_lookup->launch_timestamp_ns)
+                    : domain::SensorTime{};
+            result.flight_state.launch.generation =
                 attitude_lookup->launch_generation;
+            result.flight_state.launch.reason =
+                attitude_lookup->launched
+                    ? domain::LaunchReason::threshold_confirmed
+                    : domain::LaunchReason::not_started;
             result.overlay.attitude_valid = true;
-            result.overlay.attitude_pitch_rad = attitude_lookup->pitch_rad;
-            result.overlay.attitude_roll_rad = attitude_lookup->roll_rad;
-            result.overlay.launched = attitude_lookup->launched;
+            result.overlay.attitude_pitch.value = attitude_lookup->pitch_rad;
+            result.overlay.attitude_roll.value = attitude_lookup->roll_rad;
+            result.overlay.launch_phase = result.flight_state.launch.phase;
 
             const auto vision_started = std::chrono::steady_clock::now();
-            result.vision_result = recognizer.process(result.frame.image);
+            result.vision_detection = dependencies_.vision_detector->detect(
+                result.frame.image.view(), result.frame.source_frame_id,
+                frame_time);
+            result.vision_detection.observation.source_frame_id =
+                result.frame.source_frame_id;
+            result.vision_detection.observation.time = frame_time;
             record_timing(TimingStage::vision,
                           std::chrono::steady_clock::now() - vision_started);
-            if (!result.vision_result.found) {
-                rate_estimator.reset();
+            if (!result.vision_detection.observation.valid) {
+                mark_guidance_invalid(domain::GuidanceInvalidReason::no_target);
+                dependencies_.los_rate_filter->reset();
                 has_frame_timestamp = false;
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
@@ -990,18 +1049,19 @@ void GuidanceRuntime::processing_worker() {
             }
 
             const auto line_of_sight_started = std::chrono::steady_clock::now();
-            const LineOfSight line_of_sight =
-                GuidanceEstimator::calculate_body(
-                    result.vision_result, config_.camera_intrinsics,
-                    config_.camera_to_body);
+            const domain::LineOfSight line_of_sight =
+                dependencies_.los_estimator->estimate(
+                    result.vision_detection, config_.camera_intrinsics,
+                    config_.dart_from_camera);
             record_timing(
                 TimingStage::line_of_sight,
                 std::chrono::steady_clock::now() - line_of_sight_started);
             if (!line_of_sight.valid) {
+                mark_guidance_invalid(domain::GuidanceInvalidReason::invalid_los);
                 const std::string details =
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns);
                 log_output_diagnostic("视线角计算无效", details);
-                rate_estimator.reset();
+                dependencies_.los_rate_filter->reset();
                 has_frame_timestamp = false;
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
@@ -1015,15 +1075,20 @@ void GuidanceRuntime::processing_worker() {
                 continue;
             }
             result.overlay.line_of_sight_valid = true;
-            result.overlay.line_of_sight_q_y_rad = line_of_sight.q_y;
-            result.overlay.line_of_sight_q_z_rad = line_of_sight.q_z;
+            result.overlay.line_of_sight_q_y = line_of_sight.q_y;
+            result.overlay.line_of_sight_q_z = line_of_sight.q_z;
 
             if (!has_frame_timestamp) {
-                rate_estimator.reset();
-                const LineOfSightAngularVelocity initial_angular_velocity =
-                    rate_estimator.update(
-                        line_of_sight,
-                        angular_velocity_lookup->sample.angular_velocity, 1.0);
+                dependencies_.los_rate_filter->reset();
+                const domain::AngularVelocityDartRadPerSec body_angular_velocity{
+                    angular_velocity_lookup->sample.angular_velocity.x,
+                    angular_velocity_lookup->sample.angular_velocity.y,
+                    angular_velocity_lookup->sample.angular_velocity.z};
+                const domain::LineOfSightAngularVelocity initial_angular_velocity =
+                    dependencies_.los_rate_filter->update(
+                        line_of_sight, body_angular_velocity, 1.0);
+                mark_guidance_invalid(
+                    domain::GuidanceInvalidReason::invalid_rate);
                 if (!initial_angular_velocity.valid) {
                     std::ostringstream details;
                     details << "camera_timestamp_ns=" << timestamp_ns
@@ -1052,13 +1117,14 @@ void GuidanceRuntime::processing_worker() {
                                           previous_timestamp_ns) *
                                       1e-9;
             if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
+                mark_guidance_invalid(domain::GuidanceInvalidReason::invalid_rate);
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", previous_camera_timestamp_ns="
                         << previous_timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
                 log_output_diagnostic("视线角速度时间步长无效", details.str());
-                rate_estimator.reset();
+                dependencies_.los_rate_filter->reset();
                 has_frame_timestamp = false;
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
@@ -1073,12 +1139,15 @@ void GuidanceRuntime::processing_worker() {
             }
             previous_frame_timestamp_ns = timestamp_ns;
 
-            const LineOfSightAngularVelocity angular_velocity =
-                rate_estimator.update(
-                    line_of_sight,
-                    angular_velocity_lookup->sample.angular_velocity,
-                    dt_seconds);
+            const domain::AngularVelocityDartRadPerSec body_angular_velocity{
+                angular_velocity_lookup->sample.angular_velocity.x,
+                angular_velocity_lookup->sample.angular_velocity.y,
+                angular_velocity_lookup->sample.angular_velocity.z};
+            const domain::LineOfSightAngularVelocity angular_velocity =
+                dependencies_.los_rate_filter->update(
+                    line_of_sight, body_angular_velocity, dt_seconds);
             if (!angular_velocity.valid) {
+                mark_guidance_invalid(domain::GuidanceInvalidReason::invalid_rate);
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
@@ -1095,14 +1164,35 @@ void GuidanceRuntime::processing_worker() {
                 continue;
             }
             result.overlay.line_of_sight_rate_valid = true;
-            result.overlay.line_of_sight_rate_q_y_rad_s = angular_velocity.q_y;
-            result.overlay.line_of_sight_rate_q_z_rad_s = angular_velocity.q_z;
+            result.overlay.line_of_sight_rate_q_y = angular_velocity.q_y;
+            result.overlay.line_of_sight_rate_q_z = angular_velocity.q_z;
 
+            domain::GuidanceInput guidance_input{};
+            guidance_input.source_frame_id = result.frame.source_frame_id;
+            guidance_input.time = frame_time;
+            guidance_input.line_of_sight = line_of_sight;
+            guidance_input.angular_velocity = angular_velocity;
+            guidance_input.speed_mps.value = config_.launch_speed_mps;
+            guidance_input.attitude = result.flight_state.attitude;
             const auto guidance_started = std::chrono::steady_clock::now();
-            result.guidance = PngGuidance::calculate(
-                line_of_sight, angular_velocity, config_.launch_speed_mps,
-                attitude_lookup->pitch_rad, attitude_lookup->roll_rad,
-                config_.png_guidance);
+            result.guidance = dependencies_.guidance_law->calculate(
+                guidance_input);
+            result.guidance.command.generation =
+                attitude_lookup->launch_generation;
+            result.guidance.command.source_frame_id =
+                result.frame.source_frame_id;
+            result.guidance.command.source_time = frame_time;
+            if (result.guidance.valid) {
+                result.guidance.invalid_reason =
+                    domain::GuidanceInvalidReason::none;
+            } else if (result.guidance.invalid_reason ==
+                       domain::GuidanceInvalidReason::none) {
+                result.guidance.invalid_reason =
+                    domain::GuidanceInvalidReason::algorithm_rejected;
+            }
+            result.guidance.command.valid = result.guidance.valid;
+            result.guidance.command.invalid_reason =
+                result.guidance.invalid_reason;
             record_timing(TimingStage::guidance,
                           std::chrono::steady_clock::now() - guidance_started);
             if (!result.guidance.valid) {
@@ -1124,12 +1214,8 @@ void GuidanceRuntime::processing_worker() {
             if (attitude_lookup->launched && result.guidance.valid &&
                 !faulted_.load() && !stop_requested_.load()) {
                 result.overlay.body_overload_valid = true;
-                result.overlay.body_overload_x_g =
-                    result.guidance.body_overload.x;
-                result.overlay.body_overload_y_g =
-                    result.guidance.body_overload.y;
-                result.overlay.body_overload_z_g =
-                    result.guidance.body_overload.z;
+                result.overlay.body_overload =
+                    result.guidance.command.overload_g;
                 const auto command_started = std::chrono::steady_clock::now();
                 bool generation_is_current = false;
                 bool sent = true;
@@ -1141,8 +1227,7 @@ void GuidanceRuntime::processing_worker() {
                         attitude_lookup->launch_generation;
                     if (generation_is_current && !stop_requested_.load()) {
                         sent = command_sink_->try_submit(
-                            {timestamp_ns, result.guidance,
-                             attitude_lookup->launch_generation});
+                            result.guidance.command);
                     }
                 }
                 record_timing(TimingStage::command,
@@ -1180,7 +1265,7 @@ void GuidanceRuntime::output_worker() {
             if (stop_requested_.load()) {
                 break;
             }
-            if (result.imu_state.launch_generation !=
+            if (result.flight_state.launch.generation !=
                 active_launch_generation_.load()) {
                 result = ProcessedFrame{};
                 continue;
@@ -1189,9 +1274,9 @@ void GuidanceRuntime::output_worker() {
                 result.overlay.processing_fps =
                     processing_fps_meter_.snapshot();
                 const auto output_started = std::chrono::steady_clock::now();
-                if (!frame_sink_->publish(result.frame, result.vision_result,
-                                          result.imu_state, result.guidance,
-                                          result.overlay)) {
+                if (!frame_sink_->publish(
+                        result.frame, result.vision_detection,
+                        result.flight_state, result.guidance, result.overlay)) {
                     set_fault("frame output failed");
                     return;
                 }

@@ -402,66 +402,59 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "max_camera_age_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_age_ns) || invalid();
         if (key == "capture_queue_capacity") return set_size(&config->guidance.capture_queue_capacity) || invalid();
         if (key == "output_queue_capacity") return set_size(&config->guidance.output_queue_capacity) || invalid();
-        if (key == "initial_roi_x") return set_int(&config->guidance.vision_config.initial_roi.x) || invalid();
-        if (key == "initial_roi_y") return set_int(&config->guidance.vision_config.initial_roi.y) || invalid();
-        if (key == "initial_roi_width") return set_int(&config->guidance.vision_config.initial_roi.width) || invalid();
-        if (key == "initial_roi_height") return set_int(&config->guidance.vision_config.initial_roi.height) || invalid();
-        if (key == "h_min") return parse_uint8(value, &config->guidance.vision_config.threshold.h_min) || invalid();
-        if (key == "h_max") return parse_uint8(value, &config->guidance.vision_config.threshold.h_max) || invalid();
-        if (key == "s_min") return parse_uint8(value, &config->guidance.vision_config.threshold.s_min) || invalid();
-        if (key == "s_max") return parse_uint8(value, &config->guidance.vision_config.threshold.s_max) || invalid();
-        if (key == "v_min") return parse_uint8(value, &config->guidance.vision_config.threshold.v_min) || invalid();
-        if (key == "v_max") return parse_uint8(value, &config->guidance.vision_config.threshold.v_max) || invalid();
-        if (key == "found_range_x") return set_int(&config->guidance.vision_config.found_range_x) || invalid();
-        if (key == "found_range_y") return set_int(&config->guidance.vision_config.found_range_y) || invalid();
-        if (key == "min_blob_area") return set_int(&config->guidance.vision_config.min_blob_area) || invalid();
-        if (key == "min_aspect_ratio") return set_double(&config->guidance.vision_config.min_aspect_ratio) || invalid();
-        if (key == "min_fill_ratio") return set_double(&config->guidance.vision_config.min_fill_ratio) || invalid();
+        auto& algorithms = config->algorithms;
+        if (key == "initial_roi_x") return set_int(&algorithms.vision_config.initial_roi.x) || invalid();
+        if (key == "initial_roi_y") return set_int(&algorithms.vision_config.initial_roi.y) || invalid();
+        if (key == "initial_roi_width") return set_int(&algorithms.vision_config.initial_roi.width) || invalid();
+        if (key == "initial_roi_height") return set_int(&algorithms.vision_config.initial_roi.height) || invalid();
+        if (key == "h_min") return parse_uint8(value, &algorithms.vision_config.threshold.h_min) || invalid();
+        if (key == "h_max") return parse_uint8(value, &algorithms.vision_config.threshold.h_max) || invalid();
+        if (key == "s_min") return parse_uint8(value, &algorithms.vision_config.threshold.s_min) || invalid();
+        if (key == "s_max") return parse_uint8(value, &algorithms.vision_config.threshold.s_max) || invalid();
+        if (key == "v_min") return parse_uint8(value, &algorithms.vision_config.threshold.v_min) || invalid();
+        if (key == "v_max") return parse_uint8(value, &algorithms.vision_config.threshold.v_max) || invalid();
+        if (key == "found_range_x") return set_int(&algorithms.vision_config.found_range_x) || invalid();
+        if (key == "found_range_y") return set_int(&algorithms.vision_config.found_range_y) || invalid();
+        if (key == "min_blob_area") return set_int(&algorithms.vision_config.min_blob_area) || invalid();
+        if (key == "min_aspect_ratio") return set_double(&algorithms.vision_config.min_aspect_ratio) || invalid();
+        if (key == "min_fill_ratio") return set_double(&algorithms.vision_config.min_fill_ratio) || invalid();
         if (key == "camera_fx") return set_double(&config->guidance.camera_intrinsics.fx) || invalid();
         if (key == "camera_fy") return set_double(&config->guidance.camera_intrinsics.fy) || invalid();
         if (key == "camera_cx") return set_double(&config->guidance.camera_intrinsics.cx) || invalid();
         if (key == "camera_cy") return set_double(&config->guidance.camera_intrinsics.cy) || invalid();
-        if (key == "los_kalman_sigma_a" || key == "los_process_noise") return set_double(&config->guidance.los_rate_filter.sigma_a) || invalid();
-        if (key == "los_kalman_sigma_q" || key == "los_measurement_noise") return set_double(&config->guidance.los_rate_filter.sigma_q) || invalid();
-        if (key == "los_kalman_sigma_a_pitch") return set_double(&config->guidance.los_rate_filter.sigma_a_pitch) || invalid();
-        if (key == "los_kalman_sigma_a_yaw") return set_double(&config->guidance.los_rate_filter.sigma_a_yaw) || invalid();
-        if (key == "los_initial_covariance") return set_double(&config->guidance.los_rate_filter.initial_covariance) || invalid();
-        if (key == "los_enable_filter") return parse_bool(value, &config->guidance.los_rate_filter.enable_filter) || invalid();
-        if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&config->guidance.attitude.stationary_acceleration_tolerance_mps2) || invalid();
-        if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&config->guidance.attitude.gyro_stationary_threshold_rad_s) || invalid();
-        if (key == "attitude_gyro_bias_filter_alpha") return set_double(&config->guidance.attitude.gyro_bias_filter_alpha) || invalid();
-        if (key == "launch_ax_threshold_mps2") return set_double(&config->guidance.attitude.launch_ax_threshold_mps2) || invalid();
-        if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &config->guidance.attitude.launch_confirm_ns) || invalid();
-        if (key == "accelerometer_specific_force") return parse_bool(value, &config->guidance.attitude.accelerometer_specific_force) || invalid();
-        if (key == "png_navigation_constant_y") return set_double(&config->guidance.png_guidance.navigation_constant_y) || invalid();
-        if (key == "png_navigation_constant_z") return set_double(&config->guidance.png_guidance.navigation_constant_z) || invalid();
+        if (key == "los_kalman_sigma_a" || key == "los_process_noise") return set_double(&algorithms.los_rate_filter.sigma_a) || invalid();
+        if (key == "los_kalman_sigma_q" || key == "los_measurement_noise") return set_double(&algorithms.los_rate_filter.sigma_q) || invalid();
+        if (key == "los_kalman_sigma_a_pitch") return set_double(&algorithms.los_rate_filter.sigma_a_pitch) || invalid();
+        if (key == "los_kalman_sigma_a_yaw") return set_double(&algorithms.los_rate_filter.sigma_a_yaw) || invalid();
+        if (key == "los_initial_covariance") return set_double(&algorithms.los_rate_filter.initial_covariance) || invalid();
+        if (key == "los_enable_filter") return parse_bool(value, &algorithms.los_rate_filter.enable_filter) || invalid();
+        if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
+        if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
+        if (key == "attitude_gyro_bias_filter_alpha") return set_double(&algorithms.attitude.gyro_bias_filter_alpha) || invalid();
+        if (key == "launch_ax_threshold_mps2") return set_double(&algorithms.attitude.launch_ax_threshold_mps2) || invalid();
+        if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_confirm_ns) || invalid();
+        if (key == "accelerometer_specific_force") return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
+        if (key == "png_navigation_constant_y") return set_double(&algorithms.png_guidance.navigation_constant_y) || invalid();
+        if (key == "png_navigation_constant_z") return set_double(&algorithms.png_guidance.navigation_constant_z) || invalid();
         if (key == "png_gravity") {
-            if (!set_double(&config->guidance.png_guidance.gravity)) {
+            if (!set_double(&algorithms.png_guidance.gravity)) {
                 return invalid();
             }
-            config->guidance.attitude.gravity_mps2 =
-                config->guidance.png_guidance.gravity;
+            algorithms.attitude.gravity_mps2 = algorithms.png_guidance.gravity;
             return true;
         }
-        if (key == "png_maximum_command_overload") return set_double(&config->guidance.png_guidance.maximum_command_overload) || invalid();
-        if (key == "png_maximum_command_acceleration") return set_double(&config->guidance.png_guidance.maximum_command_acceleration) || invalid();
+        if (key == "png_maximum_command_overload") return set_double(&algorithms.png_guidance.maximum_command_overload) || invalid();
+        if (key == "png_maximum_command_acceleration") return set_double(&algorithms.png_guidance.maximum_command_acceleration) || invalid();
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
             const int row = key[16] - '0';
             const int column = key[17] - '0';
             if (row >= 0 && row < 3 && column >= 0 && column < 3 &&
                 parse_double(value, &decimal)) {
-                double* matrix[] = {
-                    &config->guidance.camera_to_body.m00,
-                    &config->guidance.camera_to_body.m01,
-                    &config->guidance.camera_to_body.m02,
-                    &config->guidance.camera_to_body.m10,
-                    &config->guidance.camera_to_body.m11,
-                    &config->guidance.camera_to_body.m12,
-                    &config->guidance.camera_to_body.m20,
-                    &config->guidance.camera_to_body.m21,
-                    &config->guidance.camera_to_body.m22,
-                };
-                *matrix[row * 3 + column] = decimal;
+                auto matrix = config->guidance.dart_from_camera.matrix();
+                matrix[static_cast<std::size_t>(row * 3 + column)] = decimal;
+                config->guidance.dart_from_camera =
+                    domain::Rotation3<domain::DartFrameTag,
+                                     domain::CameraFrameTag>(matrix);
                 return true;
             }
         }
@@ -553,7 +546,10 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         return fail_global(path, "串口 IMU 模式要求 read_timeout_ms 大于 0",
                            error);
     }
-    const auto& vision = config.guidance.vision_config;
+    const auto& vision = config.algorithms.vision_config;
+    const auto& los_filter = config.algorithms.los_rate_filter;
+    const auto& attitude = config.algorithms.attitude;
+    const auto& png = config.algorithms.png_guidance;
     if (config.guidance.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
@@ -567,24 +563,21 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         vision.min_fill_ratio <= 0.0 ||
         config.guidance.camera_intrinsics.fx <= 0.0 ||
         config.guidance.camera_intrinsics.fy <= 0.0 ||
-        config.guidance.los_rate_filter.sigma_a <= 0.0 ||
-        config.guidance.los_rate_filter.sigma_q <= 0.0 ||
-        config.guidance.los_rate_filter.sigma_a_pitch < 0.0 ||
-        config.guidance.los_rate_filter.sigma_a_yaw < 0.0 ||
-        config.guidance.los_rate_filter.initial_covariance < 0.0 ||
-        config.guidance.attitude.gravity_mps2 <= 0.0 ||
-        config.guidance.attitude.stationary_acceleration_tolerance_mps2 <= 0.0 ||
-        config.guidance.attitude.gyro_stationary_threshold_rad_s <= 0.0 ||
-        config.guidance.attitude.gyro_bias_filter_alpha <= 0.0 ||
-        config.guidance.attitude.gyro_bias_filter_alpha > 1.0 ||
-        config.guidance.attitude.launch_ax_threshold_mps2 <= 0.0 ||
-        config.guidance.attitude.launch_confirm_ns <= 0 ||
-        config.guidance.png_guidance.navigation_constant_y <= 0.0 ||
-        config.guidance.png_guidance.navigation_constant_z <= 0.0 ||
-        config.guidance.png_guidance.gravity <= 0.0 ||
-        config.guidance.png_guidance.maximum_command_overload < 0.0 ||
-        std::isnan(config.guidance.png_guidance.maximum_command_acceleration) ||
-        config.guidance.png_guidance.maximum_command_acceleration < 0.0) {
+        los_filter.sigma_a <= 0.0 || los_filter.sigma_q <= 0.0 ||
+        los_filter.sigma_a_pitch < 0.0 || los_filter.sigma_a_yaw < 0.0 ||
+        los_filter.initial_covariance < 0.0 ||
+        attitude.gravity_mps2 <= 0.0 ||
+        attitude.stationary_acceleration_tolerance_mps2 <= 0.0 ||
+        attitude.gyro_stationary_threshold_rad_s <= 0.0 ||
+        attitude.gyro_bias_filter_alpha <= 0.0 ||
+        attitude.gyro_bias_filter_alpha > 1.0 ||
+        attitude.launch_ax_threshold_mps2 <= 0.0 ||
+        attitude.launch_confirm_ns <= 0 ||
+        png.navigation_constant_y <= 0.0 ||
+        png.navigation_constant_z <= 0.0 || png.gravity <= 0.0 ||
+        png.maximum_command_overload < 0.0 ||
+        std::isnan(png.maximum_command_acceleration) ||
+        png.maximum_command_acceleration < 0.0) {
         return fail_global(path, "制导参数无效", error);
     }
     if (config.output.mode != output::OutputMode::rtsp &&

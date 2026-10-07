@@ -1,9 +1,14 @@
 #ifndef MOSAS_GUIDANCE_RUNTIME_HPP
 #define MOSAS_GUIDANCE_RUNTIME_HPP
 
-#include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/domain/algorithm_results.hpp>
+#include <mosas/ports/clock.hpp>
+#include <mosas/ports/flight_state_estimator.hpp>
+#include <mosas/ports/guidance_law.hpp>
+#include <mosas/ports/los_estimator.hpp>
+#include <mosas/ports/los_rate_filter.hpp>
+#include <mosas/ports/vision_detector.hpp>
 #include <mosas/runtime/async_info_logger.hpp>
-#include <mosas/runtime/attitude_estimator.hpp>
 #include <mosas/runtime/attitude_history.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
 #include <mosas/runtime/imu_angular_velocity_history.hpp>
@@ -63,21 +68,22 @@ struct GuidanceRuntimeConfig {
     TimestampNs max_imu_age_ns = 50000000;
     TimestampNs max_camera_future_ns = 50000000;
     TimestampNs max_camera_age_ns = 2000000000;
-    VisionConfig vision_config{
-        {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
-        0.35};
-    CameraIntrinsics camera_intrinsics{1.0, 1.0, 0.0, 0.0};
-    RotationMatrix3 camera_to_body{
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0};
-    LineOfSightRateFilterConfig los_rate_filter{};
-    PngGuidanceConfig png_guidance{};
-    AttitudeEstimatorConfig attitude{};
+    domain::CameraIntrinsics camera_intrinsics{1.0, 1.0, 0.0, 0.0};
+    domain::Rotation3<domain::DartFrameTag, domain::CameraFrameTag>
+        dart_from_camera{};
     CameraCaptureConfig camera_capture{};
     std::size_t capture_queue_capacity = 1;
     std::size_t output_queue_capacity = 1;
     std::size_t info_log_queue_capacity = 256;
+};
+
+struct GuidanceRuntimeDependencies {
+    std::unique_ptr<ports::IVisionDetector> vision_detector;
+    std::unique_ptr<ports::IFlightStateEstimator> flight_state_estimator;
+    std::unique_ptr<ports::ILosEstimator> los_estimator;
+    std::unique_ptr<ports::ILosRateFilter> los_rate_filter;
+    std::unique_ptr<ports::IGuidanceLaw> guidance_law;
+    std::unique_ptr<ports::IMonotonicClock> monotonic_clock;
 };
 
 class GuidanceRuntime {
@@ -86,11 +92,13 @@ public:
                     std::unique_ptr<CameraSource> camera_source,
                     std::unique_ptr<CommandSink> command_sink,
                     const GuidanceRuntimeConfig& config,
+                    GuidanceRuntimeDependencies dependencies,
                     std::unique_ptr<FrameSink> frame_sink = nullptr);
     GuidanceRuntime(std::unique_ptr<ImuSource> imu_source,
                     std::unique_ptr<CameraSource> camera_source,
                     std::unique_ptr<CommandSink> command_sink,
                     const GuidanceRuntimeConfig& config,
+                    GuidanceRuntimeDependencies dependencies,
                     std::unique_ptr<FrameSink> frame_sink,
                     std::ostream& output);
     ~GuidanceRuntime();
@@ -111,10 +119,10 @@ public:
 private:
     struct ProcessedFrame {
         CameraFrame frame;
-        VisionResult vision_result{};
-        ImuStateSnapshot imu_state{};
-        PngGuidanceOutput guidance{};
-        VisionOverlayData overlay{};
+        domain::VisionDetection vision_detection{};
+        domain::FlightStateSnapshot flight_state{};
+        domain::GuidanceOutput guidance{};
+        domain::GuidanceOverlay overlay{};
         std::chrono::steady_clock::time_point enqueued_at{};
     };
 
@@ -159,13 +167,13 @@ private:
     std::unique_ptr<CommandSink> command_sink_;
     std::unique_ptr<FrameSink> frame_sink_;
     GuidanceRuntimeConfig config_;
+    GuidanceRuntimeDependencies dependencies_;
     std::ostream* output_ = nullptr;
     AsyncInfoLogger info_logger_;
     LatestFrameQueue<QueuedCameraFrame> capture_queue_;
     LatestFrameQueue<ProcessedFrame> output_queue_;
     ImuAngularVelocityHistory angular_velocity_history_;
     AttitudeHistory attitude_history_;
-    AttitudeEstimator attitude_estimator_;
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};

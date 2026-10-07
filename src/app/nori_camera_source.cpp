@@ -1,4 +1,5 @@
 #include <mosas/app/nori_camera_source.hpp>
+#include <mosas/vision/opencv_image_frame.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -418,7 +419,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     }
     CaptureGuard capture_guard(this);
 
-    frame->image.release();
+    frame->image = {};
     frame->timestamp_ns = -1;
     frame->received_timestamp_ns = -1;
     frame->timestamp_source = runtime::CameraTimestampSource::unknown;
@@ -457,6 +458,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     }
 
     const auto decode_convert_started = std::chrono::steady_clock::now();
+    cv::Mat decoded_image;
     try {
         if (pending.media_type == VIDEO_MEDIA_TYPE_MJPG) {
             if (pending.bytes.size() >
@@ -474,7 +476,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
                           config_.device);
                 return fatal_result();
             }
-            frame->image = std::move(decoded);
+            decoded_image = std::move(decoded);
         } else if (pending.media_type == VIDEO_MEDIA_TYPE_YUYV) {
             const uint64_t pixel_count = static_cast<uint64_t>(pending.width) *
                                           static_cast<uint64_t>(pending.height);
@@ -502,7 +504,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
                 set_error("capture YUYV 转 BGR 失败，设备 " + config_.device);
                 return fatal_result();
             }
-            frame->image = std::move(bgr);
+            decoded_image = std::move(bgr);
         } else {
             set_error("capture 收到不支持的视频格式，设备 " + config_.device);
             return fatal_result();
@@ -515,6 +517,10 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
         set_error("capture 图像转换发生未知异常，设备 " + config_.device);
         return fatal_result();
     }
+    if (!vision::assign_bgr8_mat(&frame->image, std::move(decoded_image))) {
+        set_error("capture 无法保留 BGR 图像帧，设备 " + config_.device);
+        return fatal_result();
+    }
     record_camera_timing(&decode_convert_timing_,
                          std::chrono::steady_clock::now() -
                              decode_convert_started);
@@ -522,7 +528,7 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     frame->timestamp_ns = pending.timestamp_ns;
     frame->received_timestamp_ns = pending.received_timestamp_ns;
     frame->timestamp_source = pending.timestamp_source;
-    if (frame->image.empty() || frame->image.type() != CV_8UC3) {
+    if (!frame->image.is_valid()) {
         set_error("capture 输出图像无效，设备 " + config_.device);
         return fatal_result();
     }
@@ -538,8 +544,7 @@ double NoriSdkCameraSource::capture_fps() const noexcept {
 }
 
 runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) {
-    if (frame == nullptr || frame->image.empty() ||
-        frame->image.type() != CV_8UC3) {
+    if (frame == nullptr || !frame->image.is_valid()) {
         set_error("相机帧预处理输入无效，设备 " + config_.device);
         return fatal_result();
     }
@@ -548,14 +553,20 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
         return {runtime::SourceStatus::cancelled,
                 "camera source is not configured"};
     }
+    auto image = vision::make_bgr8_mat_view(frame->image);
+    if (image.empty()) {
+        set_error("相机帧预处理无法构造 OpenCV 图像视图，设备 " +
+                  config_.device);
+        return fatal_result();
+    }
+    auto backing_owner = frame->image.owner;
     try {
-        if (frame->image.cols != config_.width ||
-            frame->image.rows != config_.height) {
-            cv::resize(frame->image, frame->image,
+        if (image.cols != config_.width || image.rows != config_.height) {
+            cv::resize(image, image,
                        cv::Size(config_.width, config_.height));
         }
         // 相机倒装时在图像链路统一旋转 180 度，避免再通过外参重复补偿。
-        cv::flip(frame->image, frame->image, -1);
+        cv::flip(image, image, -1);
     } catch (const std::exception& error) {
         set_error("相机帧预处理失败：" + std::string(error.what()) +
                   "，设备 " + config_.device);
@@ -564,7 +575,10 @@ runtime::SourceResult NoriSdkCameraSource::prepare(runtime::CameraFrame* frame) 
         set_error("相机帧预处理发生未知异常，设备 " + config_.device);
         return fatal_result();
     }
-    if (frame->image.empty() || frame->image.type() != CV_8UC3) {
+    if (!vision::assign_bgr8_mat(&frame->image, std::move(image),
+                                 std::move(backing_owner)) ||
+        frame->image.width != config_.width ||
+        frame->image.height != config_.height) {
         set_error("相机帧预处理输出无效，设备 " + config_.device);
         return fatal_result();
     }

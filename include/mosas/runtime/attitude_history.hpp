@@ -1,8 +1,8 @@
 #ifndef MOSAS_RUNTIME_ATTITUDE_HISTORY_HPP
 #define MOSAS_RUNTIME_ATTITUDE_HISTORY_HPP
 
-#include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/clock.hpp>
+#include <mosas/runtime/rotation_matrix3.hpp>
 
 #include <atomic>
 #include <cstddef>

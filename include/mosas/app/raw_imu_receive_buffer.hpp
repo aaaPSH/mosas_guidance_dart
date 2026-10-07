@@ -5,7 +5,6 @@
 #include <mosas/runtime/spsc_ring.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -34,8 +33,6 @@ public:
     }
 
     bool wait_for_data() noexcept;
-    bool wait_for_data_until(
-        std::chrono::steady_clock::time_point deadline) noexcept;
     void close() noexcept;
 
     // 仅允许在串口接收线程和消费线程停止后调用。

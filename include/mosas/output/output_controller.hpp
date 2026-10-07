@@ -35,18 +35,13 @@ public:
     OutputController& operator=(const OutputController&) = delete;
 
     bool publish(const runtime::CameraFrame& frame,
-                 const VisionResult& vision_result,
-                 const runtime::ImuStateSnapshot& imu_state,
-                 const PngGuidanceOutput& guidance) override;
-
-    bool publish(const runtime::CameraFrame& frame,
-                 const VisionResult& vision_result,
-                 const runtime::ImuStateSnapshot& imu_state,
-                 const PngGuidanceOutput& guidance,
-                 const VisionOverlayData& overlay) override;
+                 const domain::VisionDetection& vision_detection,
+                 const domain::FlightStateSnapshot& flight_state,
+                 const domain::GuidanceOutput& guidance,
+                 const domain::GuidanceOverlay& overlay) override;
 
     bool try_record_imu_sample(
-        const runtime::ImuAngularVelocitySample& sample) noexcept override;
+        const domain::ImuKinematicSample& sample) noexcept override;
 
     void cancel() noexcept override;
     void reset() noexcept override;
@@ -56,10 +51,10 @@ public:
 
 private:
     bool publish_impl(const runtime::CameraFrame& frame,
-                      const VisionResult& vision_result,
-                      const runtime::ImuStateSnapshot& imu_state,
-                      const PngGuidanceOutput& guidance,
-                      const VisionOverlayData* overlay);
+                      const domain::VisionDetection& vision_detection,
+                      const domain::FlightStateSnapshot& flight_state,
+                      const domain::GuidanceOutput& guidance,
+                      const domain::GuidanceOverlay& overlay);
     bool publish_rtsp(const runtime::CameraFrame& frame,
                       const cv::Mat& rendered_frame);
     bool validate_config();

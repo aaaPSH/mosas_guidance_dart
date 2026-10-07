@@ -1,8 +1,8 @@
 #ifndef MOSAS_RUNTIME_ATTITUDE_ESTIMATOR_HPP
 #define MOSAS_RUNTIME_ATTITUDE_ESTIMATOR_HPP
 
-#include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/runtime/imu_angular_velocity.hpp>
+#include <mosas/runtime/rotation_matrix3.hpp>
 
 #include <cstdint>
 

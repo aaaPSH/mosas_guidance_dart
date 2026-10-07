@@ -2,6 +2,7 @@
 #include <mosas/app/host_adapters.hpp>
 #include <mosas/app/nori_camera_source.hpp>
 #include <mosas/app/serial_imu_source.hpp>
+#include <mosas/app/default_guidance_algorithms.hpp>
 #include <mosas/output/output_controller.hpp>
 #include <mosas/runtime/guidance_runtime.hpp>
 
@@ -188,13 +189,11 @@ int main(int argc, char** argv) {
     mosas::app::SerialImuSource* serial_imu_source = nullptr;
     if (config.imu.mode == mosas::app::ImuMode::simulated) {
         imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
-            config.imu.sample_rate_hz, config.guidance.attitude.gravity_mps2,
-            config.guidance.attitude.accelerometer_specific_force);
+            config.imu.sample_rate_hz, config.algorithms.attitude.gravity_mps2,
+            config.algorithms.attitude.accelerometer_specific_force);
     } else if (config.imu.mode == mosas::app::ImuMode::serial) {
         auto source = std::make_unique<mosas::app::SerialImuSource>(
-            serial_port, config.imu.sample_rate_hz,
-            config.serial.read_timeout_ms,
-            config.enable_serial_interval_statistics, std::cerr,
+            serial_port, config.enable_serial_interval_statistics,
             config.imu.measurement_latency_ns, config.imu.receive_thread);
         serial_imu_source = source.get();
         imu_source = std::move(source);
@@ -229,9 +228,12 @@ int main(int argc, char** argv) {
         std::make_unique<mosas::output::OutputController>(
             std::move(output_config));
 
+    auto algorithm_dependencies =
+        mosas::app::make_default_guidance_algorithms(config.algorithms);
     mosas::runtime::GuidanceRuntime runtime(
         std::move(imu_source), std::move(camera_source),
-        std::move(command_sink), config.guidance, std::move(frame_sink));
+        std::move(command_sink), config.guidance,
+        std::move(algorithm_dependencies), std::move(frame_sink));
     if (!runtime.start()) {
         std::cerr << "启动制导程序失败: " << runtime.last_error() << '\n';
         return 1;

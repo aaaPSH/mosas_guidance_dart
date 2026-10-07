@@ -1,6 +1,7 @@
 #ifndef GUIDANCE_ESTIMATOR_HPP
 #define GUIDANCE_ESTIMATOR_HPP
 
+#include <mosas/runtime/rotation_matrix3.hpp>
 #include <mosas/runtime/vector3.hpp>
 #include <mosas/vision/vision_types.hpp>
 
@@ -11,19 +12,6 @@ struct CameraIntrinsics {
     double fy;
     double cx;
     double cy;
-};
-
-// 三维旋转矩阵，表示列向量坐标变换：目标向量 = R * 源向量。
-struct RotationMatrix3 {
-    double m00;
-    double m01;
-    double m02;
-    double m10;
-    double m11;
-    double m12;
-    double m20;
-    double m21;
-    double m22;
 };
 
 struct LineOfSight {

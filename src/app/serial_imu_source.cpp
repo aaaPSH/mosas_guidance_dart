@@ -1,12 +1,7 @@
 #include <mosas/app/serial_imu_source.hpp>
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
 #include <limits>
-#include <iostream>
-#include <ostream>
-#include <thread>
 #include <utility>
 
 namespace mosas::app {
@@ -35,58 +30,14 @@ runtime::TimestampNs source_wire_byte_period(
     return port == nullptr ? 1 : wire_byte_period_ns(port->config());
 }
 
-serial_package::ReceiveThreadConfig default_receive_config() noexcept {
-    serial_package::ReceiveThreadConfig config;
-    config.read_chunk_size = runtime::RawSerialChunk::kMaxChunkBytes;
-    config.realtime_priority = 20;
-    config.require_realtime_priority = false;
-    return config;
-}
-
 }  // namespace
 
 SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms, false,
-                      std::cerr) {}
-
-SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms, std::ostream& output)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms, false,
-                      output, 0) {}
-
-SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms, bool enable_interval_statistics)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
-                      enable_interval_statistics, std::cerr, 0) {}
-
-SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms, bool enable_interval_statistics,
-    std::ostream& output)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
-                      enable_interval_statistics, output, 0,
-                      default_receive_config()) {}
-
-SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms, bool enable_interval_statistics,
-    std::ostream& output, runtime::TimestampNs measurement_latency_ns)
-    : SerialImuSource(std::move(port), sample_rate_hz, read_timeout_ms,
-                      enable_interval_statistics, output,
-                      measurement_latency_ns, default_receive_config()) {}
-
-SerialImuSource::SerialImuSource(
-    std::shared_ptr<serial_package::SerialPort> port, double sample_rate_hz,
-    int read_timeout_ms, bool enable_interval_statistics,
-    std::ostream& output, runtime::TimestampNs measurement_latency_ns,
+    std::shared_ptr<serial_package::SerialPort> port,
+    bool enable_interval_statistics,
+    runtime::TimestampNs measurement_latency_ns,
     const serial_package::ReceiveThreadConfig& receive_config)
     : port_(std::move(port)),
-      output_(&output),
-      read_timeout_ms_(read_timeout_ms),
       measurement_latency_ns_(measurement_latency_ns),
       interval_statistics_enabled_(enable_interval_statistics),
       raw_receive_buffer_(kRawQueueCapacity),
@@ -95,14 +46,6 @@ SerialImuSource::SerialImuSource(
       receive_config_(receive_config) {
     if (port_ == nullptr) {
         configuration_error_ = "串口对象为空";
-        return;
-    }
-    if (!std::isfinite(sample_rate_hz) || sample_rate_hz <= 0.0) {
-        configuration_error_ = "IMU 采样频率必须是大于 0 的有限数值";
-        return;
-    }
-    if (read_timeout_ms_ <= 0) {
-        configuration_error_ = "串口 IMU read_timeout_ms 必须大于 0";
         return;
     }
     if (measurement_latency_ns_ < 0) {
@@ -137,7 +80,6 @@ runtime::SourceResult SerialImuSource::start() {
     last_interval_timestamp_ns_ = -1;
     last_sample_timestamp_ns_.store(-1, std::memory_order_relaxed);
     delivered_sample_count_.store(0, std::memory_order_relaxed);
-    timeout_count_.store(0, std::memory_order_relaxed);
 
     if (!port_->start_receive(RawImuReceiveBuffer::receive_callback,
                               &raw_receive_buffer_, receive_config_)) {
@@ -176,39 +118,6 @@ bool SerialImuSource::wait_for_data() noexcept {
     return raw_receive_buffer_.wait_for_data();
 }
 
-runtime::SourceResult SerialImuSource::read(runtime::ImuSample* sample) {
-    if (sample == nullptr) {
-        return fatal_result("IMU sample 输出指针为空");
-    }
-    const runtime::SourceResult start_result = start();
-    if (start_result.status != runtime::SourceStatus::ok) {
-        return start_result;
-    }
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(read_timeout_ms_);
-    runtime::ImuAngularVelocitySample angular_velocity{};
-    while (!cancelled_.load(std::memory_order_acquire) &&
-           std::chrono::steady_clock::now() < deadline) {
-        if (try_pop(&angular_velocity)) {
-            sample->timestamp_ns = angular_velocity.timestamp_ns;
-            sample->acceleration = angular_velocity.acceleration;
-            sample->angular_velocity = angular_velocity.angular_velocity;
-            sample->servo_control_p_normalized =
-                angular_velocity.servo_control_p_normalized;
-            sample->servo_control_y_normalized =
-                angular_velocity.servo_control_y_normalized;
-            return {runtime::SourceStatus::ok, {}};
-        }
-        if (!raw_receive_buffer_.wait_for_data_until(deadline)) {
-            break;
-        }
-    }
-    if (cancelled_.load(std::memory_order_acquire)) {
-        return {runtime::SourceStatus::cancelled, {}};
-    }
-    return timeout_result();
-}
-
 void SerialImuSource::cancel() noexcept {
     cancelled_.store(true, std::memory_order_release);
     raw_receive_buffer_.close();
@@ -235,7 +144,6 @@ runtime::ImuSourceDiagnostics SerialImuSource::diagnostics() const noexcept {
     diagnostics.buffered_bytes = raw_receive_buffer_.queued_chunk_count();
     diagnostics.delivered_sample_count =
         delivered_sample_count_.load(std::memory_order_relaxed);
-    diagnostics.timeout_count = timeout_count_.load(std::memory_order_relaxed);
     diagnostics.parse_error_count = decoder_.parse_error_count();
     diagnostics.received_chunk_count =
         raw_receive_buffer_.received_chunk_count();
@@ -288,14 +196,8 @@ bool SerialImuSource::deliver_sample(
 }
 
 runtime::SourceResult SerialImuSource::fatal_result(const char* message) {
-    (void)output_;
     return {runtime::SourceStatus::fatal,
             message == nullptr ? "串口 IMU 数据源错误" : message};
-}
-
-runtime::SourceResult SerialImuSource::timeout_result() noexcept {
-    timeout_count_.fetch_add(1, std::memory_order_relaxed);
-    return {runtime::SourceStatus::timeout, "等待 IMU 运动样本超时"};
 }
 
 }  // namespace mosas::app

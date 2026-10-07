@@ -1,4 +1,5 @@
 #include <mosas/runtime/attitude_history.hpp>
+#include <mosas/runtime/vector3.hpp>
 
 #include <cmath>
 #include <cstring>
