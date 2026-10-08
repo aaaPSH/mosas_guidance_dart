@@ -1,7 +1,7 @@
 #include <mosas/app/app_config.hpp>
-#include <mosas/app/host_adapters.hpp>
-#include <mosas/app/nori_camera_source.hpp>
-#include <mosas/app/serial_imu_source.hpp>
+#include <mosas/adapters/host_adapters.hpp>
+#include <mosas/adapters/nori_camera_source.hpp>
+#include <mosas/adapters/serial_imu_source.hpp>
 #include <mosas/app/default_guidance_algorithms.hpp>
 #include <mosas/app/output_factory.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>

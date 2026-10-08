@@ -1,5 +1,5 @@
-#ifndef MOSAS_APP_RAW_IMU_RECEIVE_BUFFER_HPP
-#define MOSAS_APP_RAW_IMU_RECEIVE_BUFFER_HPP
+#ifndef MOSAS_ADAPTERS_RAW_IMU_RECEIVE_BUFFER_HPP
+#define MOSAS_ADAPTERS_RAW_IMU_RECEIVE_BUFFER_HPP
 
 #include <mosas/runtime/raw_serial_chunk.hpp>
 #include <mosas/runtime/spsc_ring.hpp>
@@ -63,4 +63,4 @@ private:
 
 }  // namespace mosas::app
 
-#endif  // MOSAS_APP_RAW_IMU_RECEIVE_BUFFER_HPP
+#endif  // MOSAS_ADAPTERS_RAW_IMU_RECEIVE_BUFFER_HPP

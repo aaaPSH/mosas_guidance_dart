@@ -1,8 +1,8 @@
-#ifndef MOSAS_APP_SERIAL_IMU_SOURCE_HPP
-#define MOSAS_APP_SERIAL_IMU_SOURCE_HPP
+#ifndef MOSAS_ADAPTERS_SERIAL_IMU_SOURCE_HPP
+#define MOSAS_ADAPTERS_SERIAL_IMU_SOURCE_HPP
 
-#include <mosas/app/imu_stream_decoder.hpp>
-#include <mosas/app/raw_imu_receive_buffer.hpp>
+#include <mosas/adapters/imu_stream_decoder.hpp>
+#include <mosas/adapters/raw_imu_receive_buffer.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 #include <serial_package/serial_port.hpp>
 
@@ -74,4 +74,4 @@ private:
 
 }  // namespace mosas::app
 
-#endif  // MOSAS_APP_SERIAL_IMU_SOURCE_HPP
+#endif  // MOSAS_ADAPTERS_SERIAL_IMU_SOURCE_HPP

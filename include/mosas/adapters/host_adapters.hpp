@@ -1,5 +1,5 @@
-#ifndef MOSAS_APP_HOST_ADAPTERS_HPP
-#define MOSAS_APP_HOST_ADAPTERS_HPP
+#ifndef MOSAS_ADAPTERS_HOST_ADAPTERS_HPP
+#define MOSAS_ADAPTERS_HOST_ADAPTERS_HPP
 
 #include <mosas/app/app_config.hpp>
 #include <mosas/runtime/async_info_logger.hpp>
@@ -94,4 +94,4 @@ private:
 
 }  // mosas::app 命名空间结束
 
-#endif  // MOSAS_APP_HOST_ADAPTERS_HPP
+#endif  // MOSAS_ADAPTERS_HOST_ADAPTERS_HPP

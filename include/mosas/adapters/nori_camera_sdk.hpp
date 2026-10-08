@@ -1,5 +1,5 @@
-#ifndef MOSAS_APP_NORI_CAMERA_SDK_HPP
-#define MOSAS_APP_NORI_CAMERA_SDK_HPP
+#ifndef MOSAS_ADAPTERS_NORI_CAMERA_SDK_HPP
+#define MOSAS_ADAPTERS_NORI_CAMERA_SDK_HPP
 
 #include <Nori_Xvision_API/Nori_Xvision_API.h>
 
@@ -113,4 +113,4 @@ private:
 
 }  // mosas::app 命名空间结束
 
-#endif  // MOSAS_APP_NORI_CAMERA_SDK_HPP 头文件保护结束
+#endif  // MOSAS_ADAPTERS_NORI_CAMERA_SDK_HPP 头文件保护结束

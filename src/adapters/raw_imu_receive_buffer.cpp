@@ -1,4 +1,4 @@
-#include <mosas/app/raw_imu_receive_buffer.hpp>
+#include <mosas/adapters/raw_imu_receive_buffer.hpp>
 
 #include <cstring>
 

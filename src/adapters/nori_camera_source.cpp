@@ -1,4 +1,4 @@
-#include <mosas/app/nori_camera_source.hpp>
+#include <mosas/adapters/nori_camera_source.hpp>
 #include <mosas/vision/opencv_image_frame.hpp>
 
 #include <cmath>

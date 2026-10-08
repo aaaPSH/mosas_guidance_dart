@@ -1,4 +1,4 @@
-#include <mosas/app/imu_stream_decoder.hpp>
+#include <mosas/adapters/imu_stream_decoder.hpp>
 
 #include <mosas/domain/imu_time_model.hpp>
 

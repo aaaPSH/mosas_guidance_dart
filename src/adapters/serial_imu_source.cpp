@@ -1,4 +1,4 @@
-#include <mosas/app/serial_imu_source.hpp>
+#include <mosas/adapters/serial_imu_source.hpp>
 
 #include <algorithm>
 #include <limits>

@@ -1,8 +1,8 @@
-#ifndef MOSAS_APP_NORI_CAMERA_SOURCE_HPP
-#define MOSAS_APP_NORI_CAMERA_SOURCE_HPP
+#ifndef MOSAS_ADAPTERS_NORI_CAMERA_SOURCE_HPP
+#define MOSAS_ADAPTERS_NORI_CAMERA_SOURCE_HPP
 
 #include <mosas/app/app_config.hpp>
-#include <mosas/app/nori_camera_sdk.hpp>
+#include <mosas/adapters/nori_camera_sdk.hpp>
 #include <mosas/runtime/frame_timing.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
 #include <mosas/runtime/timing_distribution.hpp>
@@ -149,4 +149,4 @@ private:
 
 }  // mosas::app 命名空间结束
 
-#endif  // MOSAS_APP_NORI_CAMERA_SOURCE_HPP 头文件保护结束
+#endif  // MOSAS_ADAPTERS_NORI_CAMERA_SOURCE_HPP 头文件保护结束

@@ -1,4 +1,4 @@
-#include <mosas/app/nori_camera_sdk.hpp>
+#include <mosas/adapters/nori_camera_sdk.hpp>
 
 #include <iomanip>
 #include <mutex>

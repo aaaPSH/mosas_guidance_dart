@@ -169,15 +169,15 @@ target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads
 
 add_library(mosas_app STATIC
     src/app/app_config.cpp
-    src/app/command_adapter.cpp
     src/app/default_guidance_algorithms.cpp
-    src/app/host_adapters.cpp
-    src/app/imu_stream_decoder.cpp
-    src/app/nori_camera_sdk.cpp
-    src/app/nori_camera_source.cpp
     src/app/output_factory.cpp
-    src/app/raw_imu_receive_buffer.cpp
-    src/app/serial_imu_source.cpp
+    src/adapters/command_adapter.cpp
+    src/adapters/host_adapters.cpp
+    src/adapters/imu_stream_decoder.cpp
+    src/adapters/nori_camera_sdk.cpp
+    src/adapters/nori_camera_source.cpp
+    src/adapters/raw_imu_receive_buffer.cpp
+    src/adapters/serial_imu_source.cpp
 )
 configure_mosas_target(mosas_app)
 target_include_directories(mosas_app
@@ -277,7 +277,7 @@ if(BUILD_TESTING)
 
     add_executable(imu_time_model_test
         tests/imu_time_model_test.cpp
-        src/app/imu_stream_decoder.cpp
+        src/adapters/imu_stream_decoder.cpp
     )
     configure_mosas_target(imu_time_model_test)
     target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
@@ -397,6 +397,9 @@ if(BUILD_TESTING)
     if(MOSAS_BUILD_APPLICATION)
         add_executable(command_adapter_test tests/command_adapter_test.cpp)
         configure_mosas_target(command_adapter_test)
+        target_include_directories(command_adapter_test PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/adapters
+        )
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
 

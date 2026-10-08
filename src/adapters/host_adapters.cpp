@@ -1,5 +1,5 @@
-#include <mosas/app/host_adapters.hpp>
-#include <mosas/app/command_adapter.hpp>
+#include <mosas/adapters/host_adapters.hpp>
+#include "command_adapter.hpp"
 #include <serial_package/serial_protocol.hpp>
 
 #include <array>

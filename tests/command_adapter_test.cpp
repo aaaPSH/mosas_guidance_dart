@@ -1,4 +1,4 @@
-#include <mosas/app/command_adapter.hpp>
+#include "command_adapter.hpp"
 
 #include "test_support.hpp"
 

@@ -1,5 +1,5 @@
-#ifndef MOSAS_APP_IMU_STREAM_DECODER_HPP
-#define MOSAS_APP_IMU_STREAM_DECODER_HPP
+#ifndef MOSAS_ADAPTERS_IMU_STREAM_DECODER_HPP
+#define MOSAS_ADAPTERS_IMU_STREAM_DECODER_HPP
 
 #include <mosas/runtime/imu_angular_velocity.hpp>
 #include <mosas/runtime/raw_serial_chunk.hpp>
@@ -72,4 +72,4 @@ private:
 
 }  // namespace mosas::app
 
-#endif  // MOSAS_APP_IMU_STREAM_DECODER_HPP
+#endif  // MOSAS_ADAPTERS_IMU_STREAM_DECODER_HPP
