@@ -14,7 +14,7 @@
 
 namespace {
 
-class FakeFrameSink final : public mosas::runtime::FrameSink {
+class FakeVideoRecorder final : public mosas::runtime::IVideoRecorder {
 public:
     struct Published {
         std::uint64_t frame_id = 0;
@@ -22,43 +22,13 @@ public:
         double processing_fps = 0.0;
     };
 
-    explicit FakeFrameSink(bool fail_publish = false,
-                           bool block_first_publish = false)
-        : fail_publish_(fail_publish),
-          block_first_publish_(block_first_publish) {}
+    explicit FakeVideoRecorder(bool fail_record = false,
+                               bool block_first_record = false)
+        : fail_record_(fail_record), block_first_record_(block_first_record) {}
 
-    bool publish(const mosas::runtime::CameraFrame& frame,
-                 const mosas::domain::VisionDetection&,
-                 const mosas::domain::FlightStateSnapshot& state,
-                 const mosas::domain::GuidanceOutput&,
-                 const mosas::domain::GuidanceOverlay& overlay) override {
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            if (block_first_publish_ && published_.empty()) {
-                publish_entered_ = true;
-                condition_.notify_all();
-                condition_.wait(
-                    lock, [this] { return cancelled_ || publish_released_; });
-            }
-            published_.push_back({frame.source_frame_id,
-                                  state.launch.generation,
-                                  overlay.processing_fps});
-            if (request_rearm_once_) {
-                request_rearm_once_ = false;
-                rearm_pending_ = true;
-            }
-            if (fail_publish_) {
-                last_error_ = "injected publish failure";
-            }
-        }
-        condition_.notify_all();
-        return !fail_publish_;
-    }
-
-    bool try_record_imu_sample(
-        const mosas::domain::ImuKinematicSample&) noexcept override {
+    bool start() override {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++imu_sample_count_;
+        ++start_count_;
         return true;
     }
 
@@ -67,6 +37,35 @@ public:
         ++reset_count_;
         rearm_pending_ = false;
         cancelled_ = false;
+    }
+
+    bool record(const mosas::runtime::ProcessedFrame& frame) override {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (block_first_record_ && published_.empty()) {
+            record_entered_ = true;
+            condition_.notify_all();
+            condition_.wait(
+                lock, [this] { return cancelled_ || record_released_; });
+        }
+        published_.push_back({frame.frame.source_frame_id,
+                               frame.flight_state.launch.generation,
+                               frame.overlay.processing_fps});
+        if (request_rearm_once_) {
+            request_rearm_once_ = false;
+            rearm_pending_ = true;
+        }
+        if (fail_record_) {
+            last_error_ = "injected record failure";
+        }
+        condition_.notify_all();
+        return !fail_record_;
+    }
+
+    bool take_rearm_request() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool pending = rearm_pending_;
+        rearm_pending_ = false;
+        return pending;
     }
 
     void cancel() noexcept override {
@@ -79,13 +78,6 @@ public:
     void stop() noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++stop_count_;
-    }
-
-    bool take_rearm_request() noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const bool pending = rearm_pending_;
-        rearm_pending_ = false;
-        return pending;
     }
 
     std::string last_error() const override {
@@ -104,15 +96,15 @@ public:
                                    [&] { return published_.size() >= count; });
     }
 
-    bool wait_for_publish_entered() {
+    bool wait_for_record_entered() {
         std::unique_lock<std::mutex> lock(mutex_);
         return condition_.wait_for(lock, std::chrono::seconds(1),
-                                   [this] { return publish_entered_; });
+                                   [this] { return record_entered_; });
     }
 
-    void release_publish() noexcept {
+    void release_record() noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        publish_released_ = true;
+        record_released_ = true;
         condition_.notify_all();
     }
 
@@ -120,43 +112,75 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return published_;
     }
-
-    std::size_t imu_sample_count() const {
+    std::size_t start_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return imu_sample_count_;
+        return start_count_;
     }
-
     std::size_t reset_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return reset_count_;
     }
-
     std::size_t cancel_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return cancel_count_;
     }
-
     std::size_t stop_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return stop_count_;
     }
 
 private:
-    const bool fail_publish_;
-    const bool block_first_publish_;
+    const bool fail_record_;
+    const bool block_first_record_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::vector<Published> published_;
     std::string last_error_;
-    std::size_t imu_sample_count_ = 0;
+    std::size_t start_count_ = 0;
     std::size_t reset_count_ = 0;
     std::size_t cancel_count_ = 0;
     std::size_t stop_count_ = 0;
     bool request_rearm_once_ = false;
     bool rearm_pending_ = false;
-    bool publish_entered_ = false;
-    bool publish_released_ = false;
+    bool record_entered_ = false;
+    bool record_released_ = false;
     bool cancelled_ = false;
+};
+
+class FakeImuRecorder final : public mosas::runtime::IImuRecorder {
+public:
+    bool start() override {
+        ++start_count_;
+        return true;
+    }
+    bool try_record(
+        const mosas::domain::ImuKinematicSample&) noexcept override {
+        ++accepted_count_;
+        return true;
+    }
+    mosas::runtime::SinkDiagnostics diagnostics() const noexcept override {
+        mosas::runtime::SinkDiagnostics result;
+        result.enabled = true;
+        result.healthy = true;
+        result.accepted_count = accepted_count_.load();
+        result.queue_capacity = 8;
+        return result;
+    }
+    void cancel() noexcept override { ++cancel_count_; }
+    void stop() noexcept override { ++stop_count_; }
+
+    std::size_t start_count() const noexcept { return start_count_.load(); }
+    std::size_t accepted_count() const noexcept {
+        return accepted_count_.load();
+    }
+    std::size_t cancel_count() const noexcept { return cancel_count_.load(); }
+    std::size_t stop_count() const noexcept { return stop_count_.load(); }
+
+private:
+    std::atomic<std::size_t> start_count_{0};
+    std::atomic<std::size_t> accepted_count_{0};
+    std::atomic<std::size_t> cancel_count_{0};
+    std::atomic<std::size_t> stop_count_{0};
 };
 
 mosas::runtime::ProcessedFrame make_frame(std::uint64_t id,
@@ -182,9 +206,11 @@ int main() {
     std::mutex timing_mutex;
     std::vector<runtime::OutputDispatchTimingStage> timing_stages;
 
-    auto sink = std::make_unique<FakeFrameSink>();
-    auto* sink_control = sink.get();
-    sink_control->request_rearm_once();
+    auto video = std::make_unique<FakeVideoRecorder>();
+    auto* video_control = video.get();
+    auto imu = std::make_unique<FakeImuRecorder>();
+    auto* imu_control = imu.get();
+    video_control->request_rearm_once();
     runtime::OutputDispatcherCallbacks callbacks;
     callbacks.stop_requested = [&] { return stop_requested.load(); };
     callbacks.active_generation = [&] { return active_generation.load(); };
@@ -201,15 +227,18 @@ int main() {
     };
     callbacks.report_fault = [](std::string) {};
 
-    runtime::OutputDispatcher dispatcher(std::move(sink), 2,
-                                         std::move(callbacks));
+    runtime::OutputDispatcher dispatcher(
+        std::move(video), nullptr, nullptr, std::move(imu), 2,
+        std::move(callbacks));
     dispatcher.reset();
-    CHECK(sink_control->reset_count() == 1);
+    CHECK(video_control->reset_count() == 1);
     dispatcher.start();
+    CHECK(video_control->start_count() == 1);
+    CHECK(imu_control->start_count() == 1);
     CHECK(dispatcher.try_record_imu_sample({}));
-    CHECK(sink_control->imu_sample_count() == 1);
+    CHECK(imu_control->accepted_count() == 1);
     CHECK(dispatcher.enqueue(make_frame(1, 0)));
-    CHECK(sink_control->wait_for_published(1));
+    CHECK(video_control->wait_for_published(1));
     const auto rearm_deadline = std::chrono::steady_clock::now() + 1s;
     while (rearm_count.load() == 0 &&
            std::chrono::steady_clock::now() < rearm_deadline) {
@@ -220,8 +249,8 @@ int main() {
 
     CHECK(dispatcher.enqueue(make_frame(2, 0)));
     CHECK(dispatcher.enqueue(make_frame(3, 1)));
-    CHECK(sink_control->wait_for_published(2));
-    auto published = sink_control->published();
+    CHECK(video_control->wait_for_published(2));
+    auto published = video_control->published();
     CHECK(published.size() == 2);
     CHECK(published[0].frame_id == 1);
     CHECK(published[0].generation == 0);
@@ -231,38 +260,43 @@ int main() {
     CHECK(published_count.load() == 2);
 
     dispatcher.cancel();
+    CHECK(imu_control->cancel_count() == 0);
+    dispatcher.cancel_imu_recorder();
     dispatcher.close_queue();
     dispatcher.join();
     CHECK(dispatcher.stop_sink().empty());
-    CHECK(sink_control->cancel_count() >= 1);
-    CHECK(sink_control->stop_count() == 1);
+    CHECK(video_control->cancel_count() >= 1);
+    CHECK(video_control->stop_count() == 1);
+    CHECK(imu_control->cancel_count() == 1);
+    CHECK(imu_control->stop_count() == 1);
     {
         std::lock_guard<std::mutex> lock(timing_mutex);
         CHECK(timing_stages.size() >= 6);
     }
 
     std::atomic<std::uint64_t> queued_generation{0};
-    auto queued_sink = std::make_unique<FakeFrameSink>(false, true);
-    auto* queued_sink_control = queued_sink.get();
+    auto queued_video = std::make_unique<FakeVideoRecorder>(false, true);
+    auto* queued_video_control = queued_video.get();
     runtime::OutputDispatcherCallbacks queued_callbacks;
     queued_callbacks.stop_requested = [] { return false; };
     queued_callbacks.active_generation = [&] {
         return queued_generation.load();
     };
     queued_callbacks.report_fault = [](std::string) {};
-    runtime::OutputDispatcher queued_dispatcher(std::move(queued_sink), 2,
-                                                std::move(queued_callbacks));
+    runtime::OutputDispatcher queued_dispatcher(
+        std::move(queued_video), nullptr, nullptr, nullptr, 2,
+        std::move(queued_callbacks));
     queued_dispatcher.reset();
     queued_dispatcher.start();
     CHECK(queued_dispatcher.enqueue(make_frame(10, 0)));
-    CHECK(queued_sink_control->wait_for_publish_entered());
+    CHECK(queued_video_control->wait_for_record_entered());
     CHECK(queued_dispatcher.enqueue(make_frame(11, 0)));
     queued_generation.store(1);
-    queued_sink_control->release_publish();
-    CHECK(queued_sink_control->wait_for_published(1));
+    queued_video_control->release_record();
+    CHECK(queued_video_control->wait_for_published(1));
     CHECK(queued_dispatcher.enqueue(make_frame(12, 1)));
-    CHECK(queued_sink_control->wait_for_published(2));
-    const auto generation_published = queued_sink_control->published();
+    CHECK(queued_video_control->wait_for_published(2));
+    const auto generation_published = queued_video_control->published();
     CHECK(generation_published.size() == 2);
     CHECK(generation_published[0].frame_id == 10);
     CHECK(generation_published[1].frame_id == 12);
@@ -272,7 +306,7 @@ int main() {
 
     std::atomic<bool> fault_reported{false};
     std::string sink_error;
-    auto failing_sink = std::make_unique<FakeFrameSink>(true);
+    auto failing_video = std::make_unique<FakeVideoRecorder>(true);
     runtime::OutputDispatcherCallbacks failing_callbacks;
     failing_callbacks.stop_requested = [] { return false; };
     failing_callbacks.active_generation = [] { return 0; };
@@ -284,8 +318,9 @@ int main() {
         fault_reported.store(true);
         error_condition.notify_all();
     };
-    runtime::OutputDispatcher failing_dispatcher(std::move(failing_sink), 1,
-                                                 std::move(failing_callbacks));
+    runtime::OutputDispatcher failing_dispatcher(
+        std::move(failing_video), nullptr, nullptr, nullptr, 1,
+        std::move(failing_callbacks));
     failing_dispatcher.reset();
     failing_dispatcher.start();
     CHECK(failing_dispatcher.enqueue(make_frame(4, 0)));
@@ -298,6 +333,7 @@ int main() {
     failing_dispatcher.cancel();
     failing_dispatcher.close_queue();
     failing_dispatcher.join();
-    CHECK(failing_dispatcher.stop_sink() == "injected publish failure");
+    CHECK(failing_dispatcher.stop_sink() == "injected record failure");
+    CHECK(failing_dispatcher.diagnostics().video.failure_count == 1);
     return 0;
 }

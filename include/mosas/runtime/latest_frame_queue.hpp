@@ -73,6 +73,13 @@ public:
         return dropped_count_;
     }
 
+    std::size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return items_.size();
+    }
+
+    std::size_t capacity() const noexcept { return capacity_; }
+
 private:
     mutable std::mutex mutex_;
     std::condition_variable condition_;

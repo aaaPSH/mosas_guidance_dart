@@ -1,36 +1,22 @@
 #ifndef MOSAS_RUNTIME_ASYNC_INFO_LOGGER_HPP
 #define MOSAS_RUNTIME_ASYNC_INFO_LOGGER_HPP
 
+#include <mosas/runtime/log_event.hpp>
+#include <mosas/runtime/output_ports.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/runtime/spsc_ring.hpp>
 
 #include <atomic>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iosfwd>
+#include <mutex>
 #include <string>
 #include <thread>
 
 namespace mosas::runtime {
 
-enum class RuntimeLogEventKind {
-    guidance_command,
-    diagnostic,
-    text,
-};
-
-struct RuntimeLogEvent {
-    RuntimeLogEventKind kind = RuntimeLogEventKind::diagnostic;
-    TimestampNs timestamp_ns = -1;
-    std::uint64_t count = 0;
-    double value0 = 0.0;
-    double value1 = 0.0;
-    double value2 = 0.0;
-    std::array<char, 192> text{};
-};
-
-class AsyncInfoLogger final {
+class AsyncInfoLogger final : public IAsyncLogger {
 public:
     explicit AsyncInfoLogger(std::ostream& output,
                              std::size_t queue_capacity = 256);
@@ -39,29 +25,35 @@ public:
     AsyncInfoLogger(const AsyncInfoLogger&) = delete;
     AsyncInfoLogger& operator=(const AsyncInfoLogger&) = delete;
 
-    bool start();
-    bool try_submit(const RuntimeLogEvent& event) noexcept;
+    bool start() override;
+    bool try_submit(const RuntimeLogEvent& event) noexcept override;
     bool try_submit_text(TimestampNs timestamp_ns,
                          const std::string& message) noexcept;
+    SinkDiagnostics diagnostics() const noexcept override;
 
     bool running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
 
-    void stop() noexcept;
-
-    std::uint64_t dropped_count() const noexcept {
-        return dropped_count_.load(std::memory_order_relaxed);
-    }
+    void stop_and_flush() noexcept override;
 
 private:
     void worker_loop() noexcept;
+    void set_error(const char* message) noexcept;
 
     std::ostream* output_ = nullptr;
+    // Submissions can originate from frame, IMU, and output workers.
+    // Serialize enqueues so the underlying ring remains single-producer.
+    std::mutex producer_mutex_;
     SpscRing<RuntimeLogEvent> queue_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};
+    std::atomic<std::uint64_t> accepted_count_{0};
     std::atomic<std::uint64_t> dropped_count_{0};
+    std::atomic<std::uint64_t> failure_count_{0};
+    std::atomic<bool> healthy_{true};
+    mutable std::mutex error_mutex_;
+    std::string last_error_;
     std::thread worker_;
 };
 

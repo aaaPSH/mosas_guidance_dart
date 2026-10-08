@@ -8,12 +8,12 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -35,7 +35,64 @@ mosas::runtime::CameraFrame make_frame(std::int64_t timestamp_ns,
     return frame;
 }
 
-class CapturingFrameSink final : public mosas::runtime::FrameSink {
+class CapturingImuRecorder final : public mosas::runtime::IImuRecorder {
+public:
+    bool start() override {
+        started_ = true;
+        return true;
+    }
+    bool try_record(
+        const mosas::domain::ImuKinematicSample&) noexcept override {
+        accepted_count_.fetch_add(1);
+        return started_.load();
+    }
+    mosas::runtime::SinkDiagnostics diagnostics() const noexcept override {
+        mosas::runtime::SinkDiagnostics result;
+        result.enabled = true;
+        result.healthy = true;
+        result.accepted_count = accepted_count_.load();
+        result.queue_capacity = 4;
+        return result;
+    }
+    void cancel() noexcept override { ++cancel_count_; }
+    void stop() noexcept override { ++stop_count_; }
+    std::uint64_t cancel_count() const noexcept { return cancel_count_.load(); }
+    std::uint64_t stop_count() const noexcept { return stop_count_.load(); }
+
+private:
+    std::atomic<bool> started_{false};
+    std::atomic<std::uint64_t> accepted_count_{0};
+    std::atomic<std::uint64_t> cancel_count_{0};
+    std::atomic<std::uint64_t> stop_count_{0};
+};
+
+class CapturingAsyncLogger final : public mosas::runtime::IAsyncLogger {
+public:
+    bool start() override {
+        started_ = true;
+        return true;
+    }
+    bool try_submit(
+        const mosas::runtime::RuntimeLogEvent&) noexcept override {
+        accepted_count_.fetch_add(1);
+        return started_.load();
+    }
+    mosas::runtime::SinkDiagnostics diagnostics() const noexcept override {
+        mosas::runtime::SinkDiagnostics result;
+        result.enabled = true;
+        result.healthy = true;
+        result.accepted_count = accepted_count_.load();
+        result.queue_capacity = 16;
+        return result;
+    }
+    void stop_and_flush() noexcept override { started_ = false; }
+
+private:
+    std::atomic<bool> started_{false};
+    std::atomic<std::uint64_t> accepted_count_{0};
+};
+
+class CapturingVideoRecorder final : public mosas::runtime::IVideoRecorder {
 public:
     struct PublishedFrame {
         mosas::runtime::CameraFrame frame;
@@ -45,20 +102,21 @@ public:
         mosas::domain::GuidanceOverlay overlay;
     };
 
-    bool publish(const mosas::runtime::CameraFrame& frame,
-                 const mosas::domain::VisionDetection& vision,
-                 const mosas::domain::FlightStateSnapshot& state,
-                 const mosas::domain::GuidanceOutput& guidance,
-                 const mosas::domain::GuidanceOverlay& overlay) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        frames_.push_back({frame, vision, state, guidance, overlay});
-        return true;
-    }
-
+    bool start() override { return true; }
     void reset() noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         frames_.clear();
     }
+    bool record(const mosas::runtime::ProcessedFrame& processed) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        frames_.push_back({processed.frame, processed.vision_detection,
+                           processed.flight_state, processed.guidance,
+                           processed.overlay});
+        return true;
+    }
+    void cancel() noexcept override {}
+    void stop() noexcept override {}
+    std::string last_error() const override { return {}; }
 
     std::vector<PublishedFrame> frames() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -94,8 +152,14 @@ int main() {
     auto* camera_source_control = camera_source.get();
     auto command_sink = std::make_unique<test::FakeCommandSink>();
     auto* command_sink_control = command_sink.get();
-    auto frame_sink = std::make_unique<CapturingFrameSink>();
-    auto* frame_sink_control = frame_sink.get();
+    auto video_recorder = std::make_unique<CapturingVideoRecorder>();
+    auto* video_recorder_control = video_recorder.get();
+    runtime::RuntimeOutputPorts output_ports;
+    output_ports.video = std::move(video_recorder);
+    auto imu_recorder = std::make_unique<CapturingImuRecorder>();
+    auto* imu_recorder_control = imu_recorder.get();
+    output_ports.imu_recorder = std::move(imu_recorder);
+    output_ports.logger = std::make_unique<CapturingAsyncLogger>();
 
     auto vision = std::make_unique<test::FakeVisionDetector>();
     auto* vision_control = vision.get();
@@ -123,14 +187,13 @@ int main() {
     config.output_queue_capacity = 4;
     config.camera_intrinsics = {100.0, 100.0, 1.0, 1.0};
 
-    std::ostringstream log_output;
     {
         runtime::RuntimeSupervisor missing_dependencies(
             std::unique_ptr<runtime::ImuSource>{},
             std::unique_ptr<runtime::CameraSource>{},
             std::unique_ptr<runtime::CommandSink>{}, config,
             runtime::RuntimeSupervisorDependencies{},
-            std::unique_ptr<runtime::FrameSink>{}, log_output);
+            runtime::RuntimeOutputPorts{});
         CHECK(!missing_dependencies.start());
         CHECK(missing_dependencies.last_error() ==
               "runtime dependencies are incomplete");
@@ -139,7 +202,7 @@ int main() {
     runtime::RuntimeSupervisor runtime(
         std::move(imu_source), std::move(camera_source),
         std::move(command_sink), config, std::move(dependencies),
-        std::move(frame_sink), log_output);
+        std::move(output_ports));
     CHECK(runtime.start());
 
     domain::FlightStateSnapshot flight_result{};
@@ -232,11 +295,11 @@ int main() {
     CHECK(valid_command_seen);
     CHECK(invalid_zero_command_seen);
 
-    const auto published = frame_sink_control->frames();
+    const auto published = video_recorder_control->frames();
     CHECK(!published.empty());
     const auto valid_frame =
         std::find_if(published.begin(), published.end(),
-                     [](const CapturingFrameSink::PublishedFrame& frame) {
+                     [](const CapturingVideoRecorder::PublishedFrame& frame) {
                          return frame.guidance.valid;
                      });
     CHECK(valid_frame != published.end());
@@ -301,6 +364,15 @@ int main() {
     CHECK(timing.output_queue_dropped == 0);
 
     runtime.stop();
+    const auto output_diagnostics = runtime.output_diagnostics();
+    CHECK(output_diagnostics.video.enabled);
+    CHECK(output_diagnostics.video.healthy);
+    CHECK(output_diagnostics.imu_recording.enabled);
+    CHECK(output_diagnostics.imu_recording.accepted_count == 2);
+    CHECK(output_diagnostics.logging.enabled);
+    CHECK(output_diagnostics.logging.healthy);
+    CHECK(imu_recorder_control->cancel_count() == 1);
+    CHECK(imu_recorder_control->stop_count() == 1);
     CHECK(!runtime.faulted());
     CHECK(!runtime.running());
     runtime.stop();
@@ -354,7 +426,7 @@ int main() {
         std::chrono::steady_clock::now() + std::chrono::seconds(1);
     bool restarted_frame_seen = false;
     while (std::chrono::steady_clock::now() < restart_output_deadline) {
-        for (const auto& frame : frame_sink_control->frames()) {
+        for (const auto& frame : video_recorder_control->frames()) {
             if (frame.guidance.valid) {
                 CHECK(frame.frame.source_frame_id == 1);
                 CHECK(frame.frame.timestamp_ns == kFrameSecondNs);

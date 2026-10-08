@@ -1,7 +1,8 @@
-#include <mosas/runtime/async_info_logger.hpp>
+#include <mosas/runtime/runtime_supervisor.hpp>
+
 #include <mosas/runtime/clock.hpp>
 #include <mosas/runtime/frame_rate_meter.hpp>
-#include <mosas/runtime/runtime_supervisor.hpp>
+#include <mosas/runtime/log_event.hpp>
 #include <mosas/runtime/timing_distribution.hpp>
 
 #include "frame_pipeline.hpp"
@@ -10,9 +11,10 @@
 #include "output_dispatcher.hpp"
 #include "runtime_value_helpers.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <exception>
-#include <iostream>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -34,7 +36,7 @@ struct RuntimeSupervisor::Impl {
          std::unique_ptr<CommandSink> command_sink,
          const RuntimeSupervisorConfig& config,
          RuntimeSupervisorDependencies dependencies,
-         std::unique_ptr<FrameSink> frame_sink, std::ostream& output);
+         RuntimeOutputPorts output_ports);
 
     bool start();
     void cancel() noexcept;
@@ -45,6 +47,7 @@ struct RuntimeSupervisor::Impl {
     std::optional<ImuStateSnapshot> latest_state() const;
     RuntimeStatistics statistics() const;
     RuntimeTiming timing() const;
+    RuntimeOutputDiagnostics output_diagnostics() const;
 
 private:
     bool validate_dependencies() const;
@@ -76,8 +79,8 @@ private:
     std::unique_ptr<ImuPipeline> imu_pipeline_;
     std::unique_ptr<FramePipeline> frame_pipeline_;
     RuntimeSupervisorConfig config_;
-    std::ostream* output_stream_ = nullptr;
-    AsyncInfoLogger info_logger_;
+    std::unique_ptr<IAsyncLogger> logger_;
+    std::atomic<bool> logger_running_{false};
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> running_{false};
@@ -95,7 +98,6 @@ private:
     TimingAccumulator output_timing_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
-    mutable std::mutex log_mutex_;
 };
 
 RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
@@ -103,12 +105,11 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
                               std::unique_ptr<CommandSink> command_sink,
                               const RuntimeSupervisorConfig& config,
                               RuntimeSupervisorDependencies dependencies,
-                              std::unique_ptr<FrameSink> frame_sink,
-                              std::ostream& output)
+                              RuntimeOutputPorts output_ports)
     : command_sink_(std::move(command_sink)),
       monotonic_clock_(std::move(dependencies.monotonic_clock)),
-      config_(config), output_stream_(&output),
-      info_logger_(output, config_.info_log_queue_capacity) {
+      config_(config),
+      logger_(std::move(output_ports.logger)) {
     generation_coordinator_ = std::make_unique<LaunchGenerationCoordinator>();
     OutputDispatcherCallbacks callbacks;
     callbacks.stop_requested = [this] { return stop_requested_.load(); };
@@ -141,7 +142,9 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
         set_fault(message);
     };
     output_dispatcher_ = std::make_unique<OutputDispatcher>(
-        std::move(frame_sink), config_.output_queue_capacity,
+        std::move(output_ports.video), std::move(output_ports.telemetry),
+        std::move(output_ports.visualization),
+        std::move(output_ports.imu_recorder), config_.output_queue_capacity,
         std::move(callbacks));
 
     ImuPipelineCallbacks imu_callbacks;
@@ -206,11 +209,12 @@ bool RuntimeSupervisor::Impl::start() {
     }
     lifecycle_state_.store(LifecycleState::starting);
 
-    if (!info_logger_.start()) {
+    if (logger_ != nullptr && !logger_->start()) {
         set_error("failed to start asynchronous runtime logger");
         stop_locked();
         return false;
     }
+    logger_running_.store(logger_ != nullptr, std::memory_order_release);
     if (startup_cancelled()) {
         stop_locked();
         return false;
@@ -261,9 +265,9 @@ bool RuntimeSupervisor::Impl::start() {
 
     running_.store(true);
     try {
+        output_dispatcher_->start();
         imu_pipeline_->start_worker();
         frame_pipeline_->start_workers();
-        output_dispatcher_->start();
     } catch (const std::exception& exception) {
         set_fault(exception.what());
         stop_locked();
@@ -314,6 +318,7 @@ void RuntimeSupervisor::Impl::stop_locked() noexcept {
     frame_pipeline_->stop_source();
     imu_pipeline_->join_worker();
     imu_pipeline_->stop_source();
+    output_dispatcher_->cancel_imu_recorder();
     output_dispatcher_->close_queue();
     output_dispatcher_->join();
     const std::string output_error = output_dispatcher_->stop_sink();
@@ -323,7 +328,10 @@ void RuntimeSupervisor::Impl::stop_locked() noexcept {
     if (command_sink_ != nullptr) {
         command_sink_->stop();
     }
-    info_logger_.stop();
+    if (logger_ != nullptr) {
+        logger_->stop_and_flush();
+    }
+    logger_running_.store(false, std::memory_order_release);
     running_.store(false);
     lifecycle_state_.store(LifecycleState::stopped);
 }
@@ -395,6 +403,14 @@ RuntimeStatistics RuntimeSupervisor::Impl::statistics() const {
     return result;
 }
 
+RuntimeOutputDiagnostics RuntimeSupervisor::Impl::output_diagnostics() const {
+    RuntimeOutputDiagnostics diagnostics = output_dispatcher_->diagnostics();
+    if (logger_ != nullptr) {
+        diagnostics.logging = logger_->diagnostics();
+    }
+    return diagnostics;
+}
+
 RuntimeTiming RuntimeSupervisor::Impl::timing() const {
     RuntimeTiming result = frame_pipeline_->timing();
     std::lock_guard<std::mutex> lock(timing_mutex_);
@@ -443,21 +459,25 @@ void RuntimeSupervisor::Impl::record_timing(
 }
 
 void RuntimeSupervisor::Impl::log(const std::string& message) {
+    // Disabled, stopped, or failed logging must never introduce synchronous I/O.
+    // Startup errors remain available through last_error() to the App layer.
+    if (logger_ == nullptr ||
+        !logger_running_.load(std::memory_order_acquire)) {
+        return;
+    }
     const std::string formatted = "[运行时] " + message;
-    const TimestampNs now_ns = monotonic_clock_ != nullptr
-                                   ? monotonic_clock_->now_ns()
-                                   : monotonic_timestamp_ns();
-    if (info_logger_.try_submit_text(now_ns, formatted)) {
-        return;
+    RuntimeLogEvent event{};
+    event.kind = RuntimeLogEventKind::text;
+    event.timestamp_ns = monotonic_clock_ != nullptr
+                             ? monotonic_clock_->now_ns()
+                             : monotonic_timestamp_ns();
+    const std::size_t copy_size =
+        std::min(formatted.size(), event.text.size() - std::size_t{1});
+    if (copy_size != 0) {
+        std::memcpy(event.text.data(), formatted.data(), copy_size);
     }
-    // 日志线程已经启动时，队列满只丢弃，不能把同步输出带回关键路径。
-    if (info_logger_.running()) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(log_mutex_);
-    if (output_stream_ != nullptr) {
-        *output_stream_ << formatted << '\n';
-    }
+    event.text[copy_size] = '\0';
+    logger_->try_submit(event);
 }
 
 void RuntimeSupervisor::Impl::set_error(const std::string& message) {
@@ -505,23 +525,11 @@ RuntimeSupervisor::RuntimeSupervisor(
     std::unique_ptr<CommandSink> command_sink,
     const RuntimeSupervisorConfig& config,
     RuntimeSupervisorDependencies dependencies,
-    std::unique_ptr<FrameSink> frame_sink)
-    : RuntimeSupervisor(std::move(imu_source), std::move(camera_source),
-                        std::move(command_sink), config,
-                        std::move(dependencies), std::move(frame_sink),
-                        std::cerr) {}
-
-RuntimeSupervisor::RuntimeSupervisor(
-    std::unique_ptr<ImuSource> imu_source,
-    std::unique_ptr<CameraSource> camera_source,
-    std::unique_ptr<CommandSink> command_sink,
-    const RuntimeSupervisorConfig& config,
-    RuntimeSupervisorDependencies dependencies,
-    std::unique_ptr<FrameSink> frame_sink, std::ostream& output)
+    RuntimeOutputPorts output_ports)
     : impl_(std::make_unique<Impl>(
           std::move(imu_source), std::move(camera_source),
           std::move(command_sink), config, std::move(dependencies),
-          std::move(frame_sink), output)) {}
+          std::move(output_ports))) {}
 
 RuntimeSupervisor::~RuntimeSupervisor() { stop(); }
 
@@ -540,5 +548,8 @@ RuntimeStatistics RuntimeSupervisor::statistics() const {
     return impl_->statistics();
 }
 RuntimeTiming RuntimeSupervisor::timing() const { return impl_->timing(); }
+RuntimeOutputDiagnostics RuntimeSupervisor::output_diagnostics() const {
+    return impl_->output_diagnostics();
+}
 
 }  // namespace mosas::runtime

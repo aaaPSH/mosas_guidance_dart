@@ -8,12 +8,12 @@
 #include <mosas/ports/los_estimator.hpp>
 #include <mosas/ports/los_rate_filter.hpp>
 #include <mosas/ports/vision_detector.hpp>
+#include <mosas/runtime/output_ports.hpp>
 #include <mosas/runtime/runtime_interfaces.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 
 #include <cstddef>
 #include <cstdint>
-#include <iosfwd>
 #include <memory>
 #include <optional>
 #include <string>
@@ -84,14 +84,7 @@ public:
                       std::unique_ptr<CommandSink> command_sink,
                       const RuntimeSupervisorConfig& config,
                       RuntimeSupervisorDependencies dependencies,
-                      std::unique_ptr<FrameSink> frame_sink = nullptr);
-    RuntimeSupervisor(std::unique_ptr<ImuSource> imu_source,
-                      std::unique_ptr<CameraSource> camera_source,
-                      std::unique_ptr<CommandSink> command_sink,
-                      const RuntimeSupervisorConfig& config,
-                      RuntimeSupervisorDependencies dependencies,
-                      std::unique_ptr<FrameSink> frame_sink,
-                      std::ostream& output);
+                      RuntimeOutputPorts output_ports);
     ~RuntimeSupervisor();
 
     RuntimeSupervisor(const RuntimeSupervisor&) = delete;
@@ -107,6 +100,7 @@ public:
     std::optional<ImuStateSnapshot> latest_state() const;
     RuntimeStatistics statistics() const;
     RuntimeTiming timing() const;
+    RuntimeOutputDiagnostics output_diagnostics() const;
 
 private:
     struct Impl;

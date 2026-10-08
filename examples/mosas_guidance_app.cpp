@@ -3,7 +3,7 @@
 #include <mosas/app/nori_camera_source.hpp>
 #include <mosas/app/serial_imu_source.hpp>
 #include <mosas/app/default_guidance_algorithms.hpp>
-#include <mosas/output/output_controller.hpp>
+#include <mosas/app/output_factory.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 
 #include <chrono>
@@ -86,6 +86,33 @@ void print_timing(const mosas::runtime::RuntimeTiming& timing) {
               << timing.capture_queue_dropped
               << " runtime_output_dropped=" << timing.output_queue_dropped
               << '\n';
+}
+
+void print_sink_diagnostics(
+    const char* name, const mosas::runtime::SinkDiagnostics& diagnostics) {
+    std::cout << ' ' << name << "{enabled="
+              << (diagnostics.enabled ? "yes" : "no")
+              << " healthy=" << (diagnostics.healthy ? "yes" : "no")
+              << " accepted=" << diagnostics.accepted_count
+              << " dropped=" << diagnostics.dropped_count
+              << " failures=" << diagnostics.failure_count
+              << " queue=" << diagnostics.queue_depth << '/'
+              << diagnostics.queue_capacity;
+    if (!diagnostics.last_error.empty()) {
+        std::cout << " error=\"" << diagnostics.last_error << '\"';
+    }
+    std::cout << '}';
+}
+
+void print_output_diagnostics(
+    const mosas::runtime::RuntimeOutputDiagnostics& diagnostics) {
+    std::cout << "[OUTPUT]";
+    print_sink_diagnostics("video", diagnostics.video);
+    print_sink_diagnostics("telemetry", diagnostics.telemetry);
+    print_sink_diagnostics("visualization", diagnostics.visualization);
+    print_sink_diagnostics("imu", diagnostics.imu_recording);
+    print_sink_diagnostics("logging", diagnostics.logging);
+    std::cout << '\n';
 }
 
 void print_camera_timing(const mosas::app::NoriCameraTiming& timing) {
@@ -215,25 +242,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    mosas::output::OutputControllerConfig output_config;
-    output_config.output = config.output;
-    output_config.wireless = config.wireless;
-    output_config.camera_width = config.camera.width;
-    output_config.camera_height = config.camera.height;
-    output_config.camera_fps = config.camera.fps;
-    output_config.line_of_sight_reference_point = cv::Point2d(
-        config.guidance.camera_intrinsics.cx,
-        config.guidance.camera_intrinsics.cy);
-    std::unique_ptr<mosas::runtime::FrameSink> frame_sink =
-        std::make_unique<mosas::output::OutputController>(
-            std::move(output_config));
-
     auto algorithm_dependencies =
         mosas::app::make_default_guidance_algorithms(config.algorithms);
+    auto output_ports =
+        mosas::app::make_runtime_output_ports(config, std::cerr);
     mosas::runtime::RuntimeSupervisor runtime(
         std::move(imu_source), std::move(camera_source),
         std::move(command_sink), config.guidance,
-        std::move(algorithm_dependencies), std::move(frame_sink));
+        std::move(algorithm_dependencies), std::move(output_ports));
     if (!runtime.start()) {
         std::cerr << "启动制导程序失败: " << runtime.last_error() << '\n';
         return 1;
@@ -259,6 +275,7 @@ int main(int argc, char** argv) {
             std::cout << "[FPS] capture=" << statistics.capture_fps
                       << " processing=" << statistics.processing_fps
                       << " output=" << statistics.output_fps << '\n';
+            print_output_diagnostics(runtime.output_diagnostics());
             next_statistics_at = now + std::chrono::seconds(1);
         }
     }
@@ -267,6 +284,7 @@ int main(int argc, char** argv) {
         std::cerr << "制导程序发生故障: " << runtime.last_error() << '\n';
     }
     runtime.stop();
+    print_output_diagnostics(runtime.output_diagnostics());
     if (serial_imu_source != nullptr &&
         config.enable_serial_interval_statistics) {
         print_serial_imu_interval_statistics(

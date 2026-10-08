@@ -136,40 +136,6 @@ public:
     virtual Diagnostics diagnostics() const noexcept { return {}; }
 };
 
-class FrameSink {
-public:
-    virtual ~FrameSink() = default;
-
-    // 非阻塞提交一条已经通过运行时校验的 IMU 样本；默认不记录。
-    virtual bool try_record_imu_sample(
-        const domain::ImuKinematicSample& sample) noexcept {
-        (void)sample;
-        return true;
-    }
-
-    // 请求中断可能阻塞的发布操作；实现必须是线程安全且非阻塞的。
-    virtual void cancel() noexcept {}
-
-    // 新一轮运行开始前清除上一次停止状态。
-    virtual void reset() noexcept {}
-
-    // 运行时工作线程退出后释放网络、录像和传感器记录等资源。
-    virtual void stop() noexcept {}
-
-    // 输出模块完成一段起飞窗口落盘后，请求运行时切换起飞周期。
-    virtual bool take_rearm_request() noexcept { return false; }
-
-    // 停止和刷新输出时报告最后一次录像/推流错误。
-    virtual std::string last_error() const { return {}; }
-
-    virtual bool publish(
-        const CameraFrame& frame,
-        const domain::VisionDetection& vision_detection,
-        const domain::FlightStateSnapshot& flight_state,
-        const domain::GuidanceOutput& guidance,
-        const domain::GuidanceOverlay& overlay) = 0;
-};
-
 }  // namespace mosas::runtime
 
 #endif  // MOSAS_RUNTIME_INTERFACES_HPP

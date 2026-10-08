@@ -9,7 +9,6 @@
 #include <exception>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -353,9 +352,9 @@ private:
     bool start_succeeds_ = true;
 };
 
-class ProbeFrameSink final : public mosas::runtime::FrameSink {
+class ProbeVideoRecorder final : public mosas::runtime::IVideoRecorder {
 public:
-    explicit ProbeFrameSink(EventLog& events) : events_(events) {}
+    explicit ProbeVideoRecorder(EventLog& events) : events_(events) {}
 
     void set_publish_blocked(bool blocked) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -370,11 +369,9 @@ public:
         reported_error_ = std::move(error);
     }
 
-    bool publish(const mosas::runtime::CameraFrame&,
-                 const mosas::domain::VisionDetection&,
-                 const mosas::domain::FlightStateSnapshot&,
-                 const mosas::domain::GuidanceOutput&,
-                 const mosas::domain::GuidanceOverlay&) override {
+    bool start() override { return true; }
+
+    bool record(const mosas::runtime::ProcessedFrame&) override {
         std::unique_lock<std::mutex> lock(mutex_);
         publish_active_ = true;
         ++publish_count_;
@@ -578,8 +575,8 @@ struct RuntimeFixture {
         imu = imu_source.get();
         auto command_sink = std::make_unique<ProbeCommandSink>(events);
         command = command_sink.get();
-        auto frame_sink = std::make_unique<ProbeFrameSink>(events);
-        sink = frame_sink.get();
+        auto video_recorder = std::make_unique<ProbeVideoRecorder>(events);
+        sink = video_recorder.get();
         auto vision_detector = std::make_unique<ProbeVisionDetector>();
         vision = vision_detector.get();
 
@@ -595,10 +592,12 @@ struct RuntimeFixture {
         mosas::runtime::RuntimeSupervisorConfig config;
         config.capture_queue_capacity = 4;
         config.output_queue_capacity = 4;
+        mosas::runtime::RuntimeOutputPorts output_ports;
+        output_ports.video = std::move(video_recorder);
         runtime = std::make_unique<mosas::runtime::RuntimeSupervisor>(
             std::move(imu_source), std::move(camera_source),
             std::move(command_sink), config, std::move(dependencies),
-            std::move(frame_sink), log_output);
+            std::move(output_ports));
     }
 
     bool wait_for_fault(std::chrono::milliseconds timeout = 1s) const {
@@ -626,11 +625,10 @@ struct RuntimeFixture {
     }
 
     EventLog events;
-    std::ostringstream log_output;
     ProbeCameraSource* camera = nullptr;
     ProbeImuSource* imu = nullptr;
     ProbeCommandSink* command = nullptr;
-    ProbeFrameSink* sink = nullptr;
+    ProbeVideoRecorder* sink = nullptr;
     ProbeVisionDetector* vision = nullptr;
     std::unique_ptr<mosas::runtime::RuntimeSupervisor> runtime;
 };

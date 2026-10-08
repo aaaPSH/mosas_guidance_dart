@@ -392,117 +392,50 @@ public:
 
 ## 7. 控制和观测输出接口
 
-```cpp
-class ICommandSink {
-public:
-    virtual ResultCode start() noexcept = 0; // supervisor thread
-    virtual bool try_submit(const GuidanceCommand&) noexcept = 0;
-    virtual CommandDiagnostics diagnostics() const noexcept = 0;
-    virtual void set_generation(std::uint64_t) noexcept = 0;
-    virtual void stop() noexcept = 0;
-    virtual ~ICommandSink() = default;
-};
+制导命令仍由独立的 `CommandSink` 提交；观测输出使用 `RuntimeOutputPorts` 中的窄接口，帧输出消费不可变的 `ProcessedFrame`（包含共享图像所有权、时间戳和 `source_frame_id`）：
 
-struct ProcessedObservation {
-    CameraFrame frame;
-    TargetObservation target;
-    AttitudeState attitude;
-    LaunchState launch;
-    LosMeasurement<DartFrameTag> los;
-    LosRate<DartFrameTag> los_rate;
-    GuidanceResult guidance;
-    GuidanceCommand command;
-};
+- `IVideoRecorder`：`start/reset/record/take_rearm_request/cancel/stop/last_error`。
+- `ITelemetryRecorder`：与视频 recorder 相同的生命周期和逐帧记录接口。
+- `IVisualizationSink`：`start/reset/publish/cancel/stop/last_error`。
+- `IImuRecorder`：接收 `domain::ImuKinematicSample`，以非阻塞 `try_record` 提交，并提供 `SinkDiagnostics`。
+- `IAsyncLogger`：接收固定大小的 `RuntimeLogEvent`，提供诊断并在停止时 flush。未注入 logger 或 logger 未运行时不输出日志；拒绝提交时也不回退到同步 I/O。启动错误和运行期故障由 `last_error()` 保留，App 决定如何展示。
 
-class IImuRecorder {
-public:
-    virtual bool try_record(const ImuSample&) noexcept = 0;
-    virtual SinkDiagnostics diagnostics() const noexcept = 0;
-    virtual void stop() noexcept = 0;
-    virtual ~IImuRecorder() = default;
-};
+`SinkDiagnostics` 记录 enabled/healthy、accepted/dropped/failure 计数、队列深度/容量和 sink 自身的 `last_error`。`RuntimeOutputDiagnostics` 分别命名 video、telemetry、visualization、IMU recording 和 logging；未启用 sink 的快照为 disabled、healthy、计数为零。
 
-class IVideoRecorder {
-public:
-    virtual bool try_record(const ProcessedObservation&) noexcept = 0;
-    virtual SinkDiagnostics diagnostics() const noexcept = 0;
-    virtual void stop() noexcept = 0;
-    virtual ~IVideoRecorder() = default;
-};
+每个启用的帧 sink 由独立的有界 latest-frame 队列和 worker 服务。队列满时只丢弃该 sink 最旧的待处理帧；`FramePipeline` 仅执行有界队列 fan-out，不在制导/命令路径执行编码、文件或网络 I/O。图像像素通过共享所有权传递，不深拷贝。IMU recorder 和 logger 分别使用独立队列/worker；IMU 队列满仍按既有策略触发运行时故障，日志丢弃、写入或 flush 故障只更新日志诊断，不升级为制导故障。
 
-class ITelemetryRecorder {
-public:
-    virtual bool try_record(const ProcessedObservation&) noexcept = 0;
-    virtual SinkDiagnostics diagnostics() const noexcept = 0;
-    virtual void stop() noexcept = 0;
-    virtual ~ITelemetryRecorder() = default;
-};
+视频、遥测或可视化 worker 失败仍报告既有 frame-output 故障并取消 runtime；IMU 记录提交失败仍报告运行时故障。该阶段不启用可选输出失败后继续制导的策略。命令 writer 与观测输出队列绝不共用，也不改变串口控制帧、CRC、量化或 body-y/body-z 到 pitch/yaw 的映射。
 
-class IVisualizationSink {
-public:
-    virtual bool try_publish(const ProcessedObservation&) noexcept = 0;
-    virtual SinkDiagnostics diagnostics() const noexcept = 0;
-    virtual void stop() noexcept = 0;
-    virtual ~IVisualizationSink() = default;
-};
+## 8. 运行时组装和输出模式
 
-enum class LogSeverity { debug, info, warning, error };
-struct LogEvent {
-    SensorTime event_time;
-    std::int64_t wall_time_ns; // 仅供显示；实时线程不格式化字符串
-    LogSeverity severity;
-    std::uint32_t event_code;
-    std::array<std::int64_t, 4> values;
-};
-struct LoggerDiagnostics : SinkDiagnostics {
-    std::uint64_t flush_failures;
-};
+App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.mode` 装配：
 
-class IAsyncLogger {
-public:
-    virtual bool try_submit(const LogEvent&) noexcept = 0;
-    virtual LoggerDiagnostics diagnostics() const noexcept = 0;
-    virtual void stop_and_flush() noexcept = 0;
-    virtual ~IAsyncLogger() = default;
-};
-```
+| `output.mode` | 帧输出 | 其他输出 |
+|---|---|---|
+| `debug` | 连续本地视频 + 逐帧遥测 CSV | IMU CSV + 异步日志 |
+| `match` | 起飞窗口本地视频 + 逐帧遥测 CSV | IMU CSV + 异步日志 |
+| `rtsp` | RTSP 可视化 | IMU CSV + 异步日志 |
 
-生产组合使用 `IImuRecorder`、`IVideoRecorder`、`ITelemetryRecorder` 和 `IVisualizationSink` 等窄接口，各自具有独立队列/worker/错误状态。命令 writer 的队列与观测输出绝不共用。
+`RuntimeSupervisor` 持有输出端口并统一管理 start/cancel/close/join/stop 生命周期。`FramePipeline` 向每个帧输出 worker 独立提交同一 processed-frame snapshot；`ImuPipeline` 将 IMU 样本提交给独立 recorder。match 模式的视频与遥测 sink 共享路径及 generation/window 协调元数据，但保留独立队列、writer、错误状态；只有两者均成功完成窗口后才发出 rearm。各文件可能因独立队列丢帧而包含不同帧子集，遥测 CSV 保留原有列顺序并在末尾附加 `source_frame_id` 供关联。
 
-当前协议编码适配器只接收有效的 `GuidanceCommand`：保留 14-byte 下行帧字节、CRC、量化精度和已有 body-y/body-z 到 pitch/yaw 的映射。它不能执行 PNG 或坐标变换。
+输出诊断由 `RuntimeSupervisor::output_diagnostics()` 汇总，应用周期性及退出时显示。输出故障策略、命令生成/提交顺序、坐标换算和传感器协议保持不变。
 
-## 8. 运行时组装接口
+### 8.1 当前源码边界
 
-App 是唯一 Composition Root：
+- `include/mosas/runtime/processed_frame.hpp`、`log_event.hpp`、`output_diagnostics.hpp` 分别定义帧快照、日志事件和诊断值；`output_ports.hpp` 定义窄输出接口和注入所有权集合。日志生产者不需要包含具体 logger 的头文件。
+- `include/mosas/output/` 声明具体输出适配器，`src/output/` 实现录像、CSV、RTSP 渲染与发送。`RtspVisualizationSink` 保持首帧懒启动，不在 Factory 或 supervisor 中执行网络工作。
+- App 通过公共 `output/recording_paths.hpp` 分配一次运行的录制路径；会话标识生成是 `src/output/recording_session_id.hpp` 声明的私有实现，禁止跨模块相对路径包含。
+- `src/app/output_factory.cpp` 只做模式选择、配置转换和组件组装；`src/runtime/` 下的 pipeline、dispatcher 及协调器头文件继续保持私有。
+- 此处输出接口仍属于现有 runtime 边界，使用 runtime 的相机帧类型；不将其仅改名搬入 `ports/`，以免引入 `ports → runtime` 的反向依赖。
 
-```cpp
-struct RuntimeComponents {
-    std::unique_ptr<ICameraSource> camera;
-    std::unique_ptr<IImuSource> imu;
-    std::unique_ptr<ITimeSyncProvider> time_sync;
-    std::unique_ptr<IVisionDetector> vision;
-    std::unique_ptr<IFlightStateEstimator> flight_state;
-    std::unique_ptr<ILosEstimator> los;
-    std::unique_ptr<ILosRateFilter> los_filter;
-    std::unique_ptr<IGuidanceLaw> guidance;
-    std::unique_ptr<ICommandSink> command;
-    std::vector<std::unique_ptr<IImuRecorder>> imu_recorders;
-    std::vector<std::unique_ptr<IVideoRecorder>> video_recorders;
-    std::vector<std::unique_ptr<ITelemetryRecorder>> telemetry_recorders;
-    std::vector<std::unique_ptr<IVisualizationSink>> visualizers;
-    std::unique_ptr<IAsyncLogger> logger;
-};
-```
+## 9. 相关验收测试
 
-`RuntimeSupervisor` 拥有以上组件和 worker 生命周期；`ImuPipeline` 维护 IMU/姿态历史；`FramePipeline` 对单帧执行时间匹配和算法；`OutputDispatcher` 将只读 processed event 分送到独立可选 sinks。配置只选择实现和参数，不把设备、算法、UI 细节传进其他模块。
+- **接口与队列**：`output_contracts_test` 检查窄端口与 disabled-neutral 诊断；`multi_output_dispatcher_test` 验证阻塞 sink 不影响其他帧 worker、队列丢弃和错误按 sink 隔离。
+- **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
+- **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
+- **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
+- **协议回归**：现有串口协议测试继续验证固定控制帧字节、CRC 与量化行为。
 
-## 9. 验收接口测试
+设置 `MOSAS_BUILD_APPLICATION=OFF`、`MOSAS_BUILD_OPENCV_ADAPTERS=ON`、`BUILD_TESTING=ON` 可构建本地输出及模式组合测试，无需配置 Nori SDK；`MOSAS_BUILD_WIRELESS` 控制是否构建 RTSP 适配器及链接 FFmpeg。纯 runtime 测试不需要 OpenCV。
 
-- **Domain tests**：帧变换方向、D/B/N 坐标、roll 正负、单位换算、时间域映射、过载量化。
-- **Protocol tests**：固定 IMU/下行帧长度、字节序、CRC、饱和/非法数值；协议冻结测试禁止重构改变字节输出。
-- **Algorithm contract tests**：相同输入/时间戳下旧视觉、姿态/起飞、LOS filter、PNG 实现与基准输出一致。
-- **Port contract tests**：Fake camera/IMU 的顺序、取消、timeout、队列满和诊断计数；CommandSink latest-wins / generation / stale behavior。
-- **Pipeline integration tests**：虚拟单调时钟 + prerecorded camera/IMU + fake command/outputs；确保 recorder/logger 阻塞或满队列不阻塞 control submit。
-- **Target acceptance**：A133P 640×480@120 FPS + IMU 200 Hz；记录 capture→processing→command submit→UART write 完成的 P50/P95/P99/max，队列延迟/丢弃、IMU 对齐误差和输出故障恢复。
-
-数值误差限、传感器时间对齐误差、watchdog 和下位机失联行为属于目标板验收前必须补齐的参数，不在接口草案中伪造默认值。
+这些 host 测试使用 fake sources/sinks，不依赖 Nori 硬件。A133P 实时性能、同步误差和 watchdog 行为仍须在目标板验收中测量，不从 host 测试推断。

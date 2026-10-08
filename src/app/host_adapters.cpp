@@ -105,11 +105,11 @@ bool LoggingCommandSink::try_submit(
     return true;
 }
 
-void LoggingCommandSink::stop() noexcept { logger_.stop(); }
+void LoggingCommandSink::stop() noexcept { logger_.stop_and_flush(); }
 
 runtime::CommandSink::Diagnostics LoggingCommandSink::diagnostics() const noexcept {
     return {true, submitted_count_.load(std::memory_order_relaxed),
-            logger_.dropped_count(), 0};
+            logger_.diagnostics().dropped_count, 0};
 }
 
 SerialCommandSink::SerialCommandSink(

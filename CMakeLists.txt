@@ -5,7 +5,7 @@ include(GNUInstallDirs)
 
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 option(MOSAS_BUILD_APPLICATION "构建 Nori/视觉设备应用" ON)
-option(MOSAS_BUILD_OPENCV_ADAPTERS "构建 OpenCV 视觉适配器" OFF)
+option(MOSAS_BUILD_OPENCV_ADAPTERS "构建 OpenCV 视觉和输出适配器（无需相机 SDK）" OFF)
 include(CTest)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -73,6 +73,44 @@ target_link_libraries(mosas_runtime
         Threads::Threads
 )
 
+# Output adapters and their tests do not require the camera SDK.
+if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
+    if(MOSAS_BUILD_WIRELESS)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+            libavcodec
+            libavformat
+            libavutil
+            libswscale
+        )
+        add_library(mosas_wireless STATIC src/wireless/rtsp_streamer.cpp)
+        configure_mosas_target(mosas_wireless)
+        target_include_directories(mosas_wireless PUBLIC ${OpenCV_INCLUDE_DIRS})
+        target_link_libraries(mosas_wireless
+            PUBLIC ${OpenCV_LIBS} PkgConfig::FFMPEG
+        )
+    endif()
+
+    add_library(mosas_output STATIC
+        src/output/imu_csv_recorder.cpp
+        src/output/local_recording_session.cpp
+        src/output/local_video_recorder.cpp
+        src/output/telemetry_csv_recorder.cpp
+        src/output/output_mapping.cpp
+        src/output/recording_paths.cpp
+    )
+    configure_mosas_target(mosas_output)
+    target_include_directories(mosas_output PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(mosas_output
+        PUBLIC mosas_runtime mosas_vision ${OpenCV_LIBS}
+    )
+    if(MOSAS_BUILD_WIRELESS)
+        target_sources(mosas_output PRIVATE src/output/rtsp_visualization_sink.cpp)
+        target_compile_definitions(mosas_output PUBLIC MOSAS_OUTPUT_HAS_WIRELESS=1)
+        target_link_libraries(mosas_output PUBLIC mosas_wireless)
+    endif()
+endif()
+
 if(MOSAS_BUILD_APPLICATION)
 # 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
 set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
@@ -123,61 +161,11 @@ set_target_properties(mosas_camera_sdk PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${MOSAS_CAMERA_SDK_INCLUDE_DIR}"
 )
 
-if(MOSAS_BUILD_WIRELESS)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-        libavcodec
-        libavformat
-        libavutil
-        libswscale
-    )
-endif()
-
 add_library(serial_package STATIC
     src/serial_package/serial_port.cpp
 )
 configure_mosas_target(serial_package)
 target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads)
-
-if(MOSAS_BUILD_WIRELESS)
-    add_library(mosas_wireless STATIC
-        src/wireless/rtsp_streamer.cpp
-    )
-    configure_mosas_target(mosas_wireless)
-    target_include_directories(mosas_wireless
-        PUBLIC
-            ${OpenCV_INCLUDE_DIRS}
-    )
-    target_link_libraries(mosas_wireless
-        PUBLIC
-            ${OpenCV_LIBS}
-            PkgConfig::FFMPEG
-    )
-endif()
-
-add_library(mosas_output STATIC
-    src/output/imu_csv_recorder.cpp
-    src/output/local_recorder.cpp
-    src/output/output_controller.cpp
-    src/output/output_mapping.cpp
-)
-configure_mosas_target(mosas_output)
-target_include_directories(mosas_output
-    PUBLIC
-        ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(mosas_output
-    PUBLIC
-        mosas_runtime
-        mosas_vision
-        ${OpenCV_LIBS}
-)
-if(MOSAS_BUILD_WIRELESS)
-    target_compile_definitions(mosas_output
-        PUBLIC MOSAS_OUTPUT_HAS_WIRELESS=1
-    )
-    target_link_libraries(mosas_output PUBLIC mosas_wireless)
-endif()
 
 add_library(mosas_app STATIC
     src/app/app_config.cpp
@@ -187,6 +175,7 @@ add_library(mosas_app STATIC
     src/app/imu_stream_decoder.cpp
     src/app/nori_camera_sdk.cpp
     src/app/nori_camera_source.cpp
+    src/app/output_factory.cpp
     src/app/raw_imu_receive_buffer.cpp
     src/app/serial_imu_source.cpp
 )
@@ -333,6 +322,31 @@ if(BUILD_TESTING)
     add_test(NAME runtime_supervisor_lifecycle_test
         COMMAND runtime_supervisor_lifecycle_test)
 
+    add_executable(runtime_output_isolation_test
+        tests/runtime_output_isolation_test.cpp
+        tests/fakes/fake_imu_source.cpp
+    )
+    configure_mosas_target(runtime_output_isolation_test)
+    target_link_libraries(runtime_output_isolation_test PRIVATE mosas_runtime)
+    add_test(NAME runtime_output_isolation_test
+        COMMAND runtime_output_isolation_test)
+
+    add_executable(output_contracts_test tests/output_contracts_test.cpp)
+    configure_mosas_target(output_contracts_test)
+    target_link_libraries(output_contracts_test PRIVATE mosas_contract_core)
+    add_test(NAME output_contracts_test COMMAND output_contracts_test)
+
+    add_executable(multi_output_dispatcher_test
+        tests/multi_output_dispatcher_test.cpp
+    )
+    configure_mosas_target(multi_output_dispatcher_test)
+    target_include_directories(multi_output_dispatcher_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/runtime
+    )
+    target_link_libraries(multi_output_dispatcher_test PRIVATE mosas_runtime)
+    add_test(NAME multi_output_dispatcher_test
+        COMMAND multi_output_dispatcher_test)
+
     add_executable(output_dispatcher_test tests/output_dispatcher_test.cpp)
     configure_mosas_target(output_dispatcher_test)
     target_include_directories(output_dispatcher_test PRIVATE
@@ -352,16 +366,39 @@ if(BUILD_TESTING)
     target_link_libraries(imu_pipeline_test PRIVATE mosas_runtime)
     add_test(NAME imu_pipeline_test COMMAND imu_pipeline_test)
 
+    if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
+        add_executable(output_mapping_test tests/output_mapping_test.cpp)
+        configure_mosas_target(output_mapping_test)
+        target_link_libraries(output_mapping_test PRIVATE mosas_output)
+        add_test(NAME output_mapping_test COMMAND output_mapping_test)
+
+        add_executable(local_recorders_test tests/local_recorders_test.cpp)
+        configure_mosas_target(local_recorders_test)
+        target_link_libraries(local_recorders_test PRIVATE mosas_output)
+        add_test(NAME local_recorders_test COMMAND local_recorders_test)
+
+        add_executable(output_sink_diagnostics_test
+            tests/output_sink_diagnostics_test.cpp
+        )
+        configure_mosas_target(output_sink_diagnostics_test)
+        target_link_libraries(output_sink_diagnostics_test PRIVATE mosas_output)
+        add_test(NAME output_sink_diagnostics_test
+            COMMAND output_sink_diagnostics_test)
+
+        add_executable(mode_composition_test
+            tests/mode_composition_test.cpp
+            src/app/output_factory.cpp
+        )
+        configure_mosas_target(mode_composition_test)
+        target_link_libraries(mode_composition_test PRIVATE mosas_output)
+        add_test(NAME mode_composition_test COMMAND mode_composition_test)
+    endif()
+
     if(MOSAS_BUILD_APPLICATION)
         add_executable(command_adapter_test tests/command_adapter_test.cpp)
         configure_mosas_target(command_adapter_test)
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
-
-        add_executable(output_mapping_test tests/output_mapping_test.cpp)
-        configure_mosas_target(output_mapping_test)
-        target_link_libraries(output_mapping_test PRIVATE mosas_output)
-        add_test(NAME output_mapping_test COMMAND output_mapping_test)
 
         add_executable(default_guidance_algorithms_test
             tests/default_guidance_algorithms_test.cpp

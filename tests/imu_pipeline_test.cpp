@@ -133,6 +133,46 @@ int main() {
     pipeline.join_worker();
     pipeline.stop_source();
 
+    {
+        std::lock_guard<std::mutex> lock(fault_mutex);
+        fault_message.clear();
+    }
+    stop_requested.store(false);
+    auto recording_failure_source = std::make_unique<test::FakeImuSource>(
+        std::vector<runtime::ImuAngularVelocitySample>{
+            {1, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}, 0.0, 0.0}});
+    auto* recording_failure_source_control = recording_failure_source.get();
+    runtime::ImuPipelineCallbacks recording_failure_callbacks;
+    recording_failure_callbacks.stop_requested =
+        [&] { return stop_requested.load(); };
+    recording_failure_callbacks.try_record_sample =
+        [](const domain::ImuKinematicSample&) { return false; };
+    recording_failure_callbacks.report_fault = [&](std::string message) {
+        {
+            std::lock_guard<std::mutex> lock(fault_mutex);
+            fault_message = std::move(message);
+        }
+        fault_condition.notify_all();
+    };
+    runtime::ImuPipeline recording_failure_pipeline(
+        std::move(recording_failure_source),
+        std::make_unique<test::FakeFlightStateEstimator>(), 8,
+        generation_coordinator, std::move(recording_failure_callbacks));
+    CHECK(recording_failure_pipeline.start_source().status ==
+          runtime::SourceStatus::ok);
+    recording_failure_pipeline.reset();
+    recording_failure_pipeline.start_worker();
+    recording_failure_source_control->release();
+    {
+        std::unique_lock<std::mutex> lock(fault_mutex);
+        CHECK(fault_condition.wait_for(
+            lock, 1s, [&] { return !fault_message.empty(); }));
+        CHECK(fault_message == "failed to record IMU sample");
+    }
+    recording_failure_pipeline.cancel_source();
+    recording_failure_pipeline.join_worker();
+    recording_failure_pipeline.stop_source();
+
     stop_requested.store(false);
     auto blocked_source = std::make_unique<test::FakeImuSource>(
         std::vector<runtime::ImuAngularVelocitySample>{

@@ -2,7 +2,7 @@
 #define MOSAS_RUNTIME_OUTPUT_DISPATCHER_HPP
 
 #include <mosas/runtime/latest_frame_queue.hpp>
-#include <mosas/runtime/runtime_interfaces.hpp>
+#include <mosas/runtime/output_ports.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -11,17 +11,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace mosas::runtime {
-
-struct ProcessedFrame {
-    CameraFrame frame;
-    domain::VisionDetection vision_detection{};
-    domain::FlightStateSnapshot flight_state{};
-    domain::GuidanceOutput guidance{};
-    domain::GuidanceOverlay overlay{};
-    std::chrono::steady_clock::time_point enqueued_at{};
-};
 
 enum class OutputDispatchTimingStage {
     queue_wait,
@@ -40,9 +32,14 @@ struct OutputDispatcherCallbacks {
     std::function<void(std::string)> report_fault;
 };
 
+class OutputFrameWorker;
+
 class OutputDispatcher final {
 public:
-    OutputDispatcher(std::unique_ptr<FrameSink> frame_sink,
+    OutputDispatcher(std::unique_ptr<IVideoRecorder> video_recorder,
+                     std::unique_ptr<ITelemetryRecorder> telemetry_recorder,
+                     std::unique_ptr<IVisualizationSink> visualization_sink,
+                     std::unique_ptr<IImuRecorder> imu_recorder,
                      std::size_t queue_capacity,
                      OutputDispatcherCallbacks callbacks);
     ~OutputDispatcher();
@@ -56,19 +53,19 @@ public:
     bool try_record_imu_sample(
         const domain::ImuKinematicSample& sample) noexcept;
     void cancel() noexcept;
+    void cancel_imu_recorder() noexcept;
     void close_queue() noexcept;
     void join() noexcept;
     std::string stop_sink();
     std::uint64_t dropped_count() const;
+    RuntimeOutputDiagnostics diagnostics() const;
 
 private:
-    void worker_loop() noexcept;
     void report_fault(std::string message) noexcept;
-
-    std::unique_ptr<FrameSink> frame_sink_;
-    LatestFrameQueue<ProcessedFrame> queue_;
+    std::unique_ptr<IImuRecorder> imu_recorder_;
+    std::vector<std::shared_ptr<void>> frame_output_owners_;
+    std::vector<std::unique_ptr<OutputFrameWorker>> frame_workers_;
     OutputDispatcherCallbacks callbacks_;
-    std::thread worker_;
     bool sink_stopped_ = false;
 };
 
