@@ -171,10 +171,18 @@ bool parse_options(int argc, char** argv, CommandLineOptions* options) {
     return options->show_help || !options->config_path.empty();
 }
 
-}  // 匿名命名空间结束
-
-int main(int argc, char** argv) {
-    CommandLineOptions options;
+/**
+ * @brief 加载命令行参数与配置，不启动设备。
+ * @param argc 参数数量。
+ * @param argv 参数数组。
+ * @param options 接收命令行选项。
+ * @param config 接收应用配置。
+ * @param should_run 接收是否继续启动的标志；帮助请求时为 false。
+ * @return 成功或帮助请求返回 0，参数或配置错误返回 2。
+ */
+int load_configuration(int argc, char** argv, CommandLineOptions& options,
+                       mosas::app::AppConfig& config, bool& should_run) {
+    should_run = false;
     if (!parse_options(argc, argv, &options)) {
         print_usage(argv[0]);
         return 2;
@@ -184,7 +192,6 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    mosas::app::AppConfig config;
     std::string error;
     if (!mosas::app::AppConfigLoader::load(options.config_path, &config, &error)) {
         std::cerr << "加载配置失败: " << error << '\n';
@@ -196,10 +203,30 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+    should_run = true;
+    return 0;
+}
+
+/** @brief 持有运行组件；声明顺序确保运行时先于共享串口析构。 */
+struct ApplicationComponents {
+    std::shared_ptr<serial_package::SerialPort> serial_port;
+    mosas::app::SerialImuSource* serial_imu_source = nullptr;
+    mosas::app::NoriSdkCameraSource* camera_source_status = nullptr;
+    std::unique_ptr<mosas::runtime::RuntimeSupervisor> runtime;
+};
+
+/**
+ * @brief 初始化组件并启动运行时，在打开串口之前注册退出信号。
+ * @param config 已校验的应用配置。
+ * @param components 接收组件所有权以及由运行时持有的数据源观察指针。
+ * @return 成功返回 0，设备或启动失败返回 1，模式错误返回 2。
+ */
+int initialize_components(const mosas::app::AppConfig& config,
+                          ApplicationComponents& components) {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    std::shared_ptr<serial_package::SerialPort> serial_port;
+    auto& serial_port = components.serial_port;
     const bool serial_required =
         config.imu.mode == mosas::app::ImuMode::serial ||
         config.command.mode == mosas::app::CommandMode::serial;
@@ -213,7 +240,6 @@ int main(int argc, char** argv) {
     }
 
     std::unique_ptr<mosas::runtime::ImuSource> imu_source;
-    mosas::app::SerialImuSource* serial_imu_source = nullptr;
     if (config.imu.mode == mosas::app::ImuMode::simulated) {
         imu_source = std::make_unique<mosas::app::SimulatedImuSource>(
             config.imu.sample_rate_hz, config.algorithms.attitude.gravity_mps2,
@@ -222,7 +248,7 @@ int main(int argc, char** argv) {
         auto source = std::make_unique<mosas::app::SerialImuSource>(
             serial_port, config.enable_serial_interval_statistics,
             config.imu.measurement_latency_ns, config.imu.receive_thread);
-        serial_imu_source = source.get();
+        components.serial_imu_source = source.get();
         imu_source = std::move(source);
     } else {
         std::cerr << "未知的 IMU 数据源模式\n";
@@ -230,7 +256,7 @@ int main(int argc, char** argv) {
     }
     auto camera_source = std::make_unique<mosas::app::NoriSdkCameraSource>(
         config.camera);
-    auto* camera_source_status = camera_source.get();
+    components.camera_source_status = camera_source.get();
     std::unique_ptr<mosas::runtime::CommandSink> command_sink;
     if (config.command.mode == mosas::app::CommandMode::log) {
         command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
@@ -246,17 +272,28 @@ int main(int argc, char** argv) {
         mosas::app::make_default_guidance_algorithms(config.algorithms);
     auto output_ports =
         mosas::app::make_runtime_output_ports(config, std::cerr);
-    mosas::runtime::RuntimeSupervisor runtime(
+    components.runtime = std::make_unique<mosas::runtime::RuntimeSupervisor>(
         std::move(imu_source), std::move(camera_source),
         std::move(command_sink), config.guidance,
         std::move(algorithm_dependencies), std::move(output_ports));
+    auto& runtime = *components.runtime;
     if (!runtime.start()) {
         std::cerr << "启动制导程序失败: " << runtime.last_error() << '\n';
         return 1;
     }
 
+    return 0;
+}
+
+/**
+ * @brief 输出启动信息并监控运行状态，直到收到退出信号或发生故障。
+ * @param components 已成功启动的组件，调用期间必须保持存活。
+ */
+void monitor_runtime(ApplicationComponents& components) {
+    auto& runtime = *components.runtime;
     std::cout << "统一制导程序已启动\n";
-    const auto camera_configuration = camera_source_status->sdk_configuration();
+    const auto camera_configuration =
+        components.camera_source_status->sdk_configuration();
     std::ostringstream camera_configuration_output;
     camera_configuration_output
         << "[CAMERA] SDK启动读回: " << camera_configuration.width << "x"
@@ -279,6 +316,21 @@ int main(int argc, char** argv) {
             next_statistics_at = now + std::chrono::seconds(1);
         }
     }
+}
+
+/**
+ * @brief 按原顺序报告故障、停止运行时并输出退出统计。
+ * @param components 已启动的组件，数据源在统计完成之前保持存活。
+ * @param config 决定是否输出串口统计的配置。
+ * @param options 决定是否输出耗时统计的命令行选项。
+ * @return 故障退出返回 1，正常退出返回 0。
+ */
+int stop_and_report(ApplicationComponents& components,
+                    const mosas::app::AppConfig& config,
+                    const CommandLineOptions& options) {
+    auto& runtime = *components.runtime;
+    const auto* serial_imu_source = components.serial_imu_source;
+    const auto* camera_source_status = components.camera_source_status;
     const bool faulted = runtime.faulted();
     if (faulted) {
         std::cerr << "制导程序发生故障: " << runtime.last_error() << '\n';
@@ -295,4 +347,32 @@ int main(int argc, char** argv) {
         print_camera_timing(camera_source_status->camera_timing());
     }
     return faulted ? 1 : 0;
+}
+
+}  // 匿名命名空间结束
+
+/**
+ * @brief 串联配置加载、组件启动、运行监控和退出流程。
+ * @param argc 参数数量。
+ * @param argv 参数数组。
+ * @return 正常退出或帮助请求返回 0，运行失败返回 1，参数配置错误返回 2。
+ */
+int main(int argc, char** argv) {
+    CommandLineOptions options;
+    mosas::app::AppConfig config;
+    bool should_run = false;
+    const int configuration_result =
+        load_configuration(argc, argv, options, config, should_run);
+    if (!should_run) {
+        return configuration_result;
+    }
+
+    ApplicationComponents components;
+    const int initialization_result = initialize_components(config, components);
+    if (initialization_result != 0) {
+        return initialization_result;
+    }
+
+    monitor_runtime(components);
+    return stop_and_report(components, config, options);
 }
