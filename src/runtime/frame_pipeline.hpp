@@ -27,8 +27,23 @@ struct FramePipelineCallbacks {
     std::function<void(const std::string&)> log;
 };
 
+/// 相机帧流水线：采集线程入有界队列，单一处理线程串行调用有状态算法。
 class FramePipeline final {
   public:
+    /**
+     * @brief 创建相机帧采集与制导处理流水线。
+     * @param camera_source 相机源；本对象接管其所有权。
+     * @param vision_detector 单线程调用的视觉识别器。
+     * @param los_estimator 视觉观测到镖体系视线估计器。
+     * @param los_rate_filter 有状态视线速率滤波器。
+     * @param guidance_law 制导律实现。
+     * @param config 帧龄限制、队列容量和相机内参/外参配置。
+     * @param imu_pipeline 提供按相机时间查询的 IMU/姿态快照。
+     * @param command_sink 非阻塞控制命令端口。
+     * @param generation_coordinator 协调命令与起飞状态代际。
+     * @param output_dispatcher 接收处理后的不可变帧快照。
+     * @param callbacks 运行停止、故障和日志回调。
+     */
     FramePipeline(std::unique_ptr<CameraSource> camera_source,
                   std::unique_ptr<ports::IVisionDetector> vision_detector,
                   std::unique_ptr<ports::ILosEstimator> los_estimator,
@@ -44,18 +59,30 @@ class FramePipeline final {
     FramePipeline(const FramePipeline&) = delete;
     FramePipeline& operator=(const FramePipeline&) = delete;
 
+    /** @brief 检查源、算法依赖和队列是否完整。 @return 可运行时为 true。 */
     bool valid() const noexcept;
+    /** @brief 配置底层相机源。 @return 配置结果及可选错误信息。 */
     SourceResult configure_source();
+    /** @brief 清空采集队列并重置视觉和 LOS 滤波器的跨帧状态。 */
     void reset() noexcept;
+    /** @brief 创建相机采集与帧处理工作线程。 */
     void start_workers();
+    /** @brief 请求相机源取消并唤醒阻塞捕获。 */
     void cancel_source() noexcept;
+    /** @brief 等待相机采集线程退出。 */
     void join_capture_worker() noexcept;
+    /** @brief 在线程退出后释放底层相机源。 */
     void stop_source() noexcept;
+    /** @brief 关闭帧队列，通知处理线程不再有新帧。 */
     void close_queue() noexcept;
+    /** @brief 等待串行帧处理线程退出。 */
     void join_processing_worker() noexcept;
 
+    /** @brief 返回本地统计的处理帧率。 @return 当前处理 FPS。 */
     double processing_fps() const;
+    /** @brief 获取本流水线采集和处理帧率。 @return 当前运行统计快照；输出 FPS 由 supervisor 汇总。 */
     RuntimeStatistics statistics() const;
+    /** @brief 获取本流水线采集和处理阶段时序及采集队列丢帧。 @return 当前时序快照。 */
     RuntimeTiming timing() const;
 
   private:
@@ -80,7 +107,16 @@ class FramePipeline final {
         TimingDistribution distribution;
     };
 
+    /**
+     * @brief 从相机获取帧、验证时间戳并送入有界采集队列。
+     * @note 运行于采集线程；捕获故障通过 callbacks_ 上报。
+     */
     void capture_worker() noexcept;
+
+    /**
+     * @brief 串行执行帧预处理、识别、LOS/滤波/制导并提交命令和输出快照。
+     * @note 有状态视觉和制导算法只在此线程调用；慢速输出由 OutputDispatcher 异步消费。
+     */
     void processing_worker() noexcept;
     void record_timing(TimingStage stage,
                        std::chrono::steady_clock::duration duration) noexcept;

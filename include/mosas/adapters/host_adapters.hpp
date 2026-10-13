@@ -56,24 +56,55 @@ private:
     std::atomic<std::uint64_t> submitted_count_{0};
 };
 
+/// 通过 latest-value mailbox 和专属发送线程将制导命令写入串口。
 class SerialCommandSink final : public runtime::CommandSink {
 public:
+    /**
+     * @brief 创建串口命令 sink，错误信息默认写入标准错误流。
+     * @param port 已配置的串口对象；须在 start() 前打开。
+     */
     explicit SerialCommandSink(
         std::shared_ptr<serial_package::SerialPort> port);
+
+    /**
+     * @brief 创建带指定诊断输出流的串口命令 sink。
+     * @param port 已配置的串口对象；须在 start() 前打开。
+     * @param output 写入串口发送错误文本的流；其生命周期须覆盖 sink。
+     */
     SerialCommandSink(std::shared_ptr<serial_package::SerialPort> port,
                       std::ostream& output);
     ~SerialCommandSink() override;
 
+    /** @brief 检查串口并启动唯一的后台命令发送线程。 @return 成功启动时为 true。 */
     bool start() override;
+    /**
+     * @brief 非阻塞地发布当前起飞代际的最新命令。
+     * @param command 控制命令；代际与当前 active generation 不符时拒绝。
+     * @return 命令进入 mailbox 时为 true；未运行、已取消或代际失效时为 false。
+     * @note 替换尚未发送的旧命令；本调用不执行串口写入。
+     */
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
+    /**
+     * @brief 更新允许发送的起飞代际并同步串口发送临界区。
+     * @param generation 新的有效代际。
+     * @note 可能等待当前串口写操作完成；返回后旧代际在途写入已结束。
+     */
     void set_active_generation(std::uint64_t generation) noexcept override;
+    /** @brief 请求发送线程停止接受/处理命令。 */
     void cancel() noexcept override;
+    /** @brief 关闭 mailbox 并等待发送线程退出。 */
     void stop() noexcept override;
+    /** @brief 获取命令提交、队列替代和串口失败计数。 @return 命令 sink 诊断快照。 */
     Diagnostics diagnostics() const noexcept override;
 
+    /** @brief 获取最近一次串口发送错误。 @return 错误文本；无错误时为空。 */
     std::string last_error() const;
 
 private:
+    /**
+     * @brief 消费 mailbox、校验命令代际并串行编码/写出控制帧。
+     * @note 串口写入只在该 worker 执行；失败计数和错误说明在 sink 中保留。
+     */
     void worker_loop() noexcept;
     bool fail(const std::string& message);
 

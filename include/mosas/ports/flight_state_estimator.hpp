@@ -5,13 +5,25 @@
 
 namespace mosas::ports {
 
-// Runtime boundary for one IMU sample producing one coherent attitude/launch
-// snapshot. The legacy implementation intentionally remains a single update.
+/**
+ * @brief 将单个 IMU 样本转换为一致的姿态与起飞状态快照。
+ * @note 一个样本只调用一次 update，以避免姿态与起飞估计器重复消费样本；实例由单一 IMU 工作线程调用。
+ */
 class IFlightStateEstimator {
 public:
     virtual ~IFlightStateEstimator() = default;
+
+    /**
+     * @brief 更新飞行状态估计。
+     * @param sample 带单调时间戳的 IMU 运动样本。
+     * @return 与该样本对应的姿态、起飞状态及有效性信息。
+     */
     virtual domain::FlightStateSnapshot update(
         const domain::ImuKinematicSample& sample) = 0;
+
+    /**
+     * @brief 清除历史估计状态，为新一代运行状态重新初始化。
+     */
     virtual void reset() noexcept = 0;
 };
 

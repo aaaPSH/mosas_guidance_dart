@@ -181,6 +181,10 @@ private:
         }
     }
 
+    /**
+     * @brief 消费本 sink 的帧队列并执行阻塞式发布/记录操作。
+     * @note 队列和 worker 按 sink 独立；代际不匹配的帧被忽略，处理失败会上报运行时故障。
+     */
     void worker_loop() noexcept {
         try {
             QueuedProcessedFrame queued{};

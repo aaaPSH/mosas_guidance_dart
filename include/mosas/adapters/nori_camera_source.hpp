@@ -39,21 +39,70 @@ struct CameraSdkConfiguration {
 
 class NoriSdkCameraSource final : public runtime::CameraSource {
 public:
+    /**
+     * @brief 使用生产环境 Nori SDK 创建相机源。
+     * @param config 设备索引、视频模式、队列和时间戳配置。
+     */
     explicit NoriSdkCameraSource(CameraAppConfig config);
+
+    /**
+     * @brief 使用指定 SDK API 创建相机源。
+     * @param config 相机应用配置。
+     * @param sdk SDK API 实例；可注入 fake 实现以隔离硬件测试。
+     */
     NoriSdkCameraSource(CameraAppConfig config, std::shared_ptr<NoriSdkApi> sdk);
+
+    /** @brief 取消采集、释放 SDK 资源并解除回调 owner 关联。 */
     ~NoriSdkCameraSource() override;
 
     NoriSdkCameraSource(const NoriSdkCameraSource&) = delete;
     NoriSdkCameraSource& operator=(const NoriSdkCameraSource&) = delete;
 
+    /**
+     * @brief 初始化 Nori SDK 会话、匹配视频模式并启动相机回调。
+     * @param config 自由运行或硬件触发采集模式。
+     * @return 配置状态和错误文本；SDK/设备配置失败时返回 fatal。
+     * @note 会访问相机 SDK 并建立 realtime 到 monotonic 的当前进程时钟映射；调用前须处于非实时生命周期线程。
+     */
     runtime::SourceResult configure(
         const runtime::CameraCaptureConfig& config) override;
+
+    /**
+     * @brief 从回调队列取帧、解码为拥有型 BGR8 图像并返回时间戳。
+     * @param frame 非空输出指针；成功时图像所有权由返回帧持有。
+     * @return 捕获状态；队列等待期间可能阻塞，取消通过 SourceStatus::cancelled 返回。
+     * @note SDK Frame_Time、主机回调接收时间及时间来源分别保存在帧中，不互相替代。
+     */
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;
+
+    /**
+     * @brief 返回由 SDK 回调帧计数计算的有效采集帧率。
+     * @return 实测 FPS；采样不足或统计异常时为 0。
+     */
     double capture_fps() const noexcept override;
+
+    /**
+     * @brief 对捕获帧执行尺寸调整及相机安装方向修正。
+     * @param frame 输入/输出相机帧；图像必须是有效 BGR8。
+     * @return 预处理状态；失败时携带适配器错误信息。
+     */
     runtime::SourceResult prepare(runtime::CameraFrame* frame) override;
+
+    /** @brief 非阻塞请求取消捕获并关闭待取帧队列。 */
     void cancel() noexcept override;
+    /** @brief 等待捕获/回调退出并释放 SDK 视频会话。 */
     void stop() noexcept override;
+
+    /**
+     * @brief 获取 SDK 实际选中的分辨率、帧率、曝光和增益。
+     * @return 最近一次成功配置所记录的相机参数。
+     */
     CameraSdkConfiguration sdk_configuration() const noexcept;
+
+    /**
+     * @brief 获取回调等待、队列延迟、解码和丢帧统计。
+     * @return 相机阶段时序及丢帧计数快照。
+     */
     NoriCameraTiming camera_timing() const;
 
 private:
@@ -91,10 +140,24 @@ private:
         NoriSdkCameraSource* owner_;
     };
 
-    static uint32_t frame_callback(PVOID, FRAME_BUFFER_DATA*, PVOID);
+    /**
+     * @brief Nori SDK 回调入口，将回调交给仍有效的 source 实例处理。
+     * @param sdk_context SDK 回调上下文；当前实现不读取该参数。
+     * @param frame SDK 提供的帧描述；数据只在回调期有效。
+     * @param user 注册回调时提供的 CallbackContext。
+     * @return SDK 回调状态码；无效或已取消回调按 NORI_OK 忽略。
+     * @note 此处只保留帧数据、记录时间并入队，不执行图像解码或制导处理。
+     */
+    static uint32_t frame_callback(PVOID sdk_context,
+                                  FRAME_BUFFER_DATA* frame, PVOID user);
     static CallbackContext* create_callback_context();
     static bool enter_callback(CallbackContext* context,
                                NoriSdkCameraSource** owner);
+    /**
+     * @brief 复制 SDK 临时帧缓冲并附上采集/接收时间后放入有界队列。
+     * @param frame SDK 回调提供的帧描述。
+     * @return SDK 回调状态码；队列满时丢弃最旧帧并累计诊断。
+     */
     uint32_t enqueue_frame(FRAME_BUFFER_DATA* frame);
     void leave_callback() noexcept;
     void wait_for_callbacks() noexcept;

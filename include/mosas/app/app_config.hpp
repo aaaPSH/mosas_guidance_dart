@@ -100,6 +100,14 @@ struct AppConfig {
 
 class AppConfigLoader {
 public:
+    /**
+     * @brief 读取、解析并校验应用配置文件。
+     * @param path 配置文件路径；相对录像路径按配置文件所在目录解析。
+     * @param config 非空输出指针；成功时写入完整配置。
+     * @param error 可选错误输出；失败时包含文件/行或全局校验信息。
+     * @return 文件解析和全部配置校验成功时为 true。
+     * @note 输出 config 仅在成功时替换；函数不启动硬件或输出组件。
+     */
     static bool load(const std::filesystem::path& path, AppConfig* config,
                      std::string* error);
 };

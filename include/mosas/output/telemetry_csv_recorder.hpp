@@ -14,8 +14,13 @@
 
 namespace mosas::output {
 
+/// 本地逐帧制导遥测 CSV sink，与视频 sink 共享窗口代际和文件路径。
 class TelemetryCsvRecorder final : public runtime::ITelemetryRecorder {
 public:
+    /**
+     * @brief 创建遥测记录器。
+     * @param session 与本地视频 sink 共享的路径和窗口协调会话。
+     */
     explicit TelemetryCsvRecorder(
         std::shared_ptr<LocalRecordingSession> session);
     ~TelemetryCsvRecorder() override;
@@ -25,6 +30,12 @@ public:
 
     bool start() override;
     void reset() noexcept override;
+    /**
+     * @brief 将处理帧的制导状态追加到 CSV 或起飞窗口缓存。
+     * @param frame 当前帧及其时间、姿态、视觉和制导快照。
+     * @return 记录成功时为 true；文件、窗口状态或序列化失败时为 false。
+     * @note 执行文本序列化和文件 I/O；仅由遥测输出 worker 调用。
+     */
     bool record(const runtime::ProcessedFrame& frame) override;
     bool take_rearm_request() noexcept override;
     void cancel() noexcept override;

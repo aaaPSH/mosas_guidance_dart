@@ -112,6 +112,14 @@ Vector3 normalize(const Vector3& value) {
     return {value.x / norm, value.y / norm, value.z / norm};
 }
 
+/**
+ * @brief 将目标像素中心反投影为归一化相机方向。
+ * @param result 含目标中心像素坐标的视觉结果。
+ * @param intrinsics 相机焦距和主点，单位为像素。
+ * @param direction 非空输出指针；成功时写入相机系单位方向向量。
+ * @return 目标、内参和输出均有效时为 true。
+ * @note 图像 v 轴向下，因此计算相机 +y 分量时反转像素纵坐标偏差。
+ */
 bool camera_direction(const VisionResult& result,
                       const CameraIntrinsics& intrinsics,
                       Vector3* direction) {
@@ -132,6 +140,11 @@ bool camera_direction(const VisionResult& result,
     return is_finite(*direction) && vector_norm(*direction) >= kEpsilon;
 }
 
+/**
+ * @brief 将相机/镖体系方向向量转换为俯仰和偏航 LOS 角。
+ * @param direction 坐标系中 +x 向前、+y 向上、+z 向右的方向向量。
+ * @return 以 rad 表示的 q_y/q_z；零向量或非有限输入返回无效 LOS。
+ */
 LineOfSight angles_from_direction(const Vector3& direction) {
     if (!is_finite(direction)) {
         return invalid_line_of_sight();
@@ -160,6 +173,14 @@ double dot_product(const Vector3& lhs, const Vector3& rhs) {
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
 }
 
+/**
+ * @brief 将镖体角速度引起的 LOS 单位向量变化率投影到角度速率。
+ * @param line_of_sight 当前 LOS 角（rad）。
+ * @param body_angular_velocity 镖体系角速度（rad/s）。
+ * @param q_y_rate 非空输出指针，接收俯仰 LOS 角速度（rad/s）。
+ * @param q_z_rate 非空输出指针，接收偏航 LOS 角速度（rad/s）。
+ * @return 投影有效时为 true；接近仰角奇异点或输入非有限时为 false。
+ */
 bool body_rotation_rate(const LineOfSight& line_of_sight,
                         const Vector3& body_angular_velocity,
                         double* q_y_rate, double* q_z_rate) {
@@ -217,6 +238,15 @@ void LineOfSightRateEstimator::TwoStateLosKalmanFilter::initialize(
     initialized_ = true;
 }
 
+/**
+ * @brief 执行两状态 LOS 角/角速度 Kalman 预测及可选测量更新。
+ * @param valid 当前角度测量是否有效。
+ * @param z_qb 有效时的 LOS 角测量（rad）。
+ * @param c_omega 镖体转动在该角度通道上的已知前馈项（rad/s）。
+ * @param dt 两次更新之间的时间（s），须为有限正数。
+ * @return 估计角速度（rad/s）；非法 dt 返回 NaN，内部数值异常时也会重置滤波状态。
+ * @note 测量无效时只传播角度和角速度状态及协方差，不执行测量校正。
+ */
 double LineOfSightRateEstimator::TwoStateLosKalmanFilter::update(
     bool valid, double z_qb, double c_omega, double dt) {
     if (!is_finite(dt) || dt <= 0.0) {

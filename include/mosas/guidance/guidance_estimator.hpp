@@ -83,36 +83,68 @@ struct LineOfSightRateFilterConfig {
 
 class GuidanceEstimator {
 public:
-    // 根据绿色引导灯形心和相机内参计算相机视线俯仰角与偏航角。
-    // 相机光轴对应弹体系 +x，图像上方对应 +y，图像右方对应 +z。
-    // 目标上仰时 q_y 为正，目标右偏时 q_z 为正，角度单位为弧度。
+    /**
+     * @brief 根据图像目标中心和相机内参计算相机坐标视线角。
+     * @param result 视觉识别结果及目标中心像素坐标。
+     * @param intrinsics 相机焦距和主点，单位为像素。
+     * @return 相机轴约定下的俯仰/偏航视线角（rad）；目标或参数无效时 valid=false。
+     * @note 相机光轴为 +x，图像上方为 +y、右方为 +z；目标上仰/右偏分别产生正 q_y/q_z。
+     */
     static LineOfSight calculate(const VisionResult& result,
                                  const CameraIntrinsics& intrinsics);
 
-    // 只使用固定安装矩阵将相机视线转换到镖体系，不使用姿态状态。
+    /**
+     * @brief 将像素目标视线通过固定安装矩阵转换到镖体系。
+     * @param result 视觉识别结果及目标中心像素坐标。
+     * @param intrinsics 相机内参，单位为像素。
+     * @param camera_to_body 从相机系到镖体系的旋转矩阵。
+     * @return 镖体系视线角（rad）；不使用姿态状态，输入无效时 valid=false。
+     */
     static LineOfSight calculate_body(
         const VisionResult& result, const CameraIntrinsics& intrinsics,
         const RotationMatrix3& camera_to_body);
 };
 
-// 根据连续视线角估计角速度，并用同步的镖体角速度补偿弹体转动影响。
+/**
+ * @brief 根据连续视线角估计角速度，并补偿同步的镖体转动。
+ * @note 有状态实例应在单一制导处理线程调用；时间间隔单位为秒，角度单位为 rad。
+ */
 class LineOfSightRateEstimator {
 public:
+    /**
+     * @brief 使用指定过程噪声和测量噪声配置初始化滤波器。
+     * @param config Kalman 噪声、初始协方差和滤波开关配置。
+     */
     explicit LineOfSightRateEstimator(
         const LineOfSightRateFilterConfig& config = {});
 
+    /**
+     * @brief 清除上一段连续处理的差分和滤波状态。
+     */
     void reset();
 
-    // 第一次有效视线角仅建立差分/滤波基准，不产生有效角速度；
-    // 启用二状态滤波时，直接将相机角度作为测量更新，IMU 旋转补偿作为前馈已知输入；
-    // 丢帧时执行纯预测外推，保持角速度连续输出。
+    /**
+     * @brief 更新视线角速度估计并记录原始、未滤波及滤波结果。
+     * @param line_of_sight 当前视线角；无效值会按滤波器策略处理。
+     * @param body_angular_velocity 与当前视线同步的镖体系角速度（rad/s）。
+     * @param dt 相邻帧时间间隔（s），须为有限正数。
+     * @return 视线角速度（rad/s）；建立首个有效基准时可能暂不可用。
+     * @note 丢帧时滤波器可执行预测；时间或数值异常会使滤波器重置。
+     */
     LineOfSightAngularVelocity update(const LineOfSight& line_of_sight,
                                        const Vector3& body_angular_velocity,
                                        double dt);
 
+    /**
+     * @brief 返回最近一次 update 的视线角速度输出。
+     * @return 当前角速度估计及其有效标志。
+     */
     LineOfSightAngularVelocity angular_velocity() const;
 
-    // 返回最近一次更新的原始视线角、未滤波角速度和最终角速度。
+    /**
+     * @brief 获取最近一次更新的原始视线、差分速率和最终滤波速率。
+     * @return 视线速率诊断样本。
+     */
     LineOfSightRateSample sample() const;
 
 private:
@@ -151,10 +183,20 @@ private:
     LineOfSightRateSample sample_{};
 };
 
-// 使用二维解耦 PNG 律在弹道系计算过载，再按维护的 roll 角转到镖体系。
+/// 使用二维解耦比例导航律在弹道系计算过载，再转换到镖体系。
 class PngGuidance {
 public:
-    // 速度方向固定为镖体系 +x；角度使用相机时刻插值得到的姿态估计。
+    /**
+     * @brief 计算 PNG 过载、加速度及制导诊断量。
+     * @param line_of_sight 有效目标视线角（rad）。
+     * @param angular_velocity 与视线对应的角速度（rad/s）。
+     * @param speed_mps 镖体速度大小（m/s）；速度方向按镖体系 +x 处理。
+     * @param pitch_rad 相机帧时刻插值得到的俯仰姿态角（rad）。
+     * @param roll_rad 相机帧时刻插值得到的滚转角（rad）。
+     * @param config PNG 导航系数、重力和输出限幅配置。
+     * @return 制导计算结果；输入无效或数值异常时 valid=false。
+     * @note 先在弹道系计算过载，再用 roll 转到镖体系；过载单位为 g，加速度单位为 m/s^2。
+     */
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,

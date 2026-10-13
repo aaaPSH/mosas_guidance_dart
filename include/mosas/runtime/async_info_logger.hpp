@@ -18,6 +18,11 @@ namespace mosas::runtime {
 
 class AsyncInfoLogger final : public IAsyncLogger {
 public:
+    /**
+     * @brief 创建异步日志器。
+     * @param output 后台 worker 写入的流；流对象须比 logger 活得更久。
+     * @param queue_capacity 有界日志事件队列容量；满队列时新日志丢弃并计数。
+     */
     explicit AsyncInfoLogger(std::ostream& output,
                              std::size_t queue_capacity = 256);
     ~AsyncInfoLogger();
@@ -25,16 +30,39 @@ public:
     AsyncInfoLogger(const AsyncInfoLogger&) = delete;
     AsyncInfoLogger& operator=(const AsyncInfoLogger&) = delete;
 
+    /**
+     * @brief 启动日志后台 worker。
+     * @return 成功创建 worker 时为 true。
+     */
     bool start() override;
+
+    /**
+     * @brief 非阻塞地提交结构化日志事件。
+     * @param event 固定大小的日志事件；包含单调时间戳和消息内容。
+     * @return 事件被队列接收时为 true；队列满或 logger 未运行时为 false。
+     */
     bool try_submit(const RuntimeLogEvent& event) noexcept override;
+
+    /**
+     * @brief 将文本消息封装为日志事件并非阻塞提交。
+     * @param timestamp_ns 事件发生时的单调时钟纳秒值。
+     * @param message 文本消息；过长内容可能按固定容量截断。
+     * @return 事件被队列接收时为 true。
+     */
     bool try_submit_text(TimestampNs timestamp_ns,
                          const std::string& message) noexcept;
+
+    /** @brief 获取队列、丢弃计数和 worker 健康状态。 @return 日志 sink 诊断快照。 */
     SinkDiagnostics diagnostics() const noexcept override;
 
     bool running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
 
+    /**
+     * @brief 停止后台 worker，并刷新已接收的日志事件后返回。
+     * @note 可阻塞；只应在非实时生命周期管理线程调用。
+     */
     void stop_and_flush() noexcept override;
 
 private:

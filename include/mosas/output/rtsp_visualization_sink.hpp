@@ -14,9 +14,15 @@
 
 namespace mosas::output {
 
-// Rendering and network I/O run on the dispatcher's visualization worker.
+/// RTSP 可视化 sink；渲染和网络 I/O 由 dispatcher 的独立可视化 worker 执行。
 class RtspVisualizationSink final : public runtime::IVisualizationSink {
 public:
+    /**
+     * @brief 创建 RTSP 可视化 sink；此时不启动网络流。
+     * @param output_config 叠加绘制等输出配置。
+     * @param stream_config RTSP 地址、编码、尺寸和帧率配置。
+     * @param line_of_sight_reference_point 图像中的 LOS 参考点（像素）。
+     */
     RtspVisualizationSink(OutputConfig output_config,
                           wireless::RtspStreamConfig stream_config,
                           cv::Point2d line_of_sight_reference_point);
@@ -24,6 +30,12 @@ public:
 
     bool start() override;
     void reset() noexcept override;
+    /**
+     * @brief 渲染并发送一帧 RTSP 图像。
+     * @param frame 含 BGR8 图像、视觉结果和制导叠加数据的快照。
+     * @return 成功发送或因取消而忽略时为 true；渲染、建流或发送失败时为 false。
+     * @note streamer 在首帧发布时懒启动；本函数可能执行渲染、编码和网络 I/O。
+     */
     bool publish(const runtime::ProcessedFrame& frame) override;
     void cancel() noexcept override;
     void stop() noexcept override;

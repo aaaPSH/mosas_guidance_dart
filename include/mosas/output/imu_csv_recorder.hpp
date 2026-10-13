@@ -14,11 +14,16 @@
 
 namespace mosas::output {
 
-// 在独立线程中批量写入每条 IMU 运动样本。
+/// 在专属后台线程中批量写入 IMU 运动样本的 CSV sink。
 class ImuCsvRecorder final : public runtime::IImuRecorder {
 public:
     static constexpr std::size_t kQueueCapacity = 16'384;
 
+    /**
+     * @brief 创建带有界样本队列的 IMU CSV 记录器。
+     * @param recording_base_path 本次运行的录像基础路径，用于派生 IMU CSV 文件名。
+     * @param queue_capacity 样本队列容量；满队列时 try_record 拒绝新样本并计数。
+     */
     explicit ImuCsvRecorder(
         std::string recording_base_path,
         std::size_t queue_capacity = kQueueCapacity);

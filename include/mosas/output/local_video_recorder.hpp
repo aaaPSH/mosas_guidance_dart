@@ -22,8 +22,14 @@ struct LocalVideoRecorderOptions {
     cv::Point2d line_of_sight_reference_point{};
 };
 
+/// 本地视频 sink；连续模式直接写帧，起飞窗口模式在内存上限内缓存并持久化。
 class LocalVideoRecorder final : public runtime::IVideoRecorder {
 public:
+    /**
+     * @brief 创建本地视频记录器。
+     * @param session 与遥测 CSV sink 共用的路径及窗口协调会话。
+     * @param options 可视化叠加和 LOS 参考点配置。
+     */
     explicit LocalVideoRecorder(
         std::shared_ptr<LocalRecordingSession> session,
         LocalVideoRecorderOptions options = {});
@@ -34,15 +40,25 @@ public:
 
     bool start() override;
     void reset() noexcept override;
+    /**
+     * @brief 将处理帧写入连续录像或当前起飞窗口缓存。
+     * @param frame 含拥有型 BGR 图像、单调时间和制导叠加数据的处理帧。
+     * @return 帧接受并处理成功时为 true；格式、窗口或 I/O 失败时为 false。
+     * @note 可能执行图像处理和磁盘写入；只由视频输出 worker 调用。
+     */
     bool record(const runtime::ProcessedFrame& frame) override;
     bool take_rearm_request() noexcept override;
     void cancel() noexcept override;
     void stop() noexcept override;
     std::string last_error() const override;
 
+    /** @brief 返回窗口录像当前缓存的像素字节数。 @return 缓存字节数。 */
     std::size_t buffered_pixel_bytes() const noexcept;
+    /** @brief 返回当前缓存帧数。 @return 缓存帧数。 */
     std::size_t buffered_frame_count() const noexcept;
+    /** @brief 返回超过配置内存限制而跳过的帧数。 @return 跳帧累计数。 */
     std::uint64_t frames_skipped_for_memory_limit() const noexcept;
+    /** @brief 查询是否正在处理起飞窗口录像。 @return 窗口活动时为 true。 */
     bool launch_window_active() const noexcept;
 
 private:
