@@ -40,9 +40,9 @@ int main() {
     CHECK(load(base));
     CHECK(cfg.app.camera.width == 640 && cfg.app.camera.height == 480);
     CHECK(cfg.app.camera.fps == 120 && cfg.app.imu.sample_rate_hz == 200);
-    CHECK(cfg.app.guidance.launch_speed_mps == 13);
+    CHECK(cfg.app.guidance.launch_speed_mps == 16);
     CHECK(cfg.app.algorithms.algorithm == app::GuidanceAlgorithm::png);
-    CHECK(cfg.app.algorithms.png_guidance.maximum_command_overload == 1.0);
+    CHECK(cfg.app.algorithms.png_guidance.maximum_command_overload == 0.3);
     auto algorithms = app::make_default_guidance_algorithms(cfg.app.algorithms);
     domain::GuidanceInput input;
     input.attitude.valid = true;
@@ -52,15 +52,15 @@ int main() {
     auto command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);
     // The total limit includes gravity compensation, even with zero LOS rate.
-    CHECK_NEAR(command.command.overload_g.y, 1.0, 1e-12);
+    CHECK_NEAR(command.command.overload_g.y, 0.3, 1e-12);
     input.attitude.pitch_rad = {0.6108652381980153};
     input.attitude.roll_rad = {0.7};
     input.angular_velocity = {true, {0.5}, {-0.4}};
     command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);
     CHECK_NEAR(std::hypot(command.command.overload_g.y,
-                          command.command.overload_g.z), 1.0, 1e-12);
-    CHECK_NEAR(command.diagnostics.command_overload.value, 1.0, 1e-12);
+                          command.command.overload_g.z), 0.3, 1e-12);
+    CHECK_NEAR(command.diagnostics.command_overload.value, 0.3, 1e-12);
     CHECK(cfg.app.algorithms.vision_config.initial_roi.width == 640);
     CHECK(cfg.app.algorithms.vision_config.initial_roi.height == 480);
     CHECK(cfg.app.algorithms.vision_config.min_blob_area == 1);
@@ -79,12 +79,12 @@ int main() {
     for (const auto& suffix : {"app_config=app.conf\n", "sync_budget_ms=0\n", "sync_budget_ms=nan\n",
                               "socket_directory=relative\n", "socket_directory=/tmp/../unsafe\n",
                               "[guidance]\nlaunch_speed_mps=25\n", "[output]\nmode=debug\n"}) CHECK(!load(base + suffix));
-    CHECK(cfg.app.guidance.launch_speed_mps == 13); // Atomic on failure.
+    CHECK(cfg.app.guidance.launch_speed_mps == 16); // Atomic on failure.
     fixture.change("mode=match", "mode=rtsp"); CHECK(!load(base));
     fixture.change("mode=free_run", "mode=hardware_trigger"); CHECK(!load(base));
     fixture.change("matrix_m01=0", "matrix_m01=1"); CHECK(!load(base));
     fixture.change("match_window_duration_ms=4000", "match_window_duration_ms=20000"); CHECK(!load(base));
-    fixture.change("launch_speed_mps=13", "launch_speed_mps=17"); CHECK(load(base));
+    fixture.change("launch_speed_mps=16", "launch_speed_mps=17"); CHECK(load(base));
     CHECK(cfg.app.guidance.launch_speed_mps == 17);
     const auto cwd = std::filesystem::current_path();
     std::filesystem::current_path("/");
