@@ -118,6 +118,7 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     add_library(mosas_app_core STATIC
         src/app/app_config.cpp
         src/app/config_parsing.cpp
+        src/app/simulation_config.cpp
         src/app/default_guidance_algorithms.cpp
         src/app/output_factory.cpp
     )
@@ -446,6 +447,12 @@ if(BUILD_TESTING)
     endif()
 
     if(TARGET mosas_app_core)
+        add_executable(simulation_config_test tests/simulation_config_test.cpp)
+        configure_mosas_target(simulation_config_test)
+        target_compile_definitions(simulation_config_test PRIVATE MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+        target_link_libraries(simulation_config_test PRIVATE mosas_app_core)
+        add_test(NAME simulation_config_test COMMAND simulation_config_test)
+
         add_executable(default_guidance_algorithms_test
             tests/default_guidance_algorithms_test.cpp
         )
