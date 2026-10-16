@@ -111,6 +111,17 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     endif()
 endif()
 
+# Configuration and algorithm composition are host code, not camera/serial I/O.
+if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
+    add_library(mosas_app_core STATIC
+        src/app/app_config.cpp
+        src/app/default_guidance_algorithms.cpp
+        src/app/output_factory.cpp
+    )
+    configure_mosas_target(mosas_app_core)
+    target_link_libraries(mosas_app_core PUBLIC mosas_runtime mosas_guidance mosas_vision mosas_output)
+endif()
+
 if(MOSAS_BUILD_APPLICATION)
 # 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
 set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
@@ -168,9 +179,6 @@ configure_mosas_target(serial_package)
 target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads)
 
 add_library(mosas_app STATIC
-    src/app/app_config.cpp
-    src/app/default_guidance_algorithms.cpp
-    src/app/output_factory.cpp
     src/adapters/command_adapter.cpp
     src/adapters/host_adapters.cpp
     src/adapters/imu_stream_decoder.cpp
@@ -186,6 +194,7 @@ target_include_directories(mosas_app
 )
 target_link_libraries(mosas_app
     PUBLIC
+        mosas_app_core
         mosas_runtime
         mosas_guidance
         mosas_output
@@ -214,6 +223,7 @@ set(MOSAS_INSTALL_TARGETS
     mosas_guidance
     mosas_runtime
     mosas_output
+    mosas_app_core
     mosas_app
     mosas_guidance_app
 )
@@ -390,12 +400,9 @@ if(BUILD_TESTING)
         add_test(NAME output_sink_diagnostics_test
             COMMAND output_sink_diagnostics_test)
 
-        add_executable(mode_composition_test
-            tests/mode_composition_test.cpp
-            src/app/output_factory.cpp
-        )
+        add_executable(mode_composition_test tests/mode_composition_test.cpp)
         configure_mosas_target(mode_composition_test)
-        target_link_libraries(mode_composition_test PRIVATE mosas_output)
+        target_link_libraries(mode_composition_test PRIVATE mosas_app_core)
         add_test(NAME mode_composition_test COMMAND mode_composition_test)
     endif()
 
@@ -407,7 +414,9 @@ if(BUILD_TESTING)
         )
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
+    endif()
 
+    if(TARGET mosas_app_core)
         add_executable(default_guidance_algorithms_test
             tests/default_guidance_algorithms_test.cpp
         )
@@ -415,7 +424,7 @@ if(BUILD_TESTING)
         target_compile_definitions(default_guidance_algorithms_test PRIVATE
             MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
         )
-        target_link_libraries(default_guidance_algorithms_test PRIVATE mosas_app)
+        target_link_libraries(default_guidance_algorithms_test PRIVATE mosas_app_core)
         add_test(NAME default_guidance_algorithms_test
             COMMAND default_guidance_algorithms_test)
     endif()
