@@ -512,7 +512,7 @@ LineOfSightRateSample LineOfSightRateEstimator::sample() const {
 PngGuidanceOutput PngGuidance::calculate(
     const LineOfSight& line_of_sight,
     const LineOfSightAngularVelocity& angular_velocity, double speed_mps,
-    double pitch_rad, double roll_rad, const PngGuidanceConfig& config,
+    const RotationMatrix3& body_to_navigation, const PngGuidanceConfig& config,
     PngCalculationTrace* trace) {
     if (trace) *trace = {};
     const PngGuidanceOutput invalid_output{
@@ -521,17 +521,28 @@ PngGuidanceOutput PngGuidance::calculate(
     if (!is_valid_line_of_sight(line_of_sight) || !angular_velocity.valid ||
         !is_finite(angular_velocity.q_y) ||
         !is_finite(angular_velocity.q_z) || !is_finite(speed_mps) ||
-        speed_mps <= kEpsilon || !is_finite(pitch_rad) ||
-        !is_finite(roll_rad) ||
+        speed_mps <= kEpsilon || !is_valid_rotation(body_to_navigation) ||
         !is_valid_png_config(config)) {
         return invalid_output;
     }
 
+    const Vector3 inertial_direction = multiply(
+        body_to_navigation, line_of_sight_unit(line_of_sight));
+    const double inertial_elevation = std::atan2(
+        inertial_direction.y, std::hypot(inertial_direction.x, inertial_direction.z));
+    // 先在角速度域扣除自然抛物线基准，不在输出过载中再次补偿重力。
+    const double parabolic_elevation_rate =
+        -(0.5 * config.gravity / speed_mps) * std::cos(inertial_elevation);
+    const double compensated_elevation_rate =
+        angular_velocity.q_y - parabolic_elevation_rate;
+    const double pitch_rad = std::atan2(
+        body_to_navigation.m10,
+        std::hypot(body_to_navigation.m00, body_to_navigation.m20));
+    const double roll_rad = std::atan2(-body_to_navigation.m12, body_to_navigation.m11);
     const double cos_pitch = std::cos(pitch_rad);
     const double speed_over_gravity = speed_mps / config.gravity;
     double vertical_overload =
-        config.navigation_constant_y * angular_velocity.q_y *
-            speed_over_gravity + cos_pitch;
+        config.navigation_constant_y * compensated_elevation_rate * speed_over_gravity;
     double lateral_overload =
         config.navigation_constant_z * angular_velocity.q_z *
         speed_over_gravity * cos_pitch;
@@ -545,6 +556,10 @@ PngGuidanceOutput PngGuidance::calculate(
         return invalid_output;
     }
     if (trace) {
+        trace->inertial_los_elevation_rad = inertial_elevation;
+        trace->measured_elevation_rate_rad_s = angular_velocity.q_y;
+        trace->parabolic_elevation_rate_rad_s = parabolic_elevation_rate;
+        trace->compensated_elevation_rate_rad_s = compensated_elevation_rate;
         trace->raw_navigation_overload = {0.0, vertical_overload, lateral_overload};
         trace->raw_command_overload = command_overload;
     }

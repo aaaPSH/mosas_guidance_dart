@@ -2,8 +2,10 @@
 #include <mosas/guidance/guidance_estimator.hpp>
 
 #include "test_support.hpp"
+#include "body_vector_test_support.hpp"
 
 #include <cmath>
+#include <limits>
 
 int main() {
     VisionResult observation{};
@@ -53,7 +55,8 @@ int main() {
     CHECK(!lost_target.valid);
 
     const PngGuidanceOutput command = PngGuidance::calculate(
-        {true, 0.0, 0.0}, {true, 0.0, 0.0}, 100.0, 0.0, 0.0);
+        {true, 0.0, 0.0}, {true, 0.0, 0.0}, 100.0,
+        mosas::test::runtime_test_rotation());
     CHECK(command.valid);
     CHECK_NEAR(command.navigation_acceleration.x, 0.0, 1e-12);
     CHECK_NEAR(command.navigation_acceleration.y, 9.80665, 1e-12);
@@ -62,7 +65,8 @@ int main() {
     CHECK_NEAR(command.command_overload, 1.0, 1e-12);
     CHECK_NEAR(command.command_phase, 0.0, 1e-12);
     CHECK(!PngGuidance::calculate(
-               {false, 0.0, 0.0}, {true, 0.0, 0.0}, 100.0, 0.0, 0.0)
+               {false, 0.0, 0.0}, {true, 0.0, 0.0}, 100.0,
+               mosas::test::runtime_test_rotation())
                .valid);
 
     mosas::domain::VisionDetection domain_observation{};
@@ -108,5 +112,68 @@ int main() {
     CHECK_NEAR(domain_output.command.overload_g.y, 1.0, 1e-12);
     CHECK_NEAR(domain_output.diagnostics.body_acceleration.y, 9.80665, 1e-12);
     CHECK(!guidance_adapter.calculate({}).valid);
+
+    PngGuidanceConfig png;
+    png.navigation_constant_y = 4.0;
+    png.navigation_constant_z = 2.0;
+    png.maximum_command_overload = 100.0;
+    const double pitch = 0.35;
+    const double roll = 0.7;
+    const auto attitude = mosas::test::vector_test_attitude(pitch, roll, -0.4);
+    const auto rotation = mosas::test::runtime_test_rotation(pitch, roll, -0.4);
+    const LineOfSight measured_los{true, 0.2, -0.3};
+    const auto inertial_direction = mosas::test::to_test_navigation(
+        attitude, {std::cos(measured_los.q_y) * std::cos(measured_los.q_z),
+                   std::sin(measured_los.q_y),
+                   std::cos(measured_los.q_y) * std::sin(measured_los.q_z)});
+    const double inertial_elevation = std::atan2(
+        inertial_direction[1], std::hypot(inertial_direction[0], inertial_direction[2]));
+    CHECK(std::abs(inertial_elevation - pitch) > 0.02);
+    CHECK(std::abs(inertial_elevation - measured_los.q_y) > 0.02);
+    mosas::guidance::ExistingPngGuidanceLawAdapter compensated_adapter(png);
+    for (const double speed : {8.0, 16.0, 25.0}) {
+        const double parabola_rate = -png.gravity * std::cos(inertial_elevation) / (2.0 * speed);
+        PngCalculationTrace trace;
+        const auto natural = PngGuidance::calculate(
+            measured_los, {true, parabola_rate, 0.0}, speed, rotation, png, &trace);
+        CHECK(natural.valid && trace.valid);
+        CHECK_NEAR(trace.inertial_los_elevation_rad, inertial_elevation, 1e-12);
+        CHECK_NEAR(trace.parabolic_elevation_rate_rad_s, parabola_rate, 1e-12);
+        CHECK_NEAR(trace.compensated_elevation_rate_rad_s, 0.0, 1e-12);
+        // 自然抛物线速率完全抵消，输出端不能再叠加重力过载。
+        CHECK_NEAR(natural.body_overload.y, 0.0, 1e-12);
+        CHECK_NEAR(natural.body_overload.z, 0.0, 1e-12);
+
+        const double measured_y_rate = parabola_rate + 0.12;
+        const auto perturbed = PngGuidance::calculate(
+            measured_los, {true, measured_y_rate, -0.07}, speed, rotation, png, &trace);
+        const double vertical = png.navigation_constant_y * speed * 0.12 / png.gravity;
+        const double lateral = png.navigation_constant_z * speed * -0.07 /
+                               png.gravity * std::cos(pitch);
+        CHECK(perturbed.valid);
+        CHECK_NEAR(trace.measured_elevation_rate_rad_s, measured_y_rate, 1e-12);
+        CHECK_NEAR(trace.compensated_elevation_rate_rad_s, 0.12, 1e-12);
+        CHECK_NEAR(perturbed.body_overload.y,
+                   std::cos(roll) * vertical + std::sin(roll) * lateral, 1e-12);
+        CHECK_NEAR(perturbed.body_overload.z,
+                   -std::sin(roll) * vertical + std::cos(roll) * lateral, 1e-12);
+        domain_guidance.attitude = attitude;
+        domain_guidance.line_of_sight = {true, {measured_los.q_y}, {measured_los.q_z}};
+        domain_guidance.angular_velocity = {true, {measured_y_rate}, {-0.07}};
+        domain_guidance.speed_mps.value = speed;
+        const auto adapted = compensated_adapter.calculate(domain_guidance);
+        CHECK(adapted.valid);
+        CHECK_NEAR(adapted.command.overload_g.y, perturbed.body_overload.y, 1e-12);
+        CHECK_NEAR(adapted.command.overload_g.z, perturbed.body_overload.z, 1e-12);
+    }
+    auto invalid_rotation = rotation;
+    invalid_rotation.m00 = 2.0;
+    CHECK(!PngGuidance::calculate(measured_los, {true, 0.0, 0.0}, 16.0,
+                                  invalid_rotation, png).valid);
+    for (const double speed : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()}) {
+        CHECK(!PngGuidance::calculate(measured_los, {true, 0.0, 0.0}, speed,
+                                      rotation, png).valid);
+    }
     return 0;
 }

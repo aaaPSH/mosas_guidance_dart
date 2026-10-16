@@ -2,8 +2,9 @@
 #include <mosas/runtime/vector3.hpp>
 #include <functional>
 
-/** @brief Optional snapshot of values already computed by the original PNG.
- * @note Overloads are in g; navigation_acceleration is in m/s². The raw and
+/** @brief Optional snapshot of values already computed by PNG.
+ * @note LOS elevation is in rad, rates in rad/s, overloads in g, and
+ * navigation_acceleration in m/s². The raw and
  * after_overload_limit vectors are in ballistic axes, not roll-rotated body axes.
  * A reused snapshot is reset on entry; valid remains false on rejected input.
  */
@@ -11,6 +12,10 @@ struct PngCalculationTrace {
     bool valid=false;
     bool overload_limited=false;
     bool acceleration_limited=false;
+    double inertial_los_elevation_rad=0;
+    double measured_elevation_rate_rad_s=0;
+    double parabolic_elevation_rate_rad_s=0;
+    double compensated_elevation_rate_rad_s=0;
     Vector3 raw_navigation_overload{0,0,0};
     Vector3 after_overload_limit{0,0,0};
     Vector3 navigation_acceleration{0,0,0};

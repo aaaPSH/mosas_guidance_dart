@@ -1,6 +1,7 @@
 #include <mosas/app/default_guidance_algorithms.hpp>
 #include <mosas/app/simulation_config.hpp>
 #include "test_support.hpp"
+#include "body_vector_test_support.hpp"
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -51,10 +52,9 @@ int main() {
     input.speed_mps = {cfg.app.algorithms.attitude.launch_speed_mps};
     auto command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);
-    // The total limit includes gravity compensation, even with zero LOS rate.
+    // Parabolic LOS-rate compensation still contributes when the measured rate is zero.
     CHECK_NEAR(command.command.overload_g.y, 0.3, 1e-12);
-    input.attitude.pitch_rad = {0.6108652381980153};
-    input.attitude.roll_rad = {0.7};
+    input.attitude = test::vector_test_attitude(0.6108652381980153, 0.7);
     input.angular_velocity = {true, {0.5}, {-0.4}};
     command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);

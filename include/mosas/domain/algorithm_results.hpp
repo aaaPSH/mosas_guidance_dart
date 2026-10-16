@@ -88,7 +88,7 @@ struct GuidanceInput {
 struct GuidanceDiagnostics {
     // 历史字段名：实际保存弹道系指令比力，而非净运动学导航加速度。
     AccelerationBallisticMps2 navigation_acceleration{};
-    // 包含横向重力补偿并经过限幅的镖体系指令比力，单位 m/s²。
+    // 限幅后的镖体系指令比力（m/s²）；仅矢量 PN 在输出端另加横向重力补偿。
     AccelerationDartMps2 body_acceleration{};
     DartOverloadG body_overload{};
     Quantity<GravityG> command_overload{};

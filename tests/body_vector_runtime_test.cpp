@@ -125,7 +125,10 @@ int verify_dynamic_speed(bool vector_guidance) {
     for (std::size_t i = 1; i < output.size(); ++i) {
         const double speed = i == 1 ? 15.99 : 15.97;
         CHECK(output[i].valid);
-        CHECK_NEAR(output[i].overload_g.y, 1.0 + 3.0 * speed * 0.2 / gravity, 1e-12);
+        const double expected_y = vector_guidance
+            ? 1.0 + 3.0 * speed * 0.2 / gravity
+            : 3.0 * speed * (0.2 + gravity / (2.0 * speed)) / gravity;
+        CHECK_NEAR(output[i].overload_g.y, expected_y, 1e-12);
         CHECK_NEAR(output[i].overload_g.x, 0.0, 1e-12);
         CHECK_NEAR(output[i].overload_g.z, 0.0, 1e-12);
     }

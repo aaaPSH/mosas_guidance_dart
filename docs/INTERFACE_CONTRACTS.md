@@ -143,7 +143,7 @@ using OverloadDartG = Vec3<DartFrameTag>; // 每分量以 g 为单位的无量�
 - roll 单位 rad，正方向绕 `+X` 右手规则。
 - LOS q 单位 rad，LOS rate 单位 rad/s，加速度/比力 m/s²，过载 g。
 - `DirectionDartUnit` 为镖体系单位 LOS，无量纲；`DirectionRateDartPerSec` 是 LOS 惯性导数的镖体系表达，单位 1/s。惯性导数不是相机测得的相对导数，也不是导航系坐标分量。
-- 指令过载是横向比力/g，包含抵消横向重力所需的分量，不是净运动学加速度/g。
+- 指令过载是下发的横向比力/g，不是净运动学加速度/g。默认 PNG 在 LOS 速率域补偿自然抛物线，不在输出端另加重力；矢量 PN 仍在输出端补偿横向重力。
 
 任何 `Vec3` 跨模块传递必须通过坐标标签/字段名表达坐标系。禁止把“navigation_acceleration”“body_overload”等不同含义复用同一个无标签数组。
 
@@ -283,7 +283,7 @@ struct GuidanceInput {
 
 struct GuidanceDiagnostics {
     AccelerationBallisticMps2 navigation_acceleration; // 历史名，弹道系指令比力
-    AccelerationDartMps2 body_acceleration; // 镖体系指令比力，含重力补偿并限幅
+    AccelerationDartMps2 body_acceleration; // 按所选制导律的补偿模型生成并限幅的镖体系指令比力
     DartOverloadG body_overload;
     Quantity<GravityG> command_overload;
     Quantity<Radian> command_phase; // 弹道系 Y/Z 指令相位
@@ -426,9 +426,27 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 
 速度作为 `FlightStateSnapshot::speed_mps` 发布，随完整姿态写入同一历史槽并线性插值到相机曝光时刻；不外推、不跨起飞状态、起飞时刻或 generation 插值。PNG 和矢量 PN 均使用该曝光时刻速度，而非初值或最新 IMU 速度。积分结果不人为钳位为正数；速度非正时沿用两种制导律的无效输入处理，不回退为固定初速。
 
-### 6.2 可选镖体系矢量 PN
+### 6.2 默认 PNG 的抛物线 LOS 角速度补偿
 
-`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；缺省仍为原 PNG。原标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
+仅默认 `png` 改用角速度域重力补偿，不改变标量 LOS 滤波器的测量状态，也不影响 `body_vector_pn`。先用当前完整姿态将镖体系 LOS 单位方向转到导航系，再求惯性 LOS 仰角：
+
+```
+l_N = R_N_from_D * l_D
+q_y_inertial = atan2(l_N.y, hypot(l_N.x, l_N.z))
+q_dot_y_parabola = -g0 * cos(q_y_inertial) / (2 * V_actual)
+s_y = q_dot_y_measured - q_dot_y_parabola
+n_y = N_y * V_actual * s_y / g0
+```
+
+`q_dot_y_measured` 使用已有 IMU 转动补偿、滤波后的惯性 LOS 角速度（rad/s），不额外积分成视线角；`V_actual` 使用曝光时刻同步的动态速度。完整姿态用于求惯性仰角，不能直接用机体视线角、机体俯仰或两者相加替代。
+
+补偿发生在导引律增益之前；原纵向输出中的 `+cos(pitch)` 删除。若测量速率恰好等于自然抛物线速率且横向速率为零，过载输出为零，不再自动叠加保持高度的比力。横向 PNG 公式、roll 变换、合成过载限幅和加速度限幅保持原逻辑；姿态改为传递完整旋转矩阵，pitch/roll 从该矩阵求得，旧的独立角度接口移除。
+
+`PngCalculationTrace` 额外记录惯性仰角、测量纵向速率、抛物线基准速率和补偿后速率；原始/滤波 LOS 观测及 overlay 不因补偿而被覆盖。速度或姿态无效时拒绝计算，不使用固定初速或未补偿旧公式回退。
+
+### 6.3 可选镖体系矢量 PN
+
+`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；缺省使用上述带抛物线速率补偿的 PNG。标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
 
 `BodyVectorLosFilter` 保存六状态 `[l_D,u_D]` 和完整 6×6 协方差。测量为单位 LOS；`u_D` 为惯性 LOS 导数的镖体系表达。两帧的坐标运输采用：
 

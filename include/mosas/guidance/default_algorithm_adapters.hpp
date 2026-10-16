@@ -49,18 +49,18 @@ private:
     LineOfSightRateEstimator estimator_;
 };
 
-/// 将既有 PNG 制导算法适配到领域制导律端口。
+/// 将默认 PNG 的抛物线 LOS 速率补偿及过载计算适配到领域制导律端口。
 class ExistingPngGuidanceLawAdapter final : public ports::IGuidanceLaw {
 public:
-    /** @brief 使用原 PNG 并可选观察既有计算中间量。
+    /** @brief 使用默认 PNG 并可选观察计算中间量。
      * @param config PNG 参数和限幅配置。 @param observer 默认关闭的只读诊断接收器。
      */
     explicit ExistingPngGuidanceLawAdapter(
         const PngGuidanceConfig& config = {}, PngTraceObserver observer = {});
 
     /**
-     * @brief 根据领域制导输入计算 PNG 命令和诊断量。
-     * @param input 当前帧的视线、速率、姿态、时间和速度状态。
+     * @brief 将完整姿态和动态速度传入 PNG，先补偿 LOS 速率，再计算命令。
+     * @param input 曝光时刻同步的视线、惯性速率、完整姿态、时间和动态速度。
      * @return 领域制导输出；拒绝或无效输入通过有效标志及原因返回。
      */
     domain::GuidanceOutput calculate(

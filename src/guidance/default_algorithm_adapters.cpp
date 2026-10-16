@@ -102,11 +102,15 @@ domain::GuidanceOutput ExistingPngGuidanceLawAdapter::calculate(
         return output;
     }
 
+    const auto& matrix = input.attitude.navigation_from_dart.matrix();
+    const RotationMatrix3 body_to_navigation{
+        matrix[0], matrix[1], matrix[2],
+        matrix[3], matrix[4], matrix[5],
+        matrix[6], matrix[7], matrix[8]};
     PngCalculationTrace trace;
     const PngGuidanceOutput legacy = PngGuidance::calculate(
         convert(input.line_of_sight), convert(input.angular_velocity),
-        input.speed_mps.value, input.attitude.pitch_rad.value,
-        input.attitude.roll_rad.value, config_, observer_ ? &trace : nullptr);
+        input.speed_mps.value, body_to_navigation, config_, observer_ ? &trace : nullptr);
     if (observer_) observer_(input, trace);
     output.valid = legacy.valid;
     output.command.valid = legacy.valid;

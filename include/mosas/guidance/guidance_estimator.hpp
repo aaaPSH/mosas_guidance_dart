@@ -27,8 +27,8 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。镖体系 Y/Z 方向导航系数独立配置且无量纲，重力加速度单位为
-// m/s²；
+// PNG 律参数。Y/Z 方向导航系数独立配置且无量纲，重力加速度单位为 m/s²；
+// 纵向重力影响先从惯性 LOS 角速度中扣除，再计算过载，不在输出端补偿重力。
 // maximum_command_overload 是弹道系 Y/Z 合成过载上限（单位 g），
 // maximum_command_acceleration 是镖体系指令加速度模长上限（单位 m/s²）。
 struct PngGuidanceConfig {
@@ -188,21 +188,22 @@ private:
 class PngGuidance {
 public:
     /**
-     * @brief 计算 PNG 过载、加速度及制导诊断量。
-     * @param line_of_sight 有效目标视线角（rad）。
-     * @param angular_velocity 与视线对应的角速度（rad/s）。
-     * @param speed_mps 镖体速度大小（m/s）；速度方向按镖体系 +x 处理。
-     * @param pitch_rad 相机帧时刻插值得到的俯仰姿态角（rad）。
-     * @param roll_rad 相机帧时刻插值得到的滚转角（rad）。
+     * @brief 扣除自然抛物线的纵向 LOS 角速度后计算 PNG 过载和诊断量。
+     * @param line_of_sight 镖体系有效目标视线角（rad）。
+     * @param angular_velocity 已经过 IMU 转动补偿和滤波的惯性 LOS 角速度（rad/s）。
+     * @param speed_mps 曝光时刻的动态速度（m/s）；速度方向按镖体系 +x 处理。
+     * @param body_to_navigation 曝光时刻从镖体系到导航系的完整姿态旋转矩阵。
      * @param config PNG 导航系数、重力和输出限幅配置。
      * @param trace 可选只读诊断快照输出；只复制既有中间量，不改变控制计算。
      * @return 制导计算结果；输入无效或数值异常时 valid=false。
-     * @note 先在弹道系计算过载，再用 roll 转到镖体系；过载单位为 g，加速度单位为 m/s^2。
+     * @note 用完整姿态求惯性 LOS 仰角，先计算
+     * s_y = q_dot_y + g*cos(q_y_inertial)/(2*V)，再以 N_y*V*s_y/g 得到纵向过载。
+     * 输出端不再叠加重力项；横向计算、roll 变换和限幅保持不变。
      */
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,
-        double speed_mps, double pitch_rad, double roll_rad,
+        double speed_mps, const RotationMatrix3& body_to_navigation,
         const PngGuidanceConfig& config = {},
         PngCalculationTrace* trace = nullptr);
 };

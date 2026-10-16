@@ -2,6 +2,7 @@
 #define MOSAS_BODY_VECTOR_TEST_SUPPORT_HPP
 
 #include <mosas/domain/algorithm_results.hpp>
+#include <mosas/runtime/rotation_matrix3.hpp>
 
 #include <array>
 #include <cmath>
@@ -23,6 +24,20 @@ inline domain::AttitudeState vector_test_attitude(double pitch = 0.0, double rol
             {cy * cp, -cy * sp * cr - sy * sr, cy * sp * sr - sy * cr, sp, cp * cr, -cp * sr,
              sy * cp, -sy * sp * cr + cy * sr, sy * sp * sr + cy * cr});
     return result;
+}
+
+/**
+ * @brief 构造运行时类型的完整测试姿态矩阵。
+ * @param pitch 俯仰角，单位 rad。
+ * @param roll 滚转角，单位 rad。
+ * @param yaw 航向角，单位 rad。
+ * @return 从镖体系到导航系的旋转矩阵。
+ */
+inline RotationMatrix3 runtime_test_rotation(double pitch = 0.0, double roll = 0.0,
+                                            double yaw = 0.0) {
+    const auto attitude = vector_test_attitude(pitch, roll, yaw);
+    const auto& m = attitude.navigation_from_dart.matrix();
+    return {m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]};
 }
 
 /** @brief 将同一导航系物理向量转换到给定测试姿态的镖体系。 */
