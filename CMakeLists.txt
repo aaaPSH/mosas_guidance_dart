@@ -52,6 +52,8 @@ endif()
 add_library(mosas_guidance STATIC
     src/guidance/guidance_estimator.cpp
     src/guidance/default_algorithm_adapters.cpp
+    src/guidance/body_vector_pn_guidance.cpp
+    src/guidance/body_vector_los_filter.cpp
 )
 configure_mosas_target(mosas_guidance)
 
@@ -115,6 +117,7 @@ endif()
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     add_library(mosas_app_core STATIC
         src/app/app_config.cpp
+        src/app/config_parsing.cpp
         src/app/default_guidance_algorithms.cpp
         src/app/output_factory.cpp
     )
@@ -293,6 +296,16 @@ if(BUILD_TESTING)
     target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
     add_test(NAME imu_time_model_test COMMAND imu_time_model_test)
 
+    add_executable(body_vector_los_filter_test tests/body_vector_los_filter_test.cpp)
+    configure_mosas_target(body_vector_los_filter_test)
+    target_link_libraries(body_vector_los_filter_test PRIVATE mosas_guidance)
+    add_test(NAME body_vector_los_filter_test COMMAND body_vector_los_filter_test)
+
+    add_executable(body_vector_pn_guidance_test tests/body_vector_pn_guidance_test.cpp)
+    configure_mosas_target(body_vector_pn_guidance_test)
+    target_link_libraries(body_vector_pn_guidance_test PRIVATE mosas_guidance)
+    add_test(NAME body_vector_pn_guidance_test COMMAND body_vector_pn_guidance_test)
+
     add_executable(png_calculation_trace_test tests/png_calculation_trace_test.cpp)
     configure_mosas_target(png_calculation_trace_test)
     target_link_libraries(png_calculation_trace_test PRIVATE mosas_guidance)
@@ -319,6 +332,15 @@ if(BUILD_TESTING)
     configure_mosas_target(attitude_adapter_test)
     target_link_libraries(attitude_adapter_test PRIVATE mosas_runtime)
     add_test(NAME attitude_adapter_test COMMAND attitude_adapter_test)
+
+    add_executable(body_vector_runtime_test
+        tests/body_vector_runtime_test.cpp
+        tests/fakes/fake_camera_source.cpp
+        tests/fakes/fake_imu_source.cpp
+    )
+    configure_mosas_target(body_vector_runtime_test)
+    target_link_libraries(body_vector_runtime_test PRIVATE mosas_runtime mosas_guidance)
+    add_test(NAME body_vector_runtime_test COMMAND body_vector_runtime_test)
 
     add_executable(runtime_supervisor_test
         tests/runtime_supervisor_test.cpp

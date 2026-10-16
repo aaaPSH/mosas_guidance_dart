@@ -46,6 +46,28 @@ struct LineOfSightAngularVelocity {
     Quantity<RadiansPerSecond> q_z{};
 };
 
+/** @brief 惯性 LOS 状态，以镖体系表达；方向单位长度，惯性导数与方向正交。 */
+struct VectorLosEstimate {
+    bool valid = false;
+    DirectionDartUnit direction{};
+    DirectionRateDartPerSec inertial_direction_rate{};
+};
+
+/** @brief 同步到同一相机帧的滤波输入；首帧仅建立基准，不传播 dt。 */
+struct LosRateFilterInput {
+    LineOfSight line_of_sight{};
+    AttitudeState attitude{};
+    double dt_seconds = 0.0;
+    std::uint64_t generation = 0;
+};
+
+/** @brief 制导速率估计；共同 valid 不依赖角度诊断在极点处是否有效。 */
+struct LosRateEstimate {
+    bool valid = false;
+    LineOfSightAngularVelocity angular_velocity{};
+    VectorLosEstimate vector{};
+};
+
 struct LineOfSightRateSample {
     LineOfSight line_of_sight{};
     LineOfSightAngularVelocity raw_angular_velocity{};
@@ -59,10 +81,13 @@ struct GuidanceInput {
     LineOfSightAngularVelocity angular_velocity{};
     Quantity<MetersPerSecond> speed_mps{};
     AttitudeState attitude{};
+    VectorLosEstimate vector_los{};
 };
 
 struct GuidanceDiagnostics {
+    // 历史字段名：实际保存弹道系指令比力，而非净运动学导航加速度。
     AccelerationBallisticMps2 navigation_acceleration{};
+    // 包含横向重力补偿并经过限幅的镖体系指令比力，单位 m/s²。
     AccelerationDartMps2 body_acceleration{};
     DartOverloadG body_overload{};
     Quantity<GravityG> command_overload{};

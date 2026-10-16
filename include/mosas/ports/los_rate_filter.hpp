@@ -13,15 +13,12 @@ public:
 
     /**
      * @brief 结合视线测量和镖体角速度更新视线角速度估计。
-     * @param line_of_sight 当前帧的视线角；无效测量由 valid 标志表达。
-     * @param body_angular_velocity 同步到当前帧时刻的镖体系角速度（rad/s）。
-     * @param dt_seconds 相邻处理时刻间隔（s），必须为有效正值。
-     * @return 视线角速度（rad/s）；不可用时通过结果的 valid 状态表示。
+     * @param input LOS、同步姿态/校正角速度、帧间隔和起飞代际。
+     * @return 共同有效性、角速率诊断及可选矢量估计；不提供的表示保持无效。
+     * @note 首帧只建立基准；矢量惯性导数仍以镖体系表达，不能当作导航系分量。
      */
-    virtual domain::LineOfSightAngularVelocity update(
-        const domain::LineOfSight& line_of_sight,
-        const domain::AngularVelocityDartRadPerSec& body_angular_velocity,
-        double dt_seconds) = 0;
+    virtual domain::LosRateEstimate update(
+        const domain::LosRateFilterInput& input) = 0;
 
     /**
      * @brief 返回最近一次更新的原始、未滤波和最终视线速率诊断值。

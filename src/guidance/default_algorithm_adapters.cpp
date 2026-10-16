@@ -61,13 +61,12 @@ ExistingLosRateFilterAdapter::ExistingLosRateFilterAdapter(
     const LineOfSightRateFilterConfig& config)
     : estimator_(config) {}
 
-domain::LineOfSightAngularVelocity ExistingLosRateFilterAdapter::update(
-    const domain::LineOfSight& line_of_sight,
-    const domain::AngularVelocityDartRadPerSec& body_angular_velocity,
-    double dt_seconds) {
-    return convert(estimator_.update(convert(line_of_sight),
-                                     convert(body_angular_velocity),
-                                     dt_seconds));
+domain::LosRateEstimate ExistingLosRateFilterAdapter::update(
+    const domain::LosRateFilterInput& input) {
+    const auto rate = convert(estimator_.update(
+        convert(input.line_of_sight),
+        convert(input.attitude.corrected_angular_velocity), input.dt_seconds));
+    return {rate.valid, rate, {}};
 }
 
 domain::LineOfSightRateSample ExistingLosRateFilterAdapter::sample() const {

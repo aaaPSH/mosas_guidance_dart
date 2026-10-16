@@ -85,11 +85,12 @@ int main() {
     CHECK(los.call_count() == 1);
 
     test::FakeLosRateFilter rate_filter;
-    rate_filter.set_result({true, {1.0}, {2.0}});
-    const auto rate = rate_filter.update(
-        los_result, {}, 0.01);
+    rate_filter.set_result({true, {true, {1.0}, {2.0}}, {}});
+    const auto rate = rate_filter.update({los_result, {}, 0.01, 7});
     CHECK(rate.valid);
-    CHECK_NEAR(rate.q_y.value, 1.0, 1e-12);
+    CHECK_NEAR(rate.angular_velocity.q_y.value, 1.0, 1e-12);
+    CHECK(!rate.vector.valid);
+    CHECK(rate_filter.last_input().generation == 7);
     CHECK(rate_filter.sample().line_of_sight.valid);
     rate_filter.reset();
     CHECK(rate_filter.call_count() == 0);

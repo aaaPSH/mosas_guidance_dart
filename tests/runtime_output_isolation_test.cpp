@@ -434,7 +434,7 @@ int main() {
         vision_control->push(detection);
     }
     los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {0.3}, {-0.4}});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {}});
     domain::GuidanceOutput guidance_result{};
     guidance_result.valid = true;
     guidance_result.invalid_reason = domain::GuidanceInvalidReason::none;

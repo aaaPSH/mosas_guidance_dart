@@ -206,16 +206,13 @@ private:
 
 class FakeLosRateFilter final : public ports::ILosRateFilter {
 public:
-    domain::LineOfSightAngularVelocity update(
-        const domain::LineOfSight& line_of_sight,
-        const domain::AngularVelocityDartRadPerSec& body_angular_velocity,
-        double dt_seconds) override {
+    domain::LosRateEstimate update(
+        const domain::LosRateFilterInput& input) override {
         ++call_count_;
         last_thread_id_ = std::this_thread::get_id();
-        sample_.line_of_sight = line_of_sight;
-        sample_.filtered_angular_velocity = result_;
-        last_body_angular_velocity_ = body_angular_velocity;
-        last_dt_seconds_ = dt_seconds;
+        sample_.line_of_sight = input.line_of_sight;
+        sample_.filtered_angular_velocity = result_.angular_velocity;
+        last_input_ = input;
         return result_;
     }
 
@@ -225,26 +222,27 @@ public:
         call_count_ = 0;
         sample_ = {};
         last_thread_id_ = {};
-        last_body_angular_velocity_ = {};
-        last_dt_seconds_ = 0.0;
+        last_input_ = {};
     }
 
-    void set_result(domain::LineOfSightAngularVelocity result) noexcept {
+    void set_result(domain::LosRateEstimate result) noexcept {
         result_ = result;
     }
     std::size_t call_count() const noexcept { return call_count_; }
     const domain::AngularVelocityDartRadPerSec&
     last_body_angular_velocity() const noexcept {
-        return last_body_angular_velocity_;
+        return last_input_.attitude.corrected_angular_velocity;
     }
-    double last_dt_seconds() const noexcept { return last_dt_seconds_; }
+    double last_dt_seconds() const noexcept { return last_input_.dt_seconds; }
+    const domain::LosRateFilterInput& last_input() const noexcept {
+        return last_input_;
+    }
     std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
-    domain::LineOfSightAngularVelocity result_{};
+    domain::LosRateEstimate result_{};
     domain::LineOfSightRateSample sample_{};
-    domain::AngularVelocityDartRadPerSec last_body_angular_velocity_{};
-    double last_dt_seconds_ = 0.0;
+    domain::LosRateFilterInput last_input_{};
     std::size_t call_count_ = 0;
     std::thread::id last_thread_id_{};
 };

@@ -343,6 +343,11 @@ void FramePipeline::processing_worker() noexcept {
     try {
         bool has_frame_timestamp = false;
         TimestampNs previous_frame_timestamp_ns = 0;
+        std::optional<std::uint64_t> rate_generation;
+        const auto reset_rate_segment = [this, &has_frame_timestamp] {
+            los_rate_filter_->reset();
+            has_frame_timestamp = false;
+        };
         std::uint64_t imu_match_failure_count = 0;
         bool imu_match_failure_active = false;
         std::chrono::steady_clock::time_point next_imu_match_log{};
@@ -431,6 +436,7 @@ void FramePipeline::processing_worker() noexcept {
             }
             if (prepare_result.status != SourceStatus::ok) {
                 if (prepare_result.status == SourceStatus::timeout) {
+                    reset_rate_segment();
                     if (!submit_neutral_command(result.frame.timestamp_ns)) {
                         return;
                     }
@@ -486,8 +492,7 @@ void FramePipeline::processing_worker() noexcept {
                         << ", previous_camera_timestamp_ns="
                         << previous_frame_timestamp_ns;
                 log_output_diagnostic("相机帧时间戳不递增", details.str());
-                los_rate_filter_->reset();
-                has_frame_timestamp = false;
+                reset_rate_segment();
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
                 }
@@ -560,6 +565,7 @@ void FramePipeline::processing_worker() noexcept {
                     next_imu_match_log = now + std::chrono::seconds(1);
                 }
                 imu_match_failure_active = true;
+                reset_rate_segment();
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::stale_input);
                 if (!submit_neutral_command(timestamp_ns)) {
@@ -592,6 +598,7 @@ void FramePipeline::processing_worker() noexcept {
             const auto attitude_lookup =
                 imu_pipeline_.attitude_at(timestamp_ns);
             if (!attitude_lookup.has_value()) {
+                reset_rate_segment();
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::invalid_attitude);
                 log_output_diagnostic("姿态历史无法匹配相机曝光时刻",
@@ -606,6 +613,12 @@ void FramePipeline::processing_worker() noexcept {
                 result = ProcessedFrame{};
                 continue;
             }
+
+            if (rate_generation.has_value() &&
+                *rate_generation != attitude_lookup->launch_generation) {
+                reset_rate_segment();
+            }
+            rate_generation = attitude_lookup->launch_generation;
 
             result.flight_state.time = frame_time;
             result.flight_state.imu_sample = {
@@ -658,8 +671,7 @@ void FramePipeline::processing_worker() noexcept {
                           std::chrono::steady_clock::now() - vision_started);
             if (!result.vision_detection.observation.valid) {
                 mark_guidance_invalid(domain::GuidanceInvalidReason::no_target);
-                los_rate_filter_->reset();
-                has_frame_timestamp = false;
+                reset_rate_segment();
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
@@ -685,8 +697,7 @@ void FramePipeline::processing_worker() noexcept {
                 const std::string details =
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns);
                 log_output_diagnostic("视线角计算无效", details);
-                los_rate_filter_->reset();
-                has_frame_timestamp = false;
+                reset_rate_segment();
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
@@ -704,17 +715,13 @@ void FramePipeline::processing_worker() noexcept {
 
             if (!has_frame_timestamp) {
                 los_rate_filter_->reset();
-                const domain::AngularVelocityDartRadPerSec
-                    body_angular_velocity{
-                        angular_velocity_lookup->sample.angular_velocity.x,
-                        angular_velocity_lookup->sample.angular_velocity.y,
-                        angular_velocity_lookup->sample.angular_velocity.z};
-                const domain::LineOfSightAngularVelocity
-                    initial_angular_velocity = los_rate_filter_->update(
-                        line_of_sight, body_angular_velocity, 1.0);
+                // 首帧仅建立基准；占位 dt 不用于矢量状态的时间传播。
+                const auto initial_rate = los_rate_filter_->update(
+                    {line_of_sight, result.flight_state.attitude, 1.0,
+                     attitude_lookup->launch_generation});
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::invalid_rate);
-                if (!initial_angular_velocity.valid) {
+                if (!initial_rate.valid) {
                     std::ostringstream details;
                     details << "camera_timestamp_ns=" << timestamp_ns
                             << ", dt_seconds=1.0";
@@ -749,8 +756,7 @@ void FramePipeline::processing_worker() noexcept {
                         << previous_timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
                 log_output_diagnostic("视线角速度时间步长无效", details.str());
-                los_rate_filter_->reset();
-                has_frame_timestamp = false;
+                reset_rate_segment();
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
@@ -764,14 +770,10 @@ void FramePipeline::processing_worker() noexcept {
             }
             previous_frame_timestamp_ns = timestamp_ns;
 
-            const domain::AngularVelocityDartRadPerSec body_angular_velocity{
-                angular_velocity_lookup->sample.angular_velocity.x,
-                angular_velocity_lookup->sample.angular_velocity.y,
-                angular_velocity_lookup->sample.angular_velocity.z};
-            const domain::LineOfSightAngularVelocity angular_velocity =
-                los_rate_filter_->update(line_of_sight, body_angular_velocity,
-                                         dt_seconds);
-            if (!angular_velocity.valid) {
+            const auto rate = los_rate_filter_->update(
+                {line_of_sight, result.flight_state.attitude, dt_seconds,
+                 attitude_lookup->launch_generation});
+            if (!rate.valid) {
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::invalid_rate);
                 std::ostringstream details;
@@ -789,15 +791,16 @@ void FramePipeline::processing_worker() noexcept {
                 result = ProcessedFrame{};
                 continue;
             }
-            result.overlay.line_of_sight_rate_valid = true;
-            result.overlay.line_of_sight_rate_q_y = angular_velocity.q_y;
-            result.overlay.line_of_sight_rate_q_z = angular_velocity.q_z;
+            result.overlay.line_of_sight_rate_valid = rate.angular_velocity.valid;
+            result.overlay.line_of_sight_rate_q_y = rate.angular_velocity.q_y;
+            result.overlay.line_of_sight_rate_q_z = rate.angular_velocity.q_z;
 
             domain::GuidanceInput guidance_input{};
             guidance_input.source_frame_id = result.frame.source_frame_id;
             guidance_input.time = frame_time;
             guidance_input.line_of_sight = line_of_sight;
-            guidance_input.angular_velocity = angular_velocity;
+            guidance_input.angular_velocity = rate.angular_velocity;
+            guidance_input.vector_los = rate.vector;
             guidance_input.speed_mps.value = config_.launch_speed_mps;
             guidance_input.attitude = result.flight_state.attitude;
             const auto guidance_started = std::chrono::steady_clock::now();
@@ -829,7 +832,7 @@ void FramePipeline::processing_worker() noexcept {
                         << angular_velocity_lookup->upper_timestamp_ns
                         << ", imu_bracket_age_ms="
                         << static_cast<double>(bracket_age_ns) / 1e6;
-                log_output_diagnostic("PNG 引导输出无效", details.str());
+                log_output_diagnostic("制导算法输出无效", details.str());
             }
             if (attitude_lookup->launched && !result.guidance.valid &&
                 !submit_neutral_command(timestamp_ns,

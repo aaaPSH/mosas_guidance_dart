@@ -15,6 +15,8 @@ struct MetersPerSecondSquared {};
 struct RadiansPerSecond {};
 struct Radian {};
 struct GravityG {};
+struct Dimensionless {};
+struct PerSecond {};
 
 template <class Unit>
 struct Quantity {
@@ -65,6 +67,8 @@ using AccelerationBallisticMps2 =
 using AngularVelocityDartRadPerSec =
     Vector3<DartFrameTag, RadiansPerSecond>;
 using DartOverloadG = Vector3<DartFrameTag, GravityG>;
+using DirectionDartUnit = Vector3<DartFrameTag, Dimensionless>;
+using DirectionRateDartPerSec = Vector3<DartFrameTag, PerSecond>;
 
 }  // namespace mosas::domain
 

@@ -32,7 +32,9 @@ int main() {
         std::filesystem::path(MOSAS_SOURCE_DIR) / "config" /
         "mosas_guidance.conf";
     CHECK(mosas::app::AppConfigLoader::load(config_path, &config, &error));
-    CHECK(config.guidance.launch_speed_mps == 13.0);
+    CHECK(std::isfinite(config.guidance.launch_speed_mps));
+    CHECK(config.guidance.launch_speed_mps > 0.0);
+    CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
     CHECK(config.algorithms.vision_config.initial_roi.width == 640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,
                486.244430986463, 1e-9);
@@ -76,6 +78,8 @@ int main() {
     CHECK(dependencies.los_rate_filter != nullptr);
     CHECK(dependencies.guidance_law != nullptr);
     CHECK(dependencies.monotonic_clock != nullptr);
+    CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
+              dependencies.los_rate_filter.get()) == nullptr);
     bool observed_png=false;
     auto observed_dependencies=mosas::app::make_default_guidance_algorithms(config.algorithms,
         [&](const mosas::domain::GuidanceInput& input,const PngCalculationTrace& trace){
@@ -88,5 +92,92 @@ int main() {
     CHECK(observed_dependencies.guidance_law->calculate(observed_input).valid);
     CHECK(observed_png);
 
+    const auto load_variant = [&](const std::string& keys, mosas::app::AppConfig* output) {
+        std::ofstream file(temporary_config.path);
+        file << source_text.str() << "\n[guidance]\n" << keys;
+        file.close();
+        return file.good() && mosas::app::AppConfigLoader::load(temporary_config.path, output, &error);
+    };
+    for (const double speed : {13.0, 16.0}) {
+        mosas::app::AppConfig speed_config;
+        auto speed_text = source_text.str();
+        const std::string key = "\nlaunch_speed_mps=";
+        const auto key_position = speed_text.find(key);
+        CHECK(key_position != std::string::npos);
+        const auto value_begin = key_position + key.size();
+        const auto value_end = speed_text.find('\n', value_begin);
+        CHECK(value_end != std::string::npos);
+        speed_text.replace(value_begin, value_end - value_begin,
+                           std::to_string(speed));
+        {
+            std::ofstream file(temporary_config.path);
+            CHECK(file.good());
+            file << speed_text;
+        }
+        CHECK(mosas::app::AppConfigLoader::load(temporary_config.path,
+                                               &speed_config, &error));
+        CHECK_NEAR(speed_config.guidance.launch_speed_mps, speed, 1e-12);
+        auto speed_dependencies =
+            mosas::app::make_default_guidance_algorithms(speed_config.algorithms);
+        CHECK(speed_dependencies.guidance_law != nullptr);
+    }
+    mosas::app::AppConfig vector_config;
+    CHECK(load_variant("guidance_algorithm=body_vector_pn\n", &vector_config));
+    CHECK(vector_config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
+    CHECK_NEAR(vector_config.algorithms.body_vector_pn.navigation_constant, 3.0, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
+    auto vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
+    CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
+              vector_dependencies.los_rate_filter.get()) != nullptr);
+    CHECK(dynamic_cast<mosas::guidance::BodyVectorPnGuidance*>(
+              vector_dependencies.guidance_law.get()) != nullptr);
+    mosas::domain::LosRateFilterInput filter_input;
+    filter_input.attitude.valid = true;
+    filter_input.line_of_sight = {true, {0.0}, {0.0}};
+    filter_input.dt_seconds = 0.01;
+    CHECK(!vector_dependencies.los_rate_filter->update(filter_input).valid);
+    const auto vector_rate = vector_dependencies.los_rate_filter->update(filter_input);
+    CHECK(vector_rate.valid && vector_rate.vector.valid);
+    mosas::domain::GuidanceInput guidance_input;
+    guidance_input.attitude = filter_input.attitude;
+    guidance_input.vector_los = vector_rate.vector;
+    guidance_input.speed_mps.value = 13.0;
+    CHECK_NEAR(vector_dependencies.guidance_law->calculate(guidance_input).command.overload_g.y,
+               1.0, 1e-12);
+
+    CHECK(load_variant("guidance_algorithm=body_vector_pn\n"
+                       "body_vector_navigation_constant=4.5\n"
+                       "body_vector_los_sigma_a=2\n"
+                       "body_vector_los_sigma_l=0.001\n"
+                       "body_vector_los_initial_rate_covariance=0.5\n"
+                       "body_vector_los_maximum_gap_ms=80\n"
+                       "body_vector_maximum_command_overload=3\n"
+                       "body_vector_maximum_command_acceleration=inf\n", &vector_config));
+    CHECK_NEAR(vector_config.algorithms.body_vector_pn.navigation_constant, 4.5, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.body_vector_filter.sigma_a, 2.0, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.body_vector_filter.sigma_l, 0.001, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.body_vector_filter.initial_rate_covariance, 0.5, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.08, 1e-12);
+    CHECK(std::isinf(vector_config.algorithms.body_vector_pn.maximum_command_acceleration));
+    for (const char* bad : {
+             "guidance_algorithm=unknown\n", "body_vector_navigation_constant=0\n",
+             "body_vector_los_sigma_a=0\n", "body_vector_los_sigma_l=0\n",
+             "body_vector_los_initial_rate_covariance=-1\n",
+             "body_vector_los_maximum_gap_ms=0\n",
+             "body_vector_maximum_command_overload=-1\n",
+             "body_vector_maximum_command_acceleration=-1\n",
+             "body_vector_los_sigma_a=nan\n"}) {
+        CHECK(!load_variant(bad, &vector_config));
+    }
+    CHECK(load_variant("body_vector_maximum_command_overload=0\n", &vector_config));
+
+    // 工厂使用与姿态估计相同的重力，不采用独立且可能冲突的 PN 重力副本。
+    vector_config.algorithms.algorithm = mosas::app::GuidanceAlgorithm::body_vector_pn;
+    vector_config.algorithms.attitude.gravity_mps2 = 10.0;
+    vector_config.algorithms.body_vector_pn.maximum_command_overload = 3.0;
+    vector_config.algorithms.body_vector_pn.maximum_command_acceleration = 100.0;
+    vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
+    CHECK_NEAR(vector_dependencies.guidance_law->calculate(guidance_input)
+                   .diagnostics.body_acceleration.y, 10.0, 1e-12);
     return 0;
 }

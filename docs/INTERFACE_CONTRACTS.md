@@ -141,7 +141,9 @@ using OverloadDartG = Vec3<DartFrameTag>; // 每分量以 g 为单位的无量�
 - Ballistic `B`：`+X` 沿速度；小攻角模型令 `D` 与 `B` 只差绕纵轴的 roll。
 - Camera `C`：接口保留 `R_D_from_C`；默认单位矩阵，未来标定值只在一处注入。
 - roll 单位 rad，正方向绕 `+X` 右手规则。
-- LOS q 单位 rad，LOS rate 单位 rad/s，加速度 m/s²，过载 g。
+- LOS q 单位 rad，LOS rate 单位 rad/s，加速度/比力 m/s²，过载 g。
+- `DirectionDartUnit` 为镖体系单位 LOS，无量纲；`DirectionRateDartPerSec` 是 LOS 惯性导数的镖体系表达，单位 1/s。惯性导数不是相机测得的相对导数，也不是导航系坐标分量。
+- 指令过载是横向比力/g，包含抵消横向重力所需的分量，不是净运动学加速度/g。
 
 任何 `Vec3` 跨模块传递必须通过坐标标签/字段名表达坐标系。禁止把“navigation_acceleration”“body_overload”等不同含义复用同一个无标签数组。
 
@@ -249,24 +251,41 @@ struct ImuSampleAtFrame {
     bool valid;
 };
 
+struct VectorLosEstimate {
+    bool valid;
+    DirectionDartUnit direction;
+    DirectionRateDartPerSec inertial_direction_rate;
+};
+
+struct LosRateFilterInput {
+    LineOfSight line_of_sight;
+    AttitudeState attitude;
+    double dt_seconds;
+    std::uint64_t generation;
+};
+
+struct LosRateEstimate {
+    bool valid; // 制导估计的共同有效性，不等同于角度诊断有效性
+    LineOfSightAngularVelocity angular_velocity;
+    VectorLosEstimate vector;
+};
+
 struct GuidanceInput {
     std::uint64_t source_frame_id;
     SensorTime time;
-    LosMeasurement<DartFrameTag> los;
-    LosRate<DartFrameTag> los_rate;
+    LineOfSight line_of_sight;
+    LineOfSightAngularVelocity angular_velocity;
+    Quantity<MetersPerSecond> speed_mps;
     AttitudeState attitude;
-    LaunchState launch;
-    double speed_mps;
+    VectorLosEstimate vector_los;
 };
 
-struct GuidanceResult {
-    bool valid;
-    GuidanceInvalidReason invalid_reason;
-    OverloadDartG commanded_overload;
-    Vec3<BallisticFrameTag> ballistic_acceleration_mps2;
-    Vec3<DartFrameTag> dart_acceleration_mps2;
-    double combined_overload_g;
-    double command_phase_rad;
+struct GuidanceDiagnostics {
+    AccelerationBallisticMps2 navigation_acceleration; // 历史名，弹道系指令比力
+    AccelerationDartMps2 body_acceleration; // 镖体系指令比力，含重力补偿并限幅
+    DartOverloadG body_overload;
+    Quantity<GravityG> command_overload;
+    Quantity<Radian> command_phase; // 弹道系 Y/Z 指令相位
 };
 
 struct GuidanceCommand {
@@ -275,7 +294,14 @@ struct GuidanceCommand {
     SensorTime source_time;
     bool valid;
     GuidanceInvalidReason invalid_reason;
-    OverloadDartG overload;
+    DartOverloadG overload_g;
+};
+
+struct GuidanceOutput {
+    bool valid;
+    GuidanceInvalidReason invalid_reason;
+    GuidanceCommand command;
+    GuidanceDiagnostics diagnostics;
 };
 ```
 
@@ -366,18 +392,15 @@ public:
 
 class ILosRateFilter {
 public:
-    virtual ResultCode update(const LosMeasurement<DartFrameTag>&,
-                              const ImuSampleAtFrame&,
-                              LosRate<DartFrameTag>*) noexcept = 0;
-    virtual void reset(std::uint64_t generation) noexcept = 0;
+    virtual domain::LosRateEstimate update(const domain::LosRateFilterInput&) = 0;
+    virtual domain::LineOfSightRateSample sample() const = 0;
+    virtual void reset() noexcept = 0;
     virtual ~ILosRateFilter() = default;
 };
 
 class IGuidanceLaw {
 public:
-    virtual ResultCode calculate(const GuidanceInput&,
-                                 GuidanceResult*) noexcept = 0;
-    virtual void reset(std::uint64_t generation) noexcept = 0;
+    virtual domain::GuidanceOutput calculate(const domain::GuidanceInput&) = 0;
     virtual ~IGuidanceLaw() = default;
 };
 ```
@@ -389,6 +412,42 @@ public:
 - LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新起飞 generation、长丢帧或时间异常时显式 reset。
 - `GuidanceCommand` 的过载坐标固定为 Dart；输出与串口编码分离。
 - 对无效状态返回原因，不用“零向量”代表 invalid。由 Runtime 的基线兼容策略决定是否提交/不提交；不得由单个算法隐式发安全命令。
+
+### 6.1 可选镖体系矢量 PN
+
+`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；缺省仍为原 PNG。原标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
+
+`BodyVectorLosFilter` 保存六状态 `[l_D,u_D]` 和完整 6×6 协方差。测量为单位 LOS；`u_D` 为惯性 LOS 导数的镖体系表达。两帧的坐标运输采用：
+
+```
+C = transpose(R_N_from_D_current) * R_N_from_D_previous
+l_pred = C * (l_previous + dt * u_previous)
+u_pred = C * u_previous
+```
+
+完整协方差同样运输，测量更新采用 Joseph 形式；单位长度和切向约束通过归一化映射及其 Jacobian 同时施加到状态和协方差。姿态运输已包含 IMU 转动补偿，不能再叠加 `omega_body × l`。
+
+首帧只建立基准，不传播占位间隔。丢目标、IMU/姿态匹配失败、时间异常、generation 切换后流水线清除连续段；新滤波器也在超过 `body_vector_los_maximum_gap_ms` 时以当前帧重建基准。恢复后的第一帧不输出有效速率。新算法不对丢失目标盲目外推制导。
+
+新 PN 使用单个导航系数，速度方向按小攻角/侧滑模型近似为镖体 +X：
+
+```
+omega_LOS_D = l_D × u_D
+a_PN_D = N * V * (omega_LOS_D × e_x)
+g_D = transpose(R_N_from_D) * (0,-g,0)
+f_command_D = a_PN_D - (I-e_x*transpose(e_x)) * g_D
+n_command_D = f_command_D / g
+```
+
+导航项不再额外按 roll 旋转，也不使用旧横向 `cos_pitch` 因子。重力补偿后按总 Y/Z 比力同比例限幅，取过载上限和加速度上限/g 的较小值；最终 X=0、Y/Z 分别下发。弹道系诊断量仅为记录转换，不反馈到镖体系命令计算。
+
+角速率展示由矢量投影得到，LOS 仰角极点处可以无效，但不影响有效矢量 PN。LOS 离轴角不要求很小，但速度轴近似、实际机动能力、闭环延迟仍限制适用范围，不能据此承诺命中。
+
+新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`，速度仍为 `launch_speed_mps`。
+
+默认 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms；默认总比力限制仍为 1g/9.80665m/s²，不擅自提高硬件上限。水平 1g 已全部用于抵消重力，没有额外净向上机动余量。
+
+“滚转一致性”验证保持同一物理场景并同步转换输入；不同 roll 的镖体系输出应不同，但转换回相同惯性系后的指令一致。固定镖体系输入数值只改变 roll，不是这个等价性测试。
 
 ## 7. 控制和观测输出接口
 

@@ -2,6 +2,8 @@
 #define MOSAS_APP_CONFIG_HPP
 
 #include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/guidance/body_vector_los_filter.hpp>
+#include <mosas/guidance/body_vector_pn_guidance.hpp>
 #include <mosas/runtime/attitude_estimator.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 #include <mosas/output/output_config.hpp>
@@ -76,12 +78,18 @@ struct CommandAppConfig {
     CommandMode mode = CommandMode::log;
 };
 
+/** @brief 可选算法；滤波器和制导律必须由工厂成对选择。 */
+enum class GuidanceAlgorithm { png, body_vector_pn };
+
 struct GuidanceAlgorithmConfig {
+    GuidanceAlgorithm algorithm = GuidanceAlgorithm::png;
     VisionConfig vision_config{
         {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
         0.35};
     LineOfSightRateFilterConfig los_rate_filter{};
     PngGuidanceConfig png_guidance{};
+    guidance::BodyVectorLosFilterConfig body_vector_filter{};
+    guidance::BodyVectorPnConfig body_vector_pn{};
     runtime::AttitudeEstimatorConfig attitude{};
 };
 

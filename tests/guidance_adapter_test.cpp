@@ -81,12 +81,13 @@ int main() {
     adapter_filter_config.enable_filter = false;
     mosas::guidance::ExistingLosRateFilterAdapter rate_adapter(
         adapter_filter_config);
-    CHECK(!rate_adapter.update({true, {0.0}, {0.0}}, {}, 0.01).valid);
+    CHECK(!rate_adapter.update({{true, {0.0}, {0.0}}, {}, 0.01, 0}).valid);
     const auto adapted_rate = rate_adapter.update(
-        {true, {0.01}, {0.02}}, {}, 0.01);
+        {{true, {0.01}, {0.02}}, {}, 0.01, 0});
     CHECK(adapted_rate.valid);
-    CHECK_NEAR(adapted_rate.q_y.value, 1.0, 1e-12);
-    CHECK_NEAR(adapted_rate.q_z.value, 2.0, 1e-12);
+    CHECK_NEAR(adapted_rate.angular_velocity.q_y.value, 1.0, 1e-12);
+    CHECK_NEAR(adapted_rate.angular_velocity.q_z.value, 2.0, 1e-12);
+    CHECK(!adapted_rate.vector.valid);
     CHECK(rate_adapter.sample().filtered_angular_velocity.valid);
     rate_adapter.reset();
     CHECK(!rate_adapter.sample().filtered_angular_velocity.valid);

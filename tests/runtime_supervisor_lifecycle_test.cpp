@@ -536,10 +536,8 @@ public:
 
 class ProbeLosRateFilter final : public mosas::ports::ILosRateFilter {
 public:
-    mosas::domain::LineOfSightAngularVelocity
-    update(const mosas::domain::LineOfSight&,
-           const mosas::domain::AngularVelocityDartRadPerSec&,
-           double) override {
+    mosas::domain::LosRateEstimate
+    update(const mosas::domain::LosRateFilterInput&) override {
         return {};
     }
 

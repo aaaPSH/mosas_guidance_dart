@@ -35,15 +35,11 @@ public:
 
     /**
      * @brief 更新视线速率估计。
-     * @param line_of_sight 当前帧 LOS 角和有效标志。
-     * @param body_angular_velocity 同步的镖体系角速度（rad/s）。
-     * @param dt_seconds 帧间时间（s）。
-     * @return 当前 LOS 角速度（rad/s）及有效标志。
+     * @param input 同步 LOS、姿态中的校正角速度、帧间隔和代际。
+     * @return 原算法的标量 LOS 角速度；矢量估计保持无效。
      */
-    domain::LineOfSightAngularVelocity update(
-        const domain::LineOfSight& line_of_sight,
-        const domain::AngularVelocityDartRadPerSec& body_angular_velocity,
-        double dt_seconds) override;
+    domain::LosRateEstimate update(
+        const domain::LosRateFilterInput& input) override;
     /** @brief 返回最近更新的原始及滤波速率诊断。 @return 最近一次 LOS 速率样本。 */
     domain::LineOfSightRateSample sample() const override;
     /** @brief 清除内部差分和滤波器历史。 */

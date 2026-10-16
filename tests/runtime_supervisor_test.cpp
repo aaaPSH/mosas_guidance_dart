@@ -226,7 +226,7 @@ int main() {
     vision_control->push(detection);
 
     los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {0.3}, {-0.4}});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {}});
     domain::GuidanceOutput guidance_result{};
     guidance_result.valid = true;
     guidance_result.invalid_reason = domain::GuidanceInvalidReason::none;
@@ -320,6 +320,10 @@ int main() {
     CHECK_NEAR(valid_frame->guidance.command.overload_g.z, 0.0, 1e-12);
     CHECK(rate_filter_control->call_count() == 2);
     CHECK_NEAR(rate_filter_control->last_dt_seconds(), 0.005, 1e-12);
+    CHECK(rate_filter_control->last_input().attitude.valid);
+    CHECK(rate_filter_control->last_input().attitude.time.monotonic_ns ==
+          kFrameSecondNs);
+    CHECK(rate_filter_control->last_input().generation == 0);
     CHECK_NEAR(rate_filter_control->last_body_angular_velocity().x, 0.0, 1e-12);
     CHECK(vision_control->call_count() == 2);
     CHECK(los_control->call_count() == 2);
@@ -384,7 +388,7 @@ int main() {
     vision_control->push(detection);
     vision_control->push(detection);
     los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {0.3}, {-0.4}});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {}});
     guidance_control->set_result(guidance_result);
     imu_source_control->release();
 
