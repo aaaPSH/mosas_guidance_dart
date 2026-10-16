@@ -54,7 +54,6 @@ struct RuntimeTiming {
 };
 
 struct RuntimeSupervisorConfig {
-    double launch_speed_mps = 100.0;
     std::size_t history_capacity = 256;
     TimestampNs max_imu_age_ns = 50000000;
     TimestampNs max_camera_future_ns = 50000000;

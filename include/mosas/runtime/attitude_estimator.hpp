@@ -10,6 +10,8 @@ namespace mosas::runtime {
 
 struct AttitudeEstimatorConfig {
     double gravity_mps2 = 9.80665;
+    /** @brief 标定的发射速度初值，单位 m/s；必须为有限正数。 */
+    double launch_speed_mps = 100.0;
     // 静止判定和起飞前低比力保护使用的加速度模长相对重力最大偏差，单位 m/s²。
     double stationary_acceleration_tolerance_mps2 = 0.3;
     // 静止判定时角速度模长的最大值，单位 rad/s。
@@ -30,6 +32,8 @@ struct AttitudeEstimate {
         0.0, 0.0, 1.0};
     double pitch_rad = 0.0;
     double roll_rad = 0.0;
+    /** @brief 与当前姿态同一 IMU 时刻的纵向速度估计，单位 m/s。 */
+    double speed_mps = 0.0;
     bool launched = false;
     bool valid = false;
     TimestampNs launch_timestamp_ns = -1;
@@ -39,13 +43,25 @@ struct AttitudeEstimate {
 
 class AttitudeEstimator final {
 public:
+    /**
+     * @brief 创建姿态、起飞状态和纵向速度估计器。
+     * @param config 估计参数；无效配置整体回退为默认配置。
+     */
     explicit AttitudeEstimator(const AttitudeEstimatorConfig& config = {});
 
     AttitudeEstimator(const AttitudeEstimator&) = delete;
     AttitudeEstimator& operator=(const AttitudeEstimator&) = delete;
 
+    /**
+     * @brief 更新姿态，并在确认起飞后的连续样本上积分纵向速度。
+     * @param sample 镖体系 IMU 样本；加速度单位 m/s²，角速度单位 rad/s。
+     * @return 同步状态；无效或非递增样本返回上一状态。
+     * @note 起飞确认帧保持标定初速；随后使用当前帧俯仰角计算
+     * V += (ax - gravity * sin(pitch)) * dt，跨断流区间不积分。
+     */
     AttitudeEstimate update(const ImuAngularVelocitySample& sample) noexcept;
 
+    /** @brief 清除姿态、零偏和起飞状态，并将速度恢复为标定发射速度。 */
     void reset() noexcept;
 
 private:
@@ -83,6 +99,7 @@ private:
     Quaternion orientation_{};
     Vector3 gyro_bias_{0.0, 0.0, 0.0};
     Vector3 corrected_angular_velocity_{0.0, 0.0, 0.0};
+    double speed_mps_ = 0.0;
     double launch_baseline_x_ = 0.0;
     TimestampNs launch_candidate_start_ns_ = -1;
     TimestampNs last_timestamp_ns_ = -1;

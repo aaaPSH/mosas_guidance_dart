@@ -55,6 +55,8 @@ struct FlightStateSnapshot {
     ImuKinematicSample imu_sample{};
     AttitudeState attitude{};
     LaunchState launch{};
+    /** @brief 与姿态同一时刻的纵向速度，单位 m/s；起飞前保持标定初速。 */
+    Quantity<MetersPerSecond> speed_mps{};
 };
 
 enum class GuidanceInvalidReason {

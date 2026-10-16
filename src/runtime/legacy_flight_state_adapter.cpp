@@ -63,6 +63,7 @@ domain::FlightStateSnapshot LegacyFlightStateEstimatorAdapter::update(
         estimate.corrected_angular_velocity.y,
         estimate.corrected_angular_velocity.z};
     snapshot.attitude.valid = estimate.valid;
+    snapshot.speed_mps.value = estimate.speed_mps;
 
     snapshot.launch.phase = estimate.launched ? domain::LaunchPhase::launched
                                               : domain::LaunchPhase::pre_launch;

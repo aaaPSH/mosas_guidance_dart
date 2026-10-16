@@ -181,7 +181,6 @@ int main() {
     dependencies.monotonic_clock = std::make_unique<test::FakeClock>(77);
 
     runtime::RuntimeSupervisorConfig config;
-    config.launch_speed_mps = 13.0;
     config.history_capacity = 8;
     config.capture_queue_capacity = 2;
     config.output_queue_capacity = 4;
@@ -206,6 +205,7 @@ int main() {
     CHECK(runtime.start());
 
     domain::FlightStateSnapshot flight_result{};
+    flight_result.speed_mps.value = 12.5;
     flight_result.attitude.valid = true;
     flight_result.attitude.navigation_from_dart = {};
     flight_result.attitude.corrected_angular_velocity = {0.0, 0.0, 0.0};
@@ -312,7 +312,8 @@ int main() {
     CHECK(valid_frame->state.launch.phase == domain::LaunchPhase::launched);
     CHECK(valid_frame->frame.image.is_valid());
     CHECK(guidance_control->call_count() == 1);
-    CHECK_NEAR(guidance_control->last_input().speed_mps.value, 13.0, 1e-12);
+    CHECK_NEAR(valid_frame->state.speed_mps.value, 12.5, 1e-12);
+    CHECK_NEAR(guidance_control->last_input().speed_mps.value, 12.5, 1e-12);
     CHECK_NEAR(guidance_control->last_input().line_of_sight.q_y.value, 0.1,
                1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.x, 0.0, 1e-12);

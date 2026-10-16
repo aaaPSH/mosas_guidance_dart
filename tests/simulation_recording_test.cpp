@@ -99,7 +99,7 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
         // Stationary history, followed by the original speed / 100 ms ramp.
         // Neither protocol flight phase nor estimator launch state is injected.
         for(std::int64_t time=0;time<=200'000'000;time+=5'000'000) {
-            CHECK(server.submit(Imu{3,{time>100'000'000?original.guidance.launch_speed_mps/0.1:0,
+            CHECK(server.submit(Imu{3,{time>100'000'000?original.algorithms.attitude.launch_speed_mps/0.1:0,
                                       0,standard_gravity},{}},time));
             if(time==180'000'000) {
                 // Wait before advancing simulation time beyond the 10 ms sync

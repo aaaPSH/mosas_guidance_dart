@@ -243,6 +243,7 @@ struct LaunchState {
 struct FlightStateSnapshot {
     AttitudeState attitude;
     LaunchState launch;
+    Quantity<MetersPerSecond> speed_mps; // 与姿态同一时刻的纵向速度估计
 };
 
 struct ImuSampleAtFrame {
@@ -408,12 +409,24 @@ public:
 契约：
 
 - 识别只输出 observation，不更新全局状态、不提交命令。
-- Attitude 与 Launch 作为不同概念供下游使用。运行时先依赖 `IFlightStateEstimator`，由现有 `AttitudeEstimator` 适配器一次更新并返回两者，避免重复消费 IMU；在行为回归通过后，内部实现才可组合独立 `IAttitudeEstimator` 和 `ILaunchDetector`。
+- Attitude 与 Launch 作为不同概念供下游使用。运行时先依赖 `IFlightStateEstimator`，由现有 `AttitudeEstimator` 适配器一次更新并返回姿态、起飞状态和纵向速度，避免重复消费 IMU；在行为回归通过后，内部实现才可组合独立 `IAttitudeEstimator` 和 `ILaunchDetector`。
 - LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新起飞 generation、长丢帧或时间异常时显式 reset。
 - `GuidanceCommand` 的过载坐标固定为 Dart；输出与串口编码分离。
 - 对无效状态返回原因，不用“零向量”代表 invalid。由 Runtime 的基线兼容策略决定是否提交/不提交；不得由单个算法隐式发安全命令。
 
-### 6.1 可选镖体系矢量 PN
+### 6.1 同步纵向速度估计
+
+`[guidance] launch_speed_mps` 的配置键保持不变，内部由 `AttitudeEstimatorConfig::launch_speed_mps` 持有，要求有限且大于零。起飞前、起飞确认帧和 reset 后保持该初值；确认起飞后的连续有效 IMU 样本在姿态更新后执行：
+
+```
+V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
+```
+
+`ax_imu_k` 为输入的镖体 X 轴加速度（m/s²），`pitch_k` 为当前帧俯仰角（rad），`dt` 使用实际相邻 IMU 时间戳差（s）。不重复累加起飞确认前的发射加速，也不额外扣除启动加速度基线。无效样本和非递增时间戳不更新状态；超过现有姿态积分最大间隔的断流区间不积分，恢复后从新的连续样本继续。
+
+速度作为 `FlightStateSnapshot::speed_mps` 发布，随完整姿态写入同一历史槽并线性插值到相机曝光时刻；不外推、不跨起飞状态、起飞时刻或 generation 插值。PNG 和矢量 PN 均使用该曝光时刻速度，而非初值或最新 IMU 速度。积分结果不人为钳位为正数；速度非正时沿用两种制导律的无效输入处理，不回退为固定初速。
+
+### 6.2 可选镖体系矢量 PN
 
 `[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；缺省仍为原 PNG。原标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
 
@@ -443,7 +456,7 @@ n_command_D = f_command_D / g
 
 角速率展示由矢量投影得到，LOS 仰角极点处可以无效，但不影响有效矢量 PN。LOS 离轴角不要求很小，但速度轴近似、实际机动能力、闭环延迟仍限制适用范围，不能据此承诺命中。
 
-新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`，速度仍为 `launch_speed_mps`。
+新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`；`launch_speed_mps` 仅为标定发射速度初值，不再作为固定制导速度。
 
 默认 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms；默认总比力限制仍为 1g/9.80665m/s²，不擅自提高硬件上限。水平 1g 已全部用于抵消重力，没有额外净向上机动余量。
 

@@ -32,8 +32,8 @@ int main() {
         std::filesystem::path(MOSAS_SOURCE_DIR) / "config" /
         "mosas_guidance.conf";
     CHECK(mosas::app::AppConfigLoader::load(config_path, &config, &error));
-    CHECK(std::isfinite(config.guidance.launch_speed_mps));
-    CHECK(config.guidance.launch_speed_mps > 0.0);
+    CHECK(std::isfinite(config.algorithms.attitude.launch_speed_mps));
+    CHECK(config.algorithms.attitude.launch_speed_mps > 0.0);
     CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
     CHECK(config.algorithms.vision_config.initial_roi.width == 640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,
@@ -88,7 +88,7 @@ int main() {
     mosas::domain::GuidanceInput observed_input;
     observed_input.source_frame_id=91;observed_input.line_of_sight={true,{0},{0}};
     observed_input.angular_velocity={true,{0},{0}};observed_input.attitude.valid=true;
-    observed_input.speed_mps.value=config.guidance.launch_speed_mps;
+    observed_input.speed_mps.value=config.algorithms.attitude.launch_speed_mps;
     CHECK(observed_dependencies.guidance_law->calculate(observed_input).valid);
     CHECK(observed_png);
 
@@ -116,10 +116,30 @@ int main() {
         }
         CHECK(mosas::app::AppConfigLoader::load(temporary_config.path,
                                                &speed_config, &error));
-        CHECK_NEAR(speed_config.guidance.launch_speed_mps, speed, 1e-12);
-        auto speed_dependencies =
-            mosas::app::make_default_guidance_algorithms(speed_config.algorithms);
-        CHECK(speed_dependencies.guidance_law != nullptr);
+        CHECK_NEAR(speed_config.algorithms.attitude.launch_speed_mps, speed, 1e-12);
+        for (const auto algorithm : {mosas::app::GuidanceAlgorithm::png,
+                                     mosas::app::GuidanceAlgorithm::body_vector_pn}) {
+            speed_config.algorithms.algorithm = algorithm;
+            auto speed_dependencies =
+                mosas::app::make_default_guidance_algorithms(speed_config.algorithms);
+            CHECK(speed_dependencies.guidance_law != nullptr);
+            mosas::domain::ImuKinematicSample imu;
+            imu.time.monotonic_ns = 0;
+            imu.acceleration = {0.0, speed_config.algorithms.attitude.gravity_mps2, 0.0};
+            CHECK_NEAR(speed_dependencies.flight_state_estimator->update(imu)
+                           .speed_mps.value, speed, 1e-12);
+            imu.acceleration.x = 30.0;
+            imu.time.monotonic_ns = 10'000'000;
+            speed_dependencies.flight_state_estimator->update(imu);
+            imu.time.monotonic_ns = 30'000'000;
+            const auto launched_state = speed_dependencies.flight_state_estimator->update(imu);
+            CHECK(launched_state.launch.phase == mosas::domain::LaunchPhase::launched);
+            CHECK_NEAR(launched_state.speed_mps.value, speed, 1e-12);
+            imu.time.monotonic_ns = 40'000'000;
+            imu.acceleration.x = 2.0;
+            CHECK_NEAR(speed_dependencies.flight_state_estimator->update(imu)
+                           .speed_mps.value, speed + 0.02, 1e-12);
+        }
     }
     mosas::app::AppConfig vector_config;
     CHECK(load_variant("guidance_algorithm=body_vector_pn\n", &vector_config));
@@ -160,6 +180,8 @@ int main() {
     CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.08, 1e-12);
     CHECK(std::isinf(vector_config.algorithms.body_vector_pn.maximum_command_acceleration));
     for (const char* bad : {
+             "launch_speed_mps=0\n", "launch_speed_mps=-1\n",
+             "launch_speed_mps=inf\n", "launch_speed_mps=nan\n",
              "guidance_algorithm=unknown\n", "body_vector_navigation_constant=0\n",
              "body_vector_los_sigma_a=0\n", "body_vector_los_sigma_l=0\n",
              "body_vector_los_initial_rate_covariance=-1\n",

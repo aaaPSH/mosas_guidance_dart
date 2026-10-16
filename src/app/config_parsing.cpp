@@ -424,7 +424,7 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             *destination = decimal;
             return true;
         };
-        if (key == "launch_speed_mps") return set_double(&config->guidance.launch_speed_mps) || invalid();
+        if (key == "launch_speed_mps") return set_double(&config->algorithms.attitude.launch_speed_mps) || invalid();
         if (key == "history_capacity") return set_size(&config->guidance.history_capacity) || invalid();
         if (key == "max_imu_age_ms") return parse_timestamp_ms(value, &config->guidance.max_imu_age_ns) || invalid();
         if (key == "max_camera_future_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_future_ns) || invalid();
@@ -636,8 +636,8 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
         return fail_global(path, "镖体系矢量 PN 参数无效", error);
     }
     const auto& intrinsics = config.guidance.camera_intrinsics;
-    if (!std::isfinite(config.guidance.launch_speed_mps) ||
-        config.guidance.launch_speed_mps <= 0.0 ||
+    if (!std::isfinite(attitude.launch_speed_mps) ||
+        attitude.launch_speed_mps <= 0.0 ||
         config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
         config.guidance.max_camera_future_ns < 0 ||

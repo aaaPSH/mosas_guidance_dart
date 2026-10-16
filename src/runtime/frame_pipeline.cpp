@@ -649,6 +649,7 @@ void FramePipeline::processing_worker() noexcept {
             result.flight_state.attitude.corrected_angular_velocity =
                 result.flight_state.imu_sample.angular_velocity;
             result.flight_state.attitude.valid = true;
+            result.flight_state.speed_mps.value = attitude_lookup->speed_mps;
             result.flight_state.launch.phase =
                 attitude_lookup->launched ? domain::LaunchPhase::launched
                                           : domain::LaunchPhase::pre_launch;
@@ -810,7 +811,7 @@ void FramePipeline::processing_worker() noexcept {
             guidance_input.line_of_sight = line_of_sight;
             guidance_input.angular_velocity = rate.angular_velocity;
             guidance_input.vector_los = rate.vector;
-            guidance_input.speed_mps.value = config_.launch_speed_mps;
+            guidance_input.speed_mps = result.flight_state.speed_mps;
             guidance_input.attitude = result.flight_state.attitude;
             const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = guidance_law_->calculate(guidance_input);

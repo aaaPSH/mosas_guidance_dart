@@ -32,6 +32,7 @@ AttitudeEstimator::AttitudeEstimator(const AttitudeEstimatorConfig& config)
 bool AttitudeEstimator::valid_config(
     const AttitudeEstimatorConfig& config) noexcept {
     return finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
+           finite(config.launch_speed_mps) && config.launch_speed_mps > 0.0 &&
            finite(config.stationary_acceleration_tolerance_mps2) &&
            config.stationary_acceleration_tolerance_mps2 > 0.0 &&
            finite(config.gyro_stationary_threshold_rad_s) &&
@@ -142,6 +143,7 @@ AttitudeEstimate AttitudeEstimator::make_estimate(
     estimate.body_to_navigation = matrix;
     estimate.pitch_rad = pitch;
     estimate.roll_rad = roll;
+    estimate.speed_mps = speed_mps_;
     estimate.launched = launched_;
     estimate.valid = valid;
     estimate.launch_timestamp_ns = launch_timestamp_ns_;
@@ -274,6 +276,13 @@ AttitudeEstimate AttitudeEstimator::update(
                 orientation_,
                 delta_from_body_rate(corrected_angular_velocity_,
                                      dt_seconds)));
+            if (was_launched) {
+                // 标定初速已经包含发射加速；确认起飞帧不再重复累加。
+                const double pitch = pitch_from_matrix(to_matrix(orientation_));
+                speed_mps_ += (sample.acceleration.x -
+                               config_.gravity_mps2 * std::sin(pitch)) *
+                              dt_seconds;
+            }
         }
     };
 
@@ -283,7 +292,7 @@ AttitudeEstimate AttitudeEstimator::update(
             launch_candidate_start_ns_ = -1;
         }
     } else {
-        // 静止时用重力初始化姿态，非静止时只积分去除零偏后的角速度。
+        // 非静止时传播姿态；确认起飞后同时积分扣除纵向重力的速度。
         const double acceleration_norm = vector_norm(sample.acceleration);
         const bool prelaunch_near_zero_acceleration =
             !launched_ &&
@@ -306,6 +315,7 @@ void AttitudeEstimator::reset() noexcept {
     orientation_ = {};
     gyro_bias_ = {0.0, 0.0, 0.0};
     corrected_angular_velocity_ = {0.0, 0.0, 0.0};
+    speed_mps_ = config_.launch_speed_mps;
     launch_baseline_x_ = 0.0;
     launch_candidate_start_ns_ = -1;
     last_timestamp_ns_ = -1;
@@ -314,7 +324,7 @@ void AttitudeEstimator::reset() noexcept {
     has_timestamp_ = false;
     launched_ = false;
     launch_timestamp_ns_ = -1;
-    last_estimate_ = {};
+    last_estimate_ = make_estimate(-1, false);
 }
 
 }  // namespace mosas::runtime

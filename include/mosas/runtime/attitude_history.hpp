@@ -13,10 +13,12 @@
 
 namespace mosas::runtime {
 
+/** @brief 同一 IMU 时刻的姿态、纵向速度（m/s）和起飞状态。 */
 struct AttitudeSample {
     TimestampNs timestamp_ns = -1;
     double pitch_rad = 0.0;
     double roll_rad = 0.0;
+    double speed_mps = 0.0;
     RotationMatrix3 body_to_navigation{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -26,9 +28,11 @@ struct AttitudeSample {
     std::uint64_t launch_generation = 0;
 };
 
+/** @brief 精确匹配或同一 IMU 区间内插值的姿态与纵向速度（m/s）。 */
 struct AttitudeLookup {
     double pitch_rad = 0.0;
     double roll_rad = 0.0;
+    double speed_mps = 0.0;
     RotationMatrix3 body_to_navigation{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -41,7 +45,7 @@ struct AttitudeLookup {
     std::uint64_t launch_generation = 0;
 };
 
-// 单写入者、多读取者的固定容量姿态历史；不外推。
+/** @brief 单写入者、多读取者的固定容量姿态/速度历史；不外推。 */
 class AttitudeHistory final {
 public:
     explicit AttitudeHistory(std::size_t capacity)
@@ -55,8 +59,18 @@ public:
     AttitudeHistory(const AttitudeHistory&) = delete;
     AttitudeHistory& operator=(const AttitudeHistory&) = delete;
 
+    /**
+     * @brief 写入同一时刻的完整姿态/速度状态。
+     * @param sample 时间戳严格递增、姿态与速度有限的 IMU 状态。
+     * @return 写入成功时为 true；无效输入不改变历史。
+     */
     bool push(const AttitudeSample& sample) noexcept;
 
+    /**
+     * @brief 按时间匹配姿态并线性插值速度，不跨起飞状态或代际边界。
+     * @param timestamp_ns 查询时刻，单位 ns。
+     * @return 同步状态；没有完整匹配区间时返回空值，不做外推。
+     */
     std::optional<AttitudeLookup> find_interpolated(
         TimestampNs timestamp_ns) const noexcept;
 
@@ -75,6 +89,7 @@ private:
         std::atomic<TimestampNs> timestamp_ns{-1};
         std::atomic<std::uint64_t> pitch_bits{0};
         std::atomic<std::uint64_t> roll_bits{0};
+        std::atomic<std::uint64_t> speed_bits{0};
         std::atomic<std::uint64_t> matrix_m00_bits{0};
         std::atomic<std::uint64_t> matrix_m01_bits{0};
         std::atomic<std::uint64_t> matrix_m02_bits{0};

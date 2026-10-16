@@ -101,7 +101,7 @@ Domain/Ports 不依赖 Nori SDK、串口类、FFmpeg、OpenCV UI 类型或具体
 | `ImuSource` | 接收原始字节、解码固定协议并产生带时间质量的 IMU 样本 | 串口实现 / Fake / 文件回放 |
 | `TimeSync` | SDK 时钟域转单调时钟；IMU 接收时间回推；报告质量和不确定度 | 软件估时 / 将来的硬触发同步 |
 | `VisionDetector` | 单帧目标识别，输出像素目标观测；不访问串口、日志或界面 | 当前识别器 / 替代识别器 |
-| `FlightStateEstimator` | 每个 IMU 样本输出姿态快照与实际起飞状态 | 第一版适配现有组合式 `AttitudeEstimator`，避免重复消费 IMU |
+| `FlightStateEstimator` | 每个 IMU 样本输出同步姿态、纵向速度与实际起飞状态 | 第一版适配现有组合式 `AttitudeEstimator`，避免重复消费 IMU |
 | `AttitudeEstimator` / `LaunchDetector` | 可独立替换的姿态和起飞判据子模块 | 在行为回归通过后拆开组合；起飞判据先保持不变 |
 | `LosEstimator` | 像素观测、相机内参和固定外参转换为镖体系 LOS | 纯逻辑单测 |
 | `LosRateFilter` | 使用带时间戳 LOS 与同步角速度估计 LOS 角速度 | 当前 Kalman / 其他滤波器 |

@@ -204,6 +204,7 @@ void ImuPipeline::worker_loop() noexcept {
                             {sample.timestamp_ns,
                              snapshot.attitude.pitch_rad.value,
                              snapshot.attitude.roll_rad.value,
+                             snapshot.speed_mps.value,
                              to_runtime_rotation(
                                  snapshot.attitude.navigation_from_dart),
                              snapshot.launch.phase ==
@@ -211,7 +212,7 @@ void ImuPipeline::worker_loop() noexcept {
                              snapshot.launch.transition_time.monotonic_ns,
                              estimator_generation})) {
                         history_error =
-                            "imu attitude timestamp is not increasing";
+                            "imu attitude/speed state is invalid or timestamp is not increasing";
                     }
                 });
             if (history_error != nullptr) {

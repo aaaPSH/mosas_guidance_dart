@@ -14,7 +14,7 @@ int main(int argc,char** argv){
     mosas::app::SimulationConfig config;std::string error;
     if(!mosas::app::SimulationConfigLoader::load(argv[1],&config,&error)){std::cerr<<error<<'\n';return 2;}
     std::signal(SIGINT,signal_handler);std::signal(SIGTERM,signal_handler);
-    std::cout<<"waiting for "<<config.socket_directory<<"; source="<<config.app_config_path<<"; launch_speed_mps="<<config.app.guidance.launch_speed_mps<<" (configured, not measured flight speed)\n"<<std::flush;
+    std::cout<<"waiting for "<<config.socket_directory<<"; source="<<config.app_config_path<<"; launch_speed_mps="<<config.app.algorithms.attitude.launch_speed_mps<<" (calibrated initial speed, not estimated flight speed)\n"<<std::flush;
     mosas::app::SimulationRunner runner(config,[](const std::string& message){std::cout<<message<<'\n'<<std::flush;},audit_options);
     while(!cancelled){runner.step();std::this_thread::sleep_for(std::chrono::milliseconds(5));}
     runner.stop();return 0;

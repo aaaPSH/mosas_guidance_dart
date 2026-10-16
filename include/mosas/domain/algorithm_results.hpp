@@ -79,6 +79,7 @@ struct GuidanceInput {
     SensorTime time{};
     LineOfSight line_of_sight{};
     LineOfSightAngularVelocity angular_velocity{};
+    /** @brief 插值到相机曝光时刻的动态纵向速度，单位 m/s。 */
     Quantity<MetersPerSecond> speed_mps{};
     AttitudeState attitude{};
     VectorLosEstimate vector_los{};

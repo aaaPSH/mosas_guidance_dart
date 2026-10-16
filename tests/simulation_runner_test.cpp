@@ -15,7 +15,7 @@ int main() {
     config.socket_directory=(root/"model").string();
     config.app.camera.width=320; config.app.camera.height=183; config.app.camera.fps=60;
     config.app.guidance.camera_intrinsics={200,200,159.5,91};
-    config.app.guidance.launch_speed_mps=25;
+    config.app.algorithms.attitude.launch_speed_mps=25;
     config.app.algorithms.vision_config.initial_roi={0,0,320,183};
     config.app.output.mode=output::OutputMode::debug;
     config.app.output.recording_path=(root/"records/flight.avi").string();

@@ -138,7 +138,7 @@ void SimulationRunner::step() {
                 observed.source_config=config_.app_config_path.string();
                 observed.width=c.width;observed.height=c.height;observed.intrinsics={c.fx,c.fy,c.cx,c.cy};
                 observed.camera_hz=c.camera_hz;observed.imu_hz=c.imu_hz;
-                observed.launch_speed_mps=config_.app.guidance.launch_speed_mps;
+                observed.launch_speed_mps=config_.app.algorithms.attitude.launch_speed_mps;
                 const auto& png=config_.app.algorithms.png_guidance;const auto& los=config_.app.algorithms.los_rate_filter;
                 observed.cap_g=png.maximum_command_overload;
                 observed.parameters={png.navigation_constant_y,png.navigation_constant_z,los.sigma_a_pitch,los.sigma_a_yaw,los.sigma_q};
@@ -189,7 +189,7 @@ void SimulationRunner::step() {
         const auto meta=session_->metadata();
         validate_simulation_metadata(config_.app,meta);
         if(meta.session.phase!=Phase::ready) {
-            if(!equal(meta.session.target_speed_mps,config_.app.guidance.launch_speed_mps))
+            if(!equal(meta.session.target_speed_mps,config_.app.algorithms.attitude.launch_speed_mps))
                 throw std::runtime_error("launch_speed_mps does not match original app_config; reload with matching speed");
             if(!request_reported_) {
                 report(std::string(meta.session.phase==Phase::warmup?"request_ns=":"request metadata first observed phase_start_ns=")+
