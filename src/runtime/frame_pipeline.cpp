@@ -25,6 +25,8 @@ const char* camera_timestamp_source_name(CameraTimestampSource source) {
             return "sdk_monotonic";
         case CameraTimestampSource::sdk_realtime_converted:
             return "sdk_realtime_converted";
+        case CameraTimestampSource::simulation:
+            return "simulation";
         case CameraTimestampSource::unknown:
         default:
             return "unknown";
@@ -294,6 +296,12 @@ void FramePipeline::capture_worker() noexcept {
                     "camera source capture returned ok with invalid frame");
                 return;
             }
+            const auto capture_time = detail::resolve_sensor_time(frame.timestamp_ns, frame.sensor_time);
+            if ((frame.timestamp_source == CameraTimestampSource::simulation) !=
+                (capture_time.source == domain::TimestampSource::simulation)) {
+                report_fault("camera simulation label and sensor metadata disagree");
+                return;
+            }
             frame.source_frame_id = next_frame_id++;
             if (frame.received_timestamp_ns >= 0 &&
                 frame.timestamp_source != CameraTimestampSource::unknown &&
@@ -373,8 +381,9 @@ void FramePipeline::processing_worker() noexcept {
             return output_dispatcher_.enqueue(std::move(result));
         };
 
+        ProcessedFrame result{};
         const auto submit_neutral_command =
-            [this](TimestampNs timestamp_ns,
+            [this, &result](TimestampNs timestamp_ns,
                    std::optional<std::uint64_t> launch_generation =
                        std::nullopt) {
                 if (!launch_generation.has_value()) {
@@ -398,7 +407,7 @@ void FramePipeline::processing_worker() noexcept {
                             // 无法形成可靠引导量时主动发送全零，清除下位机保持的旧指令。
                             sent = command_sink_.try_submit(
                                 detail::make_neutral_command(
-                                    timestamp_ns, *launch_generation));
+                                    detail::resolve_sensor_time(timestamp_ns, result.frame.sensor_time), *launch_generation));
                         }
                     });
                 if (generation_is_current && !sent) {
@@ -408,7 +417,6 @@ void FramePipeline::processing_worker() noexcept {
                 return true;
             };
 
-        ProcessedFrame result{};
         QueuedCameraFrame queued_frame{};
         while (true) {
             const auto queue_wait_started = std::chrono::steady_clock::now();
@@ -461,7 +469,7 @@ void FramePipeline::processing_worker() noexcept {
                 };
             const TimestampNs timestamp_ns = result.frame.timestamp_ns;
             const domain::SensorTime frame_time =
-                detail::make_monotonic_time(timestamp_ns);
+                detail::resolve_sensor_time(timestamp_ns, result.frame.sensor_time);
             result.vision_detection = {};
             result.vision_detection.observation.source_frame_id =
                 result.frame.source_frame_id;
@@ -646,8 +654,9 @@ void FramePipeline::processing_worker() noexcept {
                                           : domain::LaunchPhase::pre_launch;
             result.flight_state.launch.transition_time =
                 attitude_lookup->launch_timestamp_ns >= 0
-                    ? detail::make_monotonic_time(
-                          attitude_lookup->launch_timestamp_ns)
+                    ? (frame_time.source == domain::TimestampSource::simulation
+                           ? domain::make_simulation_time(attitude_lookup->launch_timestamp_ns)
+                           : detail::make_monotonic_time(attitude_lookup->launch_timestamp_ns))
                     : domain::SensorTime{};
             result.flight_state.launch.generation =
                 attitude_lookup->launch_generation;

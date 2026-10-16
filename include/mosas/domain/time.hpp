@@ -5,19 +5,21 @@
 
 namespace mosas::domain {
 
-enum class ClockDomain { unknown, monotonic, realtime, device };
+enum class ClockDomain { unknown, monotonic, realtime, device, simulation };
 enum class TimestampSource {
     unknown,
     camera_sdk_capture,
     host_callback_receive,
     imu_uart_receive_estimate,
     hardware_sync,
+    simulation,
 };
 enum class TimestampQuality {
     unknown,
     estimated,
     calibrated,
     hardware_synchronized,
+    simulation,
 };
 
 struct SensorTime {
@@ -30,6 +32,15 @@ struct SensorTime {
 
     bool is_valid() const noexcept { return monotonic_ns >= 0; }
 };
+
+/** @brief Unconverted session-local simulation acquisition time; never hardware synchronization.
+ * @param timestamp_ns Simulation nanoseconds; a negative value remains invalid.
+ * @return Explicit simulation source/domain/quality metadata with zero conversion uncertainty.
+ */
+inline SensorTime make_simulation_time(std::int64_t timestamp_ns) noexcept {
+    return {timestamp_ns, timestamp_ns, 0, ClockDomain::simulation,
+            TimestampSource::simulation, TimestampQuality::simulation};
+}
 
 }  // namespace mosas::domain
 

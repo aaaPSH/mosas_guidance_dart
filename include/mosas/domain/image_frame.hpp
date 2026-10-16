@@ -8,7 +8,7 @@
 
 namespace mosas::domain {
 
-enum class PixelFormat { unknown, bgr8 };
+enum class PixelFormat { unknown, bgr8, rgb8 };
 
 struct ImageView {
     const std::uint8_t* data = nullptr;
@@ -20,7 +20,7 @@ struct ImageView {
 
     bool is_valid() const noexcept {
         if (data == nullptr || width <= 0 || height <= 0 ||
-            format != PixelFormat::bgr8) {
+            (format != PixelFormat::bgr8 && format != PixelFormat::rgb8)) {
             return false;
         }
         const auto width_size = static_cast<std::size_t>(width);

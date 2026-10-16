@@ -18,6 +18,9 @@ domain::SensorTime transition_time(const domain::SensorTime& sample_time,
     }
     domain::SensorTime result = sample_time;
     result.monotonic_ns = transition_ns;
+    if (result.source == domain::TimestampSource::simulation) {
+        result.source_time_ns = transition_ns;
+    }
     return result;
 }
 

@@ -403,6 +403,13 @@ if(BUILD_TESTING)
     target_link_libraries(imu_pipeline_test PRIVATE mosas_runtime)
     add_test(NAME imu_pipeline_test COMMAND imu_pipeline_test)
 
+    add_executable(simulation_time_test tests/simulation_time_test.cpp
+        tests/fakes/fake_imu_source.cpp tests/fakes/fake_camera_source.cpp)
+    configure_mosas_target(simulation_time_test)
+    target_include_directories(simulation_time_test PRIVATE ${PROJECT_SOURCE_DIR}/src/runtime)
+    target_link_libraries(simulation_time_test PRIVATE mosas_runtime)
+    add_test(NAME simulation_time_test COMMAND simulation_time_test)
+
     if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
         add_executable(output_mapping_test tests/output_mapping_test.cpp)
         configure_mosas_target(output_mapping_test)

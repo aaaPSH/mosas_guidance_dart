@@ -18,6 +18,7 @@ enum class CameraTimestampSource {
     unknown,
     sdk_monotonic,
     sdk_realtime_converted,
+    simulation,
 };
 
 struct CameraClockMapping {

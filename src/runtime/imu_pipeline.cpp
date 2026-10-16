@@ -156,7 +156,7 @@ void ImuPipeline::worker_loop() noexcept {
             }
 
             domain::ImuKinematicSample domain_sample{};
-            domain_sample.time = detail::make_monotonic_time(sample.timestamp_ns);
+            domain_sample.time = detail::resolve_sensor_time(sample.timestamp_ns, sample.sensor_time);
             domain_sample.acceleration = {sample.acceleration.x,
                                           sample.acceleration.y,
                                           sample.acceleration.z};
@@ -194,7 +194,7 @@ void ImuPipeline::worker_loop() noexcept {
                         to_runtime_vector(
                             snapshot.attitude.corrected_angular_velocity),
                         sample.servo_control_p_normalized,
-                        sample.servo_control_y_normalized};
+                        sample.servo_control_y_normalized, sample.sensor_time};
                     if (!angular_velocity_history_.push(corrected_sample)) {
                         history_error =
                             "imu angular velocity timestamp is not increasing";

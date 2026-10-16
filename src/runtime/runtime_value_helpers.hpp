@@ -4,6 +4,8 @@
 #include <mosas/runtime/runtime_interfaces.hpp>
 
 #include <cstdint>
+#include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace mosas::runtime::detail {
@@ -29,13 +31,39 @@ inline domain::SensorTime make_monotonic_time(TimestampNs timestamp_ns) {
     return time;
 }
 
-inline GuidanceCommand make_neutral_command(TimestampNs timestamp_ns,
+/** @brief Preserve supplied acquisition metadata, rejecting inconsistent or disguised time.
+ * @throws std::invalid_argument On timestamp mismatch or mixed simulation/hardware labels.
+ */
+inline domain::SensorTime resolve_sensor_time(
+    TimestampNs timestamp_ns, const std::optional<domain::SensorTime>& supplied) {
+    if (!supplied) return make_monotonic_time(timestamp_ns);
+    const auto& time = *supplied;
+    if (!time.is_valid() || time.monotonic_ns != timestamp_ns)
+        throw std::invalid_argument("sensor timestamp and metadata disagree");
+    const bool simulation = time.source == domain::TimestampSource::simulation ||
+        time.source_domain == domain::ClockDomain::simulation ||
+        time.quality == domain::TimestampQuality::simulation;
+    if (simulation && (time.source != domain::TimestampSource::simulation ||
+        time.source_domain != domain::ClockDomain::simulation ||
+        time.quality != domain::TimestampQuality::simulation ||
+        time.source_time_ns != timestamp_ns || time.uncertainty_ns != 0))
+        throw std::invalid_argument("simulation time must not claim hardware or host timing");
+    return time;
+}
+
+/** @brief Neutral frame command retaining the input source metadata. */
+inline GuidanceCommand make_neutral_command(const domain::SensorTime& source_time,
                                             std::uint64_t generation) {
     GuidanceCommand command{};
     command.generation = generation;
-    command.source_time = make_monotonic_time(timestamp_ns);
+    command.source_time = source_time;
     command.invalid_reason = domain::GuidanceInvalidReason::stale_input;
     return command;
+}
+
+inline GuidanceCommand make_neutral_command(TimestampNs timestamp_ns,
+                                            std::uint64_t generation) {
+    return make_neutral_command(make_monotonic_time(timestamp_ns), generation);
 }
 
 } // namespace mosas::runtime::detail

@@ -6,6 +6,7 @@
 #include <mosas/runtime/frame_timing.hpp>
 
 #include <cstdint>
+#include <optional>
 
 namespace mosas::runtime {
 
@@ -17,6 +18,8 @@ struct CameraFrame {
     TimestampNs received_timestamp_ns = -1;
     CameraTimestampSource timestamp_source = CameraTimestampSource::unknown;
     domain::ImageFrame image;
+    // Optional metadata preserves non-host time sources without changing hardware defaults.
+    std::optional<domain::SensorTime> sensor_time = std::nullopt;
 };
 
 using ImuStateSnapshot = domain::FlightStateSnapshot;
