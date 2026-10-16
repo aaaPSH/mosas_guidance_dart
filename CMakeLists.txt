@@ -6,6 +6,7 @@ include(GNUInstallDirs)
 option(MOSAS_BUILD_WIRELESS "构建 RTSP 无线图传模块" ON)
 option(MOSAS_BUILD_APPLICATION "构建 Nori/视觉设备应用" ON)
 option(MOSAS_BUILD_OPENCV_ADAPTERS "构建 OpenCV 视觉和输出适配器（无需相机 SDK）" OFF)
+option(MOSAS_BUILD_SIMULATION_APPLICATION "构建 Unix Socket 仿真适配器和应用（无需 Nori/ROS）" OFF)
 include(CTest)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -124,6 +125,28 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     )
     configure_mosas_target(mosas_app_core)
     target_link_libraries(mosas_app_core PUBLIC mosas_runtime mosas_guidance mosas_vision mosas_output)
+endif()
+
+if(MOSAS_BUILD_SIMULATION_APPLICATION)
+    if(NOT TARGET mosas_vision)
+        message(FATAL_ERROR "Simulation requires MOSAS_BUILD_OPENCV_ADAPTERS=ON")
+    endif()
+    find_package(dart_sim_transport REQUIRED CONFIG)
+    add_library(mosas_simulation STATIC
+        src/adapters/simulation_session.cpp
+        src/adapters/simulation_sources.cpp
+        src/adapters/simulation_command_sink.cpp
+        src/adapters/simulation_pre_acquisition.cpp
+        src/adapters/simulation_audit.cpp
+        src/app/simulation_runner.cpp
+        src/app/simulation_contract.cpp)
+    configure_mosas_target(mosas_simulation)
+    target_link_libraries(mosas_simulation PUBLIC mosas_app_core dart_sim_transport::dart_sim_transport)
+    add_executable(mosas_simulation_app examples/mosas_simulation_app.cpp)
+    configure_mosas_target(mosas_simulation_app)
+    target_link_libraries(mosas_simulation_app PRIVATE mosas_simulation)
+    install(TARGETS mosas_simulation_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES config/mosas_simulation.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/mosas)
 endif()
 
 if(MOSAS_BUILD_APPLICATION)
@@ -254,6 +277,16 @@ install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
 endif()  # MOSAS_BUILD_APPLICATION
 
 if(BUILD_TESTING)
+    if(TARGET mosas_simulation)
+        foreach(test simulation_sources_test simulation_command_sink_test simulation_sync_test simulation_runner_test simulation_contract_test simulation_recording_test simulation_pre_acquisition_test simulation_audit_test)
+            add_executable(${test} tests/${test}.cpp)
+            configure_mosas_target(${test})
+            target_compile_definitions(${test} PRIVATE MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+            target_link_libraries(${test} PRIVATE mosas_simulation)
+            add_test(NAME ${test} COMMAND ${test})
+            set_tests_properties(${test} PROPERTIES TIMEOUT 15)
+        endforeach()
+    endif()
     add_executable(host_build_smoke_test
         tests/host_build_smoke_test.cpp
     )
