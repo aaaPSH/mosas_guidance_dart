@@ -223,6 +223,38 @@ int main() {
         CHECK(read_lines(csv_files[0]).size() == 3);
     }
 
+    // Odd native sensor sizes must retain the last row/column in both modes.
+    for (const auto mode : {output::LocalRecordingMode::continuous,
+                            output::LocalRecordingMode::launch_window}) {
+        TemporaryDirectory temporary_directory;
+        auto config = make_config(temporary_directory.path() / "odd.avi", mode);
+        config.width = 17;
+        config.height = 15;
+        auto session = std::make_shared<output::LocalRecordingSession>(config);
+        output::LocalVideoRecorderOptions options;
+        options.draw_visualization = false;
+        output::LocalVideoRecorder video(session, options);
+        CHECK(video.start());
+        auto frame = make_frame(400, 100, 100, 9);
+        auto pixels = std::make_shared<std::vector<std::uint8_t>>(17 * 15 * 3, 220);
+        frame.frame.image = {pixels, pixels->data(), pixels->size(), 17, 15,
+                             17 * 3, domain::PixelFormat::bgr8};
+        CHECK(video.record(frame));
+        video.stop();
+        CHECK(video.last_error().empty());
+        const auto videos = find_extension(temporary_directory.path(), ".avi");
+        CHECK(videos.size() == 1);
+        cv::VideoCapture capture(videos.front().string());
+        cv::Mat decoded;
+        CHECK(capture.read(decoded));
+        CHECK(decoded.cols == 18 && decoded.rows == 16);
+        CHECK(decoded.at<cv::Vec3b>(14, 16)[0] > 200);
+        CHECK(decoded.at<cv::Vec3b>(15, 17)[0] > 200);
+        CHECK(!capture.read(decoded));
+        CHECK(frame.frame.image.width == 17 && frame.frame.image.height == 15);
+        CHECK((*pixels)[0] == 220);
+    }
+
     {
         TemporaryDirectory temporary_directory;
         const auto config = make_config(temporary_directory.path() / "failure.avi",

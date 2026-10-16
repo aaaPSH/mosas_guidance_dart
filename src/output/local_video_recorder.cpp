@@ -210,7 +210,9 @@ bool LocalVideoRecorder::open_recording(std::uint64_t generation) {
     const auto& config = session_->config();
     if (!recording_writer_.open(
             paths.video.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-            config.fps, cv::Size(config.width, config.height), true)) {
+            config.fps,
+            cv::Size(config.width + config.width % 2,
+                     config.height + config.height % 2), true)) {
         set_error("open recording writer failed: " + paths.video.string());
         return false;
     }
@@ -224,7 +226,16 @@ bool LocalVideoRecorder::write_recording_frame(const cv::Mat& image) {
         set_error("recording output is not open");
         return false;
     }
-    recording_writer_.write(image);
+    // MJPEG backends truncate odd sizes. Pad only the encoded copy, preserving
+    // native sensor pixels, algorithm geometry and launch-window buffer accounting.
+    cv::Mat padded;
+    const cv::Mat* encoded = &image;
+    if (image.cols % 2 || image.rows % 2) {
+        cv::copyMakeBorder(image, padded, 0, image.rows % 2, 0, image.cols % 2,
+                           cv::BORDER_REPLICATE);
+        encoded = &padded;
+    }
+    recording_writer_.write(*encoded);
     if (!recording_writer_.isOpened()) {
         set_error("write recording frame failed");
         return false;
@@ -257,7 +268,15 @@ bool LocalVideoRecorder::finalize_recording(
     }
     std::uint64_t video_frame_count = 0;
     cv::Mat decoded_frame;
+    const auto& config = session_->config();
+    const cv::Size encoded_size(config.width + config.width % 2,
+                                config.height + config.height % 2);
     while (video.read(decoded_frame)) {
+        if (decoded_frame.size() != encoded_size) {
+            set_error("finalized recording AVI dimensions mismatch: " +
+                      paths.video.string());
+            return false;
+        }
         ++video_frame_count;
     }
     video.release();
