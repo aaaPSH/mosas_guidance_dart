@@ -76,5 +76,17 @@ int main() {
     CHECK(dependencies.los_rate_filter != nullptr);
     CHECK(dependencies.guidance_law != nullptr);
     CHECK(dependencies.monotonic_clock != nullptr);
+    bool observed_png=false;
+    auto observed_dependencies=mosas::app::make_default_guidance_algorithms(config.algorithms,
+        [&](const mosas::domain::GuidanceInput& input,const PngCalculationTrace& trace){
+            observed_png=input.source_frame_id==91&&trace.valid;
+        });
+    mosas::domain::GuidanceInput observed_input;
+    observed_input.source_frame_id=91;observed_input.line_of_sight={true,{0},{0}};
+    observed_input.angular_velocity={true,{0},{0}};observed_input.attitude.valid=true;
+    observed_input.speed_mps.value=config.guidance.launch_speed_mps;
+    CHECK(observed_dependencies.guidance_law->calculate(observed_input).valid);
+    CHECK(observed_png);
+
     return 0;
 }

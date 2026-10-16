@@ -56,9 +56,11 @@ private:
 /// 将既有 PNG 制导算法适配到领域制导律端口。
 class ExistingPngGuidanceLawAdapter final : public ports::IGuidanceLaw {
 public:
-    /** @brief 使用给定参数创建 PNG 适配器。 @param config PNG 参数和限幅配置。 */
+    /** @brief 使用原 PNG 并可选观察既有计算中间量。
+     * @param config PNG 参数和限幅配置。 @param observer 默认关闭的只读诊断接收器。
+     */
     explicit ExistingPngGuidanceLawAdapter(
-        const PngGuidanceConfig& config = {});
+        const PngGuidanceConfig& config = {}, PngTraceObserver observer = {});
 
     /**
      * @brief 根据领域制导输入计算 PNG 命令和诊断量。
@@ -70,6 +72,7 @@ public:
 
 private:
     PngGuidanceConfig config_;
+    PngTraceObserver observer_;
 };
 
 }  // namespace mosas::guidance

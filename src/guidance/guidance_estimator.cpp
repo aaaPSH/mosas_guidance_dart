@@ -512,7 +512,9 @@ LineOfSightRateSample LineOfSightRateEstimator::sample() const {
 PngGuidanceOutput PngGuidance::calculate(
     const LineOfSight& line_of_sight,
     const LineOfSightAngularVelocity& angular_velocity, double speed_mps,
-    double pitch_rad, double roll_rad, const PngGuidanceConfig& config) {
+    double pitch_rad, double roll_rad, const PngGuidanceConfig& config,
+    PngCalculationTrace* trace) {
+    if (trace) *trace = {};
     const PngGuidanceOutput invalid_output{
         false, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 0.0,
         0.0};
@@ -542,7 +544,12 @@ PngGuidanceOutput PngGuidance::calculate(
     if (!is_finite(command_overload)) {
         return invalid_output;
     }
+    if (trace) {
+        trace->raw_navigation_overload = {0.0, vertical_overload, lateral_overload};
+        trace->raw_command_overload = command_overload;
+    }
     if (command_overload > config.maximum_command_overload) {
+        if (trace) trace->overload_limited = true;
         const double scale =
             config.maximum_command_overload / command_overload;
         vertical_overload *= scale;
@@ -550,6 +557,7 @@ PngGuidanceOutput PngGuidance::calculate(
         command_overload = std::hypot(vertical_overload, lateral_overload);
     }
 
+    if (trace) trace->after_overload_limit = {0.0, vertical_overload, lateral_overload};
     const double command_phase = std::atan2(lateral_overload, vertical_overload);
     Vector3 ballistic_acceleration{
         0.0, config.gravity * vertical_overload,
@@ -563,6 +571,7 @@ PngGuidanceOutput PngGuidance::calculate(
     }
     if (is_finite(config.maximum_command_acceleration) &&
         command_acceleration > config.maximum_command_acceleration) {
+        if (trace) trace->acceleration_limited = true;
         const double scale =
             config.maximum_command_acceleration / command_acceleration;
         ballistic_acceleration.x *= scale;
@@ -585,6 +594,11 @@ PngGuidanceOutput PngGuidance::calculate(
         body_acceleration.z / config.gravity};
     if (!is_finite(body_overload) || !is_finite(command_phase)) {
         return invalid_output;
+    }
+    if (trace) {
+        trace->navigation_acceleration = ballistic_acceleration;
+        trace->body_overload = body_overload;
+        trace->valid = true;
     }
     return {true, ballistic_acceleration, body_acceleration, body_overload,
             command_overload, command_phase};

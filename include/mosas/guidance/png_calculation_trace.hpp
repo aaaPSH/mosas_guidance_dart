@@ -1,0 +1,28 @@
+#pragma once
+#include <mosas/runtime/vector3.hpp>
+#include <functional>
+
+/** @brief Optional snapshot of values already computed by the original PNG.
+ * @note Overloads are in g; navigation_acceleration is in m/s². The raw and
+ * after_overload_limit vectors are in ballistic axes, not roll-rotated body axes.
+ * A reused snapshot is reset on entry; valid remains false on rejected input.
+ */
+struct PngCalculationTrace {
+    bool valid=false;
+    bool overload_limited=false;
+    bool acceleration_limited=false;
+    Vector3 raw_navigation_overload{0,0,0};
+    Vector3 after_overload_limit{0,0,0};
+    Vector3 navigation_acceleration{0,0,0};
+    Vector3 body_overload{0,0,0};
+    double raw_command_overload=0;
+};
+
+namespace mosas::domain {struct GuidanceInput;}
+namespace mosas::guidance {
+/** @brief Read-only diagnostic consumer, disabled by default; never a feedback port.
+ * The simulation assembler may install a bounded audit sink. Callback failures
+ * are runtime faults, not permission to change or retry the numeric command.
+ */
+using PngTraceObserver=std::function<void(const domain::GuidanceInput&,const PngCalculationTrace&)>;
+}

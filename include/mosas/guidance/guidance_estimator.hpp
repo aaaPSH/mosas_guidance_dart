@@ -2,6 +2,7 @@
 #define GUIDANCE_ESTIMATOR_HPP
 
 #include <mosas/runtime/rotation_matrix3.hpp>
+#include <mosas/guidance/png_calculation_trace.hpp>
 #include <mosas/runtime/vector3.hpp>
 #include <mosas/vision/vision_types.hpp>
 
@@ -194,6 +195,7 @@ public:
      * @param pitch_rad 相机帧时刻插值得到的俯仰姿态角（rad）。
      * @param roll_rad 相机帧时刻插值得到的滚转角（rad）。
      * @param config PNG 导航系数、重力和输出限幅配置。
+     * @param trace 可选只读诊断快照输出；只复制既有中间量，不改变控制计算。
      * @return 制导计算结果；输入无效或数值异常时 valid=false。
      * @note 先在弹道系计算过载，再用 roll 转到镖体系；过载单位为 g，加速度单位为 m/s^2。
      */
@@ -201,7 +203,8 @@ public:
         const LineOfSight& line_of_sight,
         const LineOfSightAngularVelocity& angular_velocity,
         double speed_mps, double pitch_rad, double roll_rad,
-        const PngGuidanceConfig& config = {});
+        const PngGuidanceConfig& config = {},
+        PngCalculationTrace* trace = nullptr);
 };
 
 #endif  // GUIDANCE_ESTIMATOR_HPP

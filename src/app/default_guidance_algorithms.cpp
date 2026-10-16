@@ -6,11 +6,12 @@
 #include <mosas/vision/opencv_vision_detector.hpp>
 
 #include <memory>
+#include <utility>
 
 namespace mosas::app {
 
 runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
-    const GuidanceAlgorithmConfig& config) {
+    const GuidanceAlgorithmConfig& config, guidance::PngTraceObserver trace_observer) {
     runtime::RuntimeSupervisorDependencies dependencies;
     dependencies.vision_detector =
         std::make_unique<vision::OpenCvVisionDetector>(config.vision_config);
@@ -24,7 +25,7 @@ runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
             config.los_rate_filter);
     dependencies.guidance_law =
         std::make_unique<guidance::ExistingPngGuidanceLawAdapter>(
-            config.png_guidance);
+            config.png_guidance, std::move(trace_observer));
     dependencies.monotonic_clock =
         std::make_unique<runtime::SystemMonotonicClock>();
     return dependencies;

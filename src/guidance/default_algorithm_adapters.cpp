@@ -1,4 +1,5 @@
 #include <mosas/guidance/default_algorithm_adapters.hpp>
+#include <utility>
 
 namespace mosas::guidance {
 namespace {
@@ -79,8 +80,8 @@ domain::LineOfSightRateSample ExistingLosRateFilterAdapter::sample() const {
 void ExistingLosRateFilterAdapter::reset() noexcept { estimator_.reset(); }
 
 ExistingPngGuidanceLawAdapter::ExistingPngGuidanceLawAdapter(
-    const PngGuidanceConfig& config)
-    : config_(config) {}
+    const PngGuidanceConfig& config, PngTraceObserver observer)
+    : config_(config), observer_(std::move(observer)) {}
 
 domain::GuidanceOutput ExistingPngGuidanceLawAdapter::calculate(
     const domain::GuidanceInput& input) {
@@ -102,10 +103,12 @@ domain::GuidanceOutput ExistingPngGuidanceLawAdapter::calculate(
         return output;
     }
 
+    PngCalculationTrace trace;
     const PngGuidanceOutput legacy = PngGuidance::calculate(
         convert(input.line_of_sight), convert(input.angular_velocity),
         input.speed_mps.value, input.attitude.pitch_rad.value,
-        input.attitude.roll_rad.value, config_);
+        input.attitude.roll_rad.value, config_, observer_ ? &trace : nullptr);
+    if (observer_) observer_(input, trace);
     output.valid = legacy.valid;
     output.command.valid = legacy.valid;
     if (!legacy.valid) {

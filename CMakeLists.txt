@@ -283,6 +283,11 @@ if(BUILD_TESTING)
     target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
     add_test(NAME imu_time_model_test COMMAND imu_time_model_test)
 
+    add_executable(png_calculation_trace_test tests/png_calculation_trace_test.cpp)
+    configure_mosas_target(png_calculation_trace_test)
+    target_link_libraries(png_calculation_trace_test PRIVATE mosas_guidance)
+    add_test(NAME png_calculation_trace_test COMMAND png_calculation_trace_test)
+
     add_executable(guidance_adapter_test tests/guidance_adapter_test.cpp)
     configure_mosas_target(guidance_adapter_test)
     target_link_libraries(guidance_adapter_test PRIVATE mosas_guidance)
