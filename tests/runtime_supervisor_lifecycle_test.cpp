@@ -340,6 +340,10 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return active_generation_;
     }
+    std::vector<mosas::runtime::GuidanceCommand> commands() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return commands_;
+    }
 
 private:
     EventLog& events_;
@@ -517,6 +521,12 @@ public:
     }
 
     void reset() noexcept override {}
+    void set_launched() noexcept {
+        result_.launch.phase = mosas::domain::LaunchPhase::launched;
+        result_.launch.transition_time.monotonic_ns = 900'000'000;
+        result_.launch.reason =
+            mosas::domain::LaunchReason::threshold_confirmed;
+    }
 
 private:
     mosas::domain::FlightStateSnapshot result_{};
@@ -580,8 +590,10 @@ struct RuntimeFixture {
 
         mosas::runtime::RuntimeSupervisorDependencies dependencies;
         dependencies.vision_detector = std::move(vision_detector);
-        dependencies.flight_state_estimator =
+        auto flight_state_estimator =
             std::make_unique<ProbeFlightStateEstimator>();
+        flight_state = flight_state_estimator.get();
+        dependencies.flight_state_estimator = std::move(flight_state_estimator);
         dependencies.los_estimator = std::make_unique<ProbeLosEstimator>();
         dependencies.los_rate_filter = std::make_unique<ProbeLosRateFilter>();
         dependencies.guidance_law = std::make_unique<ProbeGuidanceLaw>();
@@ -628,6 +640,7 @@ struct RuntimeFixture {
     ProbeCommandSink* command = nullptr;
     ProbeVideoRecorder* sink = nullptr;
     ProbeVisionDetector* vision = nullptr;
+    ProbeFlightStateEstimator* flight_state = nullptr;
     std::unique_ptr<mosas::runtime::RuntimeSupervisor> runtime;
 };
 
@@ -747,6 +760,7 @@ int test_invalid_imu_sample_fault_cancels_blocked_sources() {
 int test_algorithm_fault() {
     RuntimeFixture fixture(valid_samples());
     fixture.vision->set_throws(true);
+    fixture.flight_state->set_launched();
     CHECK(fixture.runtime->start());
     fixture.imu->release_samples(2);
     CHECK(fixture.wait_for_latest_state(1'020'000'000));
@@ -755,8 +769,35 @@ int test_algorithm_fault() {
     CHECK(fixture.wait_for_fault());
     CHECK(fixture.runtime->last_error() == "injected vision failure");
     fixture.runtime->stop();
+    const auto commands = fixture.command->commands();
+    CHECK(commands.size() == 1);
+    CHECK(!commands.front().valid);
+    CHECK(commands.front().launched);
+    CHECK(!commands.front().target_found);
+    CHECK(commands.front().overload_g.y == 0.0);
+    CHECK(commands.front().overload_g.z == 0.0);
     CHECK(!fixture.camera->stopped_while_capturing());
     CHECK(!fixture.imu->stopped_while_waiting());
+    return 0;
+}
+
+int test_missing_target_preserves_launch_flag() {
+    RuntimeFixture fixture(valid_samples());
+    fixture.flight_state->set_launched();
+    CHECK(fixture.runtime->start());
+    fixture.imu->release_samples(2);
+    CHECK(fixture.wait_for_latest_state(1'020'000'000));
+    fixture.camera->release_frame();
+    CHECK(fixture.sink->wait_for_publish(1s));
+    fixture.runtime->stop();
+    CHECK(!fixture.runtime->faulted());
+    const auto commands = fixture.command->commands();
+    CHECK(commands.size() == 1);
+    CHECK(!commands.front().valid);
+    CHECK(commands.front().launched);
+    CHECK(!commands.front().target_found);
+    CHECK(commands.front().overload_g.y == 0.0);
+    CHECK(commands.front().overload_g.z == 0.0);
     return 0;
 }
 
@@ -794,6 +835,7 @@ int test_frame_sink_rearm_advances_command_generation() {
     }
     CHECK(fixture.command->active_generation() == 1);
     fixture.runtime->stop();
+    CHECK(fixture.command->commands().empty());
     CHECK(!fixture.runtime->faulted());
     return 0;
 }
@@ -845,6 +887,9 @@ int main() {
         return 1;
     }
     if (test_algorithm_fault() != 0) {
+        return 1;
+    }
+    if (test_missing_target_preserves_launch_flag() != 0) {
         return 1;
     }
     if (test_frame_sink_fault_preserves_first_error() != 0) {

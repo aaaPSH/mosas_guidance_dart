@@ -273,6 +273,8 @@ int main() {
                 CHECK(command.generation == 0);
                 CHECK(command.source_frame_id == 1);
                 CHECK(command.source_time.monotonic_ns == kFrameSecondNs);
+                CHECK(command.launched);
+                CHECK(command.target_found);
                 CHECK_NEAR(command.overload_g.x, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.y, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.z, 0.0, 1e-12);
@@ -281,6 +283,8 @@ int main() {
                 invalid_zero_command_seen = true;
                 CHECK(command.generation == 0);
                 CHECK(command.source_time.monotonic_ns == kFrameFirstNs);
+                CHECK(command.launched);
+                CHECK(command.target_found);
                 CHECK_NEAR(command.overload_g.x, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.y, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.z, 0.0, 1e-12);
@@ -308,6 +312,8 @@ int main() {
     CHECK(valid_frame->state.time.monotonic_ns == kFrameSecondNs);
     CHECK(valid_frame->vision.observation.valid);
     CHECK(valid_frame->guidance.command.valid);
+    CHECK(valid_frame->guidance.command.launched);
+    CHECK(valid_frame->guidance.command.target_found);
     CHECK(valid_frame->state.attitude.valid);
     CHECK(valid_frame->state.launch.phase == domain::LaunchPhase::launched);
     CHECK(valid_frame->frame.image.is_valid());

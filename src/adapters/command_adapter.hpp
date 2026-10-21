@@ -7,9 +7,9 @@
 namespace mosas::app::detail {
 
 /**
- * @brief 将镖体系制导命令映射为串口协议的 roll/yaw/pitch 字段。
- * @param command 当前命令；无效命令的输出字段全部置零。
- * @return 协议字段值，body-z 映射到 yaw，body-y 映射到 pitch，roll 固定为零。
+ * @brief 将镖体系制导命令映射为串口协议的状态标志和 yaw/pitch 字段。
+ * @param command 当前命令；无效命令仅将过载置零，不清除发射标志和识别位。
+ * @return 协议字段值，状态标志原样保留，body-z 映射到 yaw，body-y 映射到 pitch。
  * @note 过载分量单位为 g；字段顺序和符号映射属于下位机协议契约。
  */
 serial_package::ControlFrameValues make_control_frame_values(

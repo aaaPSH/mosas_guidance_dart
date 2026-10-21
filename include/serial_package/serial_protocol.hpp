@@ -12,7 +12,8 @@ constexpr std::size_t kControlFrameSize = 14;
 constexpr std::size_t kImuFrameSize = 20;
 
 struct ControlFrameValues {
-    double roll_overload_g = 0.0;
+    bool launched = false;
+    bool target_found = false;
     double yaw_overload_g = 0.0;
     double pitch_overload_g = 0.0;
 };
@@ -31,14 +32,15 @@ struct ImuFrameValues {
 };
 
 /**
- * @brief 将过载值编码为固定 14 字节的下行控制帧。
- * @param values roll/yaw/pitch 过载值，单位为 g，按该顺序写入。
+ * @brief 将发射状态、识别结果和过载值编码为固定 14 字节的下行控制帧。
+ * @param values 发射标志、目标识别位及 yaw/pitch 过载值（单位 g）。
  * @param frame 非空输出数组；成功时写入协议帧。
  * @param error 可选错误输出；失败时写入原因，成功时清空。
  * @return 输入可编码且输出指针有效时为 true。
- * @note 帧头为 AA 55；roll/yaw/pitch 依次位于字节 2/4/6，均编码为乘以 100 的
- *       有符号 16 位小端整数。字节 8..9 保留为零，字节 10..11 为
- *       CRC-16/CCITT-FALSE，帧尾为 0D 0A。
+ * @note 帧头为 AA 55；字节 2 为发射标志，字节 3 为识别位，均独立编码为 0/1。
+ *       yaw/pitch 位于字节 4/6，编码为乘以 100 的有符号 16 位小端整数。
+ *       字节 8..9 保留为零，字节 10..11 为小端 CRC-16/CCITT-FALSE，
+ *       覆盖字节 2..9（含两个标志）；帧尾为 0D 0A。
  */
 bool encode_control_frame(
     const ControlFrameValues& values,

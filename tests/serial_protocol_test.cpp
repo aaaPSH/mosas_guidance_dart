@@ -34,12 +34,25 @@ int main() {
         mosas::test::kValidImuFrame.data(), mosas::test::kValidImuFrame.size() - 1,
         &imu));
 
-    serial_package::ControlFrameValues command{1.25, -2.5, 0.005};
-    std::array<std::uint8_t, serial_package::kControlFrameSize> encoded{};
-    CHECK(serial_package::encode_control_frame(command, &encoded));
-    constexpr std::array<std::uint8_t, serial_package::kControlFrameSize> expected{
-        0xAA, 0x55, 0x7D, 0x00, 0x06, 0xFF, 0x01,
-        0x00, 0x00, 0x00, 0xAC, 0x76, 0x0D, 0x0A};
-    CHECK(encoded == expected);
+    // 固定参考帧验证两个标志独立编码，并且都参与 CRC。
+    constexpr std::array<std::array<std::uint8_t,
+                                    serial_package::kControlFrameSize>, 4>
+        expected_frames{{
+            {0xAA, 0x55, 0x00, 0x00, 0x06, 0xFF, 0x01,
+             0x00, 0x00, 0x00, 0xC4, 0x90, 0x0D, 0x0A},
+            {0xAA, 0x55, 0x00, 0x01, 0x06, 0xFF, 0x01,
+             0x00, 0x00, 0x00, 0xA5, 0x28, 0x0D, 0x0A},
+            {0xAA, 0x55, 0x01, 0x00, 0x06, 0xFF, 0x01,
+             0x00, 0x00, 0x00, 0x17, 0xD7, 0x0D, 0x0A},
+            {0xAA, 0x55, 0x01, 0x01, 0x06, 0xFF, 0x01,
+             0x00, 0x00, 0x00, 0x76, 0x6F, 0x0D, 0x0A},
+        }};
+    for (const auto& expected : expected_frames) {
+        const serial_package::ControlFrameValues command{
+            expected[2] != 0, expected[3] != 0, -2.5, 0.005};
+        std::array<std::uint8_t, serial_package::kControlFrameSize> encoded{};
+        CHECK(serial_package::encode_control_frame(command, &encoded));
+        CHECK(encoded == expected);
+    }
     return 0;
 }

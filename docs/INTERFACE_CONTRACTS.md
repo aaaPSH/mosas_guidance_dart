@@ -296,6 +296,8 @@ struct GuidanceCommand {
     bool valid;
     GuidanceInvalidReason invalid_reason;
     DartOverloadG overload_g;
+    bool launched; // 当前周期是否已检测到发射，独立于制导有效性
+    bool target_found; // 当前帧视觉识别结果，独立于制导有效性
 };
 
 struct GuidanceOutput {
@@ -494,7 +496,22 @@ n_command_D = f_command_D / g
 
 每个启用的帧 sink 由独立的有界 latest-frame 队列和 worker 服务。队列满时只丢弃该 sink 最旧的待处理帧；`FramePipeline` 仅执行有界队列 fan-out，不在制导/命令路径执行编码、文件或网络 I/O。图像像素通过共享所有权传递，不深拷贝。IMU recorder 和 logger 分别使用独立队列/worker；IMU 队列满仍按既有策略触发运行时故障，日志丢弃、写入或 flush 故障只更新日志诊断，不升级为制导故障。
 
-视频、遥测或可视化 worker 失败仍报告既有 frame-output 故障并取消 runtime；IMU 记录提交失败仍报告运行时故障。该阶段不启用可选输出失败后继续制导的策略。命令 writer 与观测输出队列绝不共用，也不改变串口控制帧、CRC、量化或 body-y/body-z 到 pitch/yaw 的映射。
+视频、遥测或可视化 worker 失败仍报告既有 frame-output 故障并取消 runtime；IMU 记录提交失败仍报告运行时故障。该阶段不启用可选输出失败后继续制导的策略。命令 writer 与观测输出队列绝不共用。
+
+串口协议编码适配器将 `GuidanceCommand` 编码为与 `main` 一致的 14-byte 下行帧，不执行 PNG 或坐标变换。body-y/body-z 分别映射 pitch/yaw，按 0.01 g 量化为小端 int16；制导输出无效时 pitch/yaw 编码为零，识别位独立取当前帧视觉结果。
+
+| 字节位置（从 0 开始） | 含义 |
+| --- | --- |
+| 0..1 | 帧头 `AA 55` |
+| 2 | 发射标志：未发射为 `0`，已检测到发射为 `1`（原 Roll 字节） |
+| 3 | 识别位：当前帧识别到目标为 `1`，未识别或未执行识别为 `0` |
+| 4..5 | Yaw 过载 |
+| 6..7 | Pitch 过载 |
+| 8..9 | 保留，固定 `0` |
+| 10..11 | CRC-16/CCITT-FALSE，小端，覆盖 bytes 2..9（含发射标志和识别位） |
+| 12..13 | 帧尾 `0D 0A` |
+
+发射标志由现有起飞检测提供，检测到发射后本周期保持为 `1`，复位后为 `0`；目标丢失、制导失效或故障清零均不清除已发射状态。识别成功但首帧视线角速度尚不可用时，仍发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。起飞前不发送控制指令的规则不变；运行时故障清零时识别位为 `0`。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。20-byte IMU 上行帧及字段转换不变。
 
 ## 8. 运行时组装和输出模式
 
@@ -524,7 +541,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 - **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
 - **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
-- **协议回归**：现有串口协议测试继续验证固定控制帧字节、CRC 与量化行为。
+- **协议回归**：串口协议测试验证固定帧长、过载量化、两个标志独立为 0/1 且都参与 CRC；命令适配器和运行时测试验证正常制导、首帧速率不可用、目标丢失及故障清零的状态标志，并保持起飞前不发送指令。
 
 设置 `MOSAS_BUILD_APPLICATION=OFF`、`MOSAS_BUILD_OPENCV_ADAPTERS=ON`、`BUILD_TESTING=ON` 可构建本地输出及模式组合测试，无需配置 Nori SDK；`MOSAS_BUILD_WIRELESS` 控制是否构建 RTSP 适配器及链接 FFmpeg。纯 runtime 测试不需要 OpenCV。
 

@@ -404,10 +404,13 @@ void FramePipeline::processing_worker() noexcept {
                         if (generation_is_current &&
                             !callbacks_.stop_requested() &&
                             !callbacks_.faulted()) {
-                            // 无法形成可靠引导量时主动发送全零，清除下位机保持的旧指令。
+                            // 此路径仅在已发射后提交；零过载不清除发射标志和当前帧识别位。
                             sent = command_sink_.try_submit(
                                 detail::make_neutral_command(
-                                    detail::resolve_sensor_time(timestamp_ns, result.frame.sensor_time), *launch_generation));
+                                    detail::resolve_sensor_time(
+                                        timestamp_ns, result.frame.sensor_time),
+                                    *launch_generation, true,
+                                    result.vision_detection.observation.valid));
                         }
                     });
                 if (generation_is_current && !sent) {
@@ -820,6 +823,9 @@ void FramePipeline::processing_worker() noexcept {
             result.guidance.command.source_frame_id =
                 result.frame.source_frame_id;
             result.guidance.command.source_time = frame_time;
+            result.guidance.command.launched = attitude_lookup->launched;
+            result.guidance.command.target_found =
+                result.vision_detection.observation.valid;
             if (result.guidance.valid) {
                 result.guidance.invalid_reason =
                     domain::GuidanceInvalidReason::none;

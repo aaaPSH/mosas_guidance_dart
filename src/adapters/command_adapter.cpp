@@ -4,7 +4,8 @@ namespace mosas::app::detail {
 
 serial_package::ControlFrameValues make_control_frame_values(
     const runtime::GuidanceCommand& command) noexcept {
-    return {0.0, command.valid ? command.overload_g.z : 0.0,
+    return {command.launched, command.target_found,
+            command.valid ? command.overload_g.z : 0.0,
             command.valid ? command.overload_g.y : 0.0};
 }
 

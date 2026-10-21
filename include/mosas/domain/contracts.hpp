@@ -78,6 +78,10 @@ struct GuidanceCommand {
     GuidanceInvalidReason invalid_reason =
         GuidanceInvalidReason::launch_not_confirmed;
     DartOverloadG overload_g{};
+    /** @brief 当前周期是否已检测到发射，独立于制导有效性。 */
+    bool launched = false;
+    /** @brief 当前帧是否识别到目标；未执行识别或故障时为 false。 */
+    bool target_found = false;
 };
 
 }  // namespace mosas::domain

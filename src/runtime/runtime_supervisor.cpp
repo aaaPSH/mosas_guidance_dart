@@ -500,7 +500,7 @@ void RuntimeSupervisor::Impl::set_fault(const std::string& message) {
                         // 运行时故障时尽力清零，避免下位机继续保持上一条非零指令。
                         const TimestampNs now_ns = monotonic_clock_->now_ns();
                         command_sink_->try_submit(detail::make_neutral_command(
-                            now_ns, state->launch.generation));
+                            now_ns, state->launch.generation, true, false));
                     }
                 });
         }

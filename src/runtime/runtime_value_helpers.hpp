@@ -51,19 +51,34 @@ inline domain::SensorTime resolve_sensor_time(
     return time;
 }
 
-/** @brief Neutral frame command retaining the input source metadata. */
+/**
+ * @brief Build an invalid zero-overload command without clearing status flags.
+ * @param source_time Acquisition metadata to retain.
+ * @param generation Active launch cycle.
+ * @param launched Current launch state, independent of guidance validity.
+ * @param target_found Current frame detection result; false on faults or skipped detection.
+ * @return Neutral command retaining the supplied metadata and status flags.
+ */
 inline GuidanceCommand make_neutral_command(const domain::SensorTime& source_time,
-                                            std::uint64_t generation) {
+                                            std::uint64_t generation,
+                                            bool launched, bool target_found) {
     GuidanceCommand command{};
     command.generation = generation;
     command.source_time = source_time;
     command.invalid_reason = domain::GuidanceInvalidReason::stale_input;
+    command.launched = launched;
+    command.target_found = target_found;
     return command;
 }
 
+/** @overload
+ * @param timestamp_ns Host monotonic timestamp for a command without acquisition metadata.
+ */
 inline GuidanceCommand make_neutral_command(TimestampNs timestamp_ns,
-                                            std::uint64_t generation) {
-    return make_neutral_command(make_monotonic_time(timestamp_ns), generation);
+                                            std::uint64_t generation,
+                                            bool launched, bool target_found) {
+    return make_neutral_command(make_monotonic_time(timestamp_ns), generation,
+                                launched, target_found);
 }
 
 } // namespace mosas::runtime::detail

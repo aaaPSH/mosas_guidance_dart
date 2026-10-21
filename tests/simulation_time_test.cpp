@@ -94,7 +94,9 @@ int main() {
     CHECK(time.quality==domain::TimestampQuality::simulation);
     auto resolved=runtime::detail::resolve_sensor_time(123,time);
     CHECK(resolved.monotonic_ns==123 && resolved.source_time_ns==123);
-    CHECK(runtime::detail::make_neutral_command(resolved,7).source_time.source==domain::TimestampSource::simulation);
+    const auto neutral = runtime::detail::make_neutral_command(resolved, 7, true, true);
+    CHECK(neutral.source_time.source == domain::TimestampSource::simulation);
+    CHECK(neutral.launched && neutral.target_found && !neutral.valid);
     CHECK(runtime::detail::resolve_sensor_time(1,std::nullopt).source_domain==domain::ClockDomain::monotonic);
     auto rejects=[&](domain::SensorTime t){try{runtime::detail::resolve_sensor_time(123,t);}catch(const std::invalid_argument&){return true;}return false;};
     auto bad=time; bad.monotonic_ns=124; CHECK(rejects(bad));
