@@ -487,7 +487,7 @@ void GuidanceRuntime::set_fault(const std::string& message) {
                 // 运行时故障时尽力清零，避免下位机继续保持上一条非零指令。
                 command_sink_->try_submit(
                     {monotonic_timestamp_ns(), PngGuidanceOutput{},
-                     state->launch_generation});
+                     state->launch_generation, state->launched, false});
             }
         }
     }
@@ -725,8 +725,9 @@ void GuidanceRuntime::processing_worker() {
             return output_queue_.push(std::move(result));
         };
 
+        ProcessedFrame result{};
         const auto submit_neutral_command =
-            [this](TimestampNs timestamp_ns,
+            [this, &result](TimestampNs timestamp_ns,
                    std::optional<std::uint64_t> launch_generation =
                        std::nullopt) {
                 if (!launch_generation.has_value()) {
@@ -747,10 +748,11 @@ void GuidanceRuntime::processing_worker() {
                         *launch_generation;
                     if (generation_is_current && !stop_requested_.load() &&
                         !faulted_.load()) {
-                        // 无法形成可靠引导量时主动发送全零，清除下位机保持的旧指令。
+                        // 此路径仅在已发射后提交；零过载不清除发射标志和当前帧识别位。
                         sent = command_sink_->try_submit(
                             {timestamp_ns, PngGuidanceOutput{},
-                             *launch_generation});
+                             *launch_generation, true,
+                             result.vision_result.found});
                     }
                 }
                 if (generation_is_current && !sent) {
@@ -760,7 +762,6 @@ void GuidanceRuntime::processing_worker() {
                 return true;
             };
 
-        ProcessedFrame result{};
         QueuedCameraFrame queued_frame{};
         while (true) {
             const auto queue_wait_started = std::chrono::steady_clock::now();
@@ -1142,7 +1143,9 @@ void GuidanceRuntime::processing_worker() {
                     if (generation_is_current && !stop_requested_.load()) {
                         sent = command_sink_->try_submit(
                             {timestamp_ns, result.guidance,
-                             attitude_lookup->launch_generation});
+                             attitude_lookup->launch_generation,
+                             attitude_lookup->launched,
+                             result.vision_result.found});
                     }
                 }
                 record_timing(TimingStage::command,

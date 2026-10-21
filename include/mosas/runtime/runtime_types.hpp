@@ -51,6 +51,10 @@ struct GuidanceCommand {
     TimestampNs timestamp_ns;
     PngGuidanceOutput output;
     std::uint64_t launch_generation = 0;
+    // 当前周期是否已检测到发射，独立于 output.valid 和目标识别结果。
+    bool launched = false;
+    // 当前帧视觉识别结果，独立于 output.valid；故障或未执行识别时为 false。
+    bool target_found = false;
 };
 
 }  // namespace mosas::runtime

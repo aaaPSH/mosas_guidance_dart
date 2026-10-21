@@ -276,6 +276,8 @@ struct GuidanceCommand {
     bool valid;
     GuidanceInvalidReason invalid_reason;
     OverloadDartG overload;
+    bool launched; // 当前周期是否已检测到发射，独立于制导有效性
+    bool target_found; // 当前帧视觉识别结果，独立于制导有效性
 };
 ```
 
@@ -469,7 +471,20 @@ public:
 
 生产组合使用 `IImuRecorder`、`IVideoRecorder`、`ITelemetryRecorder` 和 `IVisualizationSink` 等窄接口，各自具有独立队列/worker/错误状态。命令 writer 的队列与观测输出绝不共用。
 
-当前协议编码适配器只接收有效的 `GuidanceCommand`：保留 14-byte 下行帧字节、CRC、量化精度和已有 body-y/body-z 到 pitch/yaw 的映射。它不能执行 PNG 或坐标变换。
+当前协议编码适配器将 `GuidanceCommand` 编码为 14-byte 下行帧，不执行 PNG 或坐标变换。body-y/body-z 分别映射 pitch/yaw，按 0.01 g 量化为小端 int16；制导输出无效时 pitch/yaw 编码为零，识别位独立取当前帧视觉结果。
+
+| 字节位置（从 0 开始） | 含义 |
+| --- | --- |
+| 0..1 | 帧头 `AA 55` |
+| 2 | 发射标志：未发射为 `0`，已检测到发射为 `1`（原 Roll 字节） |
+| 3 | 识别位：当前帧识别到目标为 `1`，未识别或未执行识别为 `0` |
+| 4..5 | Yaw 过载 |
+| 6..7 | Pitch 过载 |
+| 8..9 | 保留，固定 `0` |
+| 10..11 | CRC-16/CCITT-FALSE，小端，覆盖 bytes 2..9（含发射标志和识别位） |
+| 12..13 | 帧尾 `0D 0A` |
+
+发射标志由现有起飞检测提供，检测到发射后本周期保持为 `1`，复位后为 `0`；目标丢失、制导失效或故障清零均不清除已发射状态。识别成功但首帧视线角速度尚不可用时，仍发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。起飞前不发送控制指令的规则不变。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。
 
 ## 8. 运行时组装接口
 
@@ -499,7 +514,7 @@ struct RuntimeComponents {
 ## 9. 验收接口测试
 
 - **Domain tests**：帧变换方向、D/B/N 坐标、roll 正负、单位换算、时间域映射、过载量化。
-- **Protocol tests**：固定 IMU/下行帧长度、字节序、CRC、饱和/非法数值；协议冻结测试禁止重构改变字节输出。
+- **Protocol tests**：固定 IMU/下行帧长度、字节序、CRC、饱和/非法数值；下行帧验证发射标志和识别位独立为 0/1 且均参与 CRC，未授权的重构不得改变协议字节输出。
 - **Algorithm contract tests**：相同输入/时间戳下旧视觉、姿态/起飞、LOS filter、PNG 实现与基准输出一致。
 - **Port contract tests**：Fake camera/IMU 的顺序、取消、timeout、队列满和诊断计数；CommandSink latest-wins / generation / stale behavior。
 - **Pipeline integration tests**：虚拟单调时钟 + prerecorded camera/IMU + fake command/outputs；确保 recorder/logger 阻塞或满队列不阻塞 control submit。

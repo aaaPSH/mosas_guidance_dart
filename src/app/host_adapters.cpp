@@ -263,7 +263,8 @@ void SerialCommandSink::worker_loop() noexcept {
         std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
         std::string error;
         const serial_package::ControlFrameValues values{
-            0.0,
+            command.launched,
+            command.target_found,
             command.output.valid ? command.output.body_overload.z : 0.0,
             command.output.valid ? command.output.body_overload.y : 0.0};
         if (!serial_package::encode_control_frame(values, &frame, &error) ||

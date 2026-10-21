@@ -12,7 +12,8 @@ constexpr std::size_t kControlFrameSize = 14;
 constexpr std::size_t kImuFrameSize = 20;
 
 struct ControlFrameValues {
-    double roll_overload_g = 0.0;
+    bool launched = false;
+    bool target_found = false;
     double yaw_overload_g = 0.0;
     double pitch_overload_g = 0.0;
 };
@@ -30,7 +31,9 @@ struct ImuFrameValues {
     std::uint16_t crc = 0;
 };
 
-// 将下行控制量编码为固定长度的二进制控制帧。
+// 下行帧共 14 字节：AA 55、发射标志(1B，未发射 0 / 已发射 1)、识别位(1B，0/1)、
+// Yaw(2B)、Pitch(2B)、保留(2B)、CRC(2B)、0D 0A。
+// Yaw/Pitch 为小端 int16，单位 0.01 g；CRC 覆盖 bytes 2..9。
 bool encode_control_frame(
     const ControlFrameValues& values,
     std::array<std::uint8_t, kControlFrameSize>* frame,

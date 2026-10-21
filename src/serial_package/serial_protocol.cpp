@@ -101,8 +101,9 @@ bool encode_control_frame(
     frame->fill(0);
     (*frame)[0] = 0xAA;
     (*frame)[1] = 0x55;
-    if (!encode_overload(values.roll_overload_g, frame->data() + 2, error) ||
-        !encode_overload(values.yaw_overload_g, frame->data() + 4, error) ||
+    (*frame)[2] = values.launched ? 1 : 0;
+    (*frame)[3] = values.target_found ? 1 : 0;
+    if (!encode_overload(values.yaw_overload_g, frame->data() + 4, error) ||
         !encode_overload(values.pitch_overload_g, frame->data() + 6, error)) {
         return false;
     }

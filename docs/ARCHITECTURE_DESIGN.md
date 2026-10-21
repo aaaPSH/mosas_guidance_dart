@@ -178,7 +178,7 @@ Nori SDK 有外部硬件触发模式入口。保留 `ISyncProvider`/`ITriggerEve
 - roll 正方向按绕 `+X` 的右手规则；坐标变换用带方向的 `R_target_from_source`，满足 `v_target = R_target_from_source * v_source`。
 - `CameraFrame C` 到 `D` 保留静态旋转外参，默认单位矩阵；`D_from_C` 是唯一外参方向命名。坐标轴相同不等同于未经标定的内参正确。
 - LOS 角/角速度统一用 rad、rad/s；加速度用 m/s²；过载用以 `g` 为单位的无量纲数值。结构字段名中携带单位和坐标系。
-- 当前源代码的控制帧映射作为行为基线记录：roll 槽为 0、body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。重构中不得改字节/符号；目标板须与下位机协议再核对一次。
+- 当前下行控制帧中，原双字节 roll 槽已拆为 byte 2 的发射标志（未发射为 0，已检测到发射为 1）和 byte 3 的识别位（当前帧识别到目标为 1，否则为 0，独立于制导有效性）；body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。14-byte 帧长和 CRC 覆盖范围不变，具体布局见 `INTERFACE_CONTRACTS.md`；下位机须同步采用此布局。
 
 ## 8. 故障与兼容边界
 
