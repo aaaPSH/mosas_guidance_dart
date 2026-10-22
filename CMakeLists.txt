@@ -482,6 +482,11 @@ if(BUILD_TESTING)
         )
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
+
+        add_executable(serial_command_sink_test tests/serial_command_sink_test.cpp)
+        configure_mosas_target(serial_command_sink_test)
+        target_link_libraries(serial_command_sink_test PRIVATE mosas_app)
+        add_test(NAME serial_command_sink_test COMMAND serial_command_sink_test)
     endif()
 
     if(TARGET mosas_app_core)

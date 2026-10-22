@@ -377,6 +377,10 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->command.mode = CommandMode::log;
         } else if (key == "mode" && value == "serial") {
             config->command.mode = CommandMode::serial;
+        } else if (key == "send_rate_hz") {
+            return parse_int(value, &config->command.send_rate_hz) || invalid();
+        } else if (key == "command_timeout_ms") {
+            return parse_int(value, &config->command.command_timeout_ms) || invalid();
         } else {
             return invalid();
         }
@@ -598,6 +602,10 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         config.imu.receive_thread.realtime_priority < 0 ||
         config.imu.receive_thread.realtime_priority > 99) {
         return fail_global(path, "IMU 参数无效", error);
+    }
+    if (config.command.send_rate_hz <= 0 || config.command.send_rate_hz > 1000 ||
+        config.command.command_timeout_ms <= 0) {
+        return fail_global(path, "串口周期发送参数无效", error);
     }
     const bool serial_required =
         config.imu.mode == ImuMode::serial ||

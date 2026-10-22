@@ -74,8 +74,13 @@ enum class CommandMode {
     serial,
 };
 
+/** @brief 命令输出模式及串口周期发送参数；日志输出仍按新结果记录。 */
 struct CommandAppConfig {
     CommandMode mode = CommandMode::log;
+    /** @brief 串口发送频率，单位 Hz，允许 1～1000；不改变图像处理频率。 */
+    int send_rate_hz = 100;
+    /** @brief 新命令提交后可重复发送的最长时间，单位 ms；必须大于 0。 */
+    int command_timeout_ms = 100;
 };
 
 /** @brief 可选算法；滤波器和制导律必须由工厂成对选择。 */

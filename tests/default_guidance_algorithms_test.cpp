@@ -32,6 +32,9 @@ int main() {
         std::filesystem::path(MOSAS_SOURCE_DIR) / "config" /
         "mosas_guidance.conf";
     CHECK(mosas::app::AppConfigLoader::load(config_path, &config, &error));
+    CHECK(config.camera.fps == 120);
+    CHECK(config.command.send_rate_hz == 100);
+    CHECK(config.command.command_timeout_ms == 100);
     CHECK(std::isfinite(config.algorithms.attitude.launch_speed_mps));
     CHECK(config.algorithms.attitude.launch_speed_mps > 0.0);
     CHECK(config.algorithms.attitude.launch_confirm_ns == 20'000'000);
@@ -124,6 +127,29 @@ int main() {
         file.close();
         return file.good() && mosas::app::AppConfigLoader::load(temporary_config.path, output, &error);
     };
+    mosas::app::AppConfig command_config;
+    CHECK(load_variant("send_rate_hz=50\ncommand_timeout_ms=40\n", &command_config));
+    CHECK(command_config.command.send_rate_hz == 50);
+    CHECK(command_config.command.command_timeout_ms == 40);
+    for (const auto* invalid : {"send_rate_hz=0\n", "send_rate_hz=-1\n",
+                                "send_rate_hz=1001\n", "send_rate_hz=1.5\n",
+                                "command_timeout_ms=0\n", "command_timeout_ms=-1\n"}) {
+        CHECK(!load_variant(invalid, &command_config));
+    }
+    {
+        auto text = source_text.str();
+        for (const auto* key : {"send_rate_hz", "command_timeout_ms"}) {
+            const auto begin = text.find("\n" + std::string(key) + "=");
+            CHECK(begin != std::string::npos);
+            text.erase(begin, text.find('\n', begin + 1) - begin);
+        }
+        std::ofstream file(temporary_config.path);
+        file << text;
+        file.close();
+        CHECK(mosas::app::AppConfigLoader::load(temporary_config.path, &command_config, &error));
+        CHECK(command_config.command.send_rate_hz == 100);
+        CHECK(command_config.command.command_timeout_ms == 100);
+    }
     // Omitting the algorithm selector still uses PNG, independently of the shipped configuration.
     {
         auto text = source_text.str();

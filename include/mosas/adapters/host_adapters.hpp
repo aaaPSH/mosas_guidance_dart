@@ -56,41 +56,37 @@ private:
     std::atomic<std::uint64_t> submitted_count_{0};
 };
 
-/// 通过 latest-value mailbox 和专属发送线程将制导命令写入串口。
+/** @brief 通过 latest-value mailbox 和专属线程周期发送指令；无新鲜指令时发送零过载。 */
 class SerialCommandSink final : public runtime::CommandSink {
 public:
     /**
-     * @brief 创建串口命令 sink，错误信息默认写入标准错误流。
+     * @brief 创建按固定频率发送的串口命令 sink。
      * @param port 已配置的串口对象；须在 start() 前打开。
-     */
-    explicit SerialCommandSink(
-        std::shared_ptr<serial_package::SerialPort> port);
-
-    /**
-     * @brief 创建带指定诊断输出流的串口命令 sink。
-     * @param port 已配置的串口对象；须在 start() 前打开。
+     * @param config 发送频率和命令超时；不改变制导计算和发射门槛。
      * @param output 写入串口发送错误文本的流；其生命周期须覆盖 sink。
      */
     SerialCommandSink(std::shared_ptr<serial_package::SerialPort> port,
-                      std::ostream& output);
+                      const CommandAppConfig& config, std::ostream& output);
     ~SerialCommandSink() override;
 
-    /** @brief 检查串口并启动唯一的后台命令发送线程。 @return 成功启动时为 true。 */
+    /** @brief 检查参数并启动周期发送线程，初始发送零过载。 @return 成功启动时为 true。 */
     bool start() override;
     /**
      * @brief 非阻塞地发布当前起飞代际的最新命令。
      * @param command 控制命令；代际与当前 active generation 不符时拒绝。
      * @return 命令进入 mailbox 时为 true；未运行、已取消或代际失效时为 false。
-     * @note 替换尚未发送的旧命令；本调用不执行串口写入。
+     * @note 替换尚未发送的旧命令并记录提交时刻；本调用不执行串口写入。
+     *       只有新提交会更新有效期，周期重发不会延长有效期。
      */
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
     /**
      * @brief 更新允许发送的起飞代际并同步串口发送临界区。
      * @param generation 新的有效代际。
      * @note 可能等待当前串口写操作完成；返回后旧代际在途写入已结束。
+     *       新代际在收到新命令前周期发送零过载和零状态标志。
      */
     void set_active_generation(std::uint64_t generation) noexcept override;
-    /** @brief 请求发送线程停止接受/处理命令。 */
+    /** @brief 拒绝新命令并唤醒发送线程退出；不会继续周期重发。 */
     void cancel() noexcept override;
     /** @brief 关闭 mailbox 并等待发送线程退出。 */
     void stop() noexcept override;
@@ -101,16 +97,29 @@ public:
     std::string last_error() const;
 
 private:
+    struct PendingCommand {
+        runtime::GuidanceCommand command{};
+        std::chrono::steady_clock::time_point submitted_at{};
+    };
+
     /**
-     * @brief 消费 mailbox、校验命令代际并串行编码/写出控制帧。
-     * @note 串口写入只在该 worker 执行；失败计数和错误说明在 sink 中保留。
+     * @brief 按单调时钟周期采样最新指令，检查代际、发射门槛和提交超时。
+     * @note 无新指令时重复最近值；超时清零过载和识别位，但保留发射标志。
+     *       调度或写入超时后跳过错过的周期，不突发补发积压指令。
      */
     void worker_loop() noexcept;
+    /**
+     * @brief 编码并写出一帧，保留发送失败计数和错误说明。
+     * @param command 已通过代际、发射门槛及有效期检查的待发送指令。
+     * @note 仅由发送线程在持有 send_mutex_ 时调用。
+     */
+    void send_command(const runtime::GuidanceCommand& command) noexcept;
     bool fail(const std::string& message);
 
     std::shared_ptr<serial_package::SerialPort> port_;
+    CommandAppConfig config_;
     std::ostream* output_ = nullptr;
-    runtime::LatestValueMailbox<runtime::GuidanceCommand> mailbox_;
+    runtime::LatestValueMailbox<PendingCommand> mailbox_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> cancel_requested_{false};
     std::atomic<bool> running_{false};
@@ -120,6 +129,8 @@ private:
     std::thread worker_;
     mutable std::mutex mutex_;
     std::mutex send_mutex_;
+    std::mutex wait_mutex_;
+    std::condition_variable wait_condition_;
     std::string last_error_;
 };
 

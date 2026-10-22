@@ -262,7 +262,7 @@ int initialize_components(const mosas::app::AppConfig& config,
         command_sink = std::make_unique<mosas::app::LoggingCommandSink>();
     } else if (config.command.mode == mosas::app::CommandMode::serial) {
         command_sink = std::make_unique<mosas::app::SerialCommandSink>(
-            serial_port);
+            serial_port, config.command, std::cerr);
     } else {
         std::cerr << "未知的指令输出模式\n";
         return 2;

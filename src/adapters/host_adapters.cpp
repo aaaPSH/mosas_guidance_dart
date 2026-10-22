@@ -113,12 +113,9 @@ runtime::CommandSink::Diagnostics LoggingCommandSink::diagnostics() const noexce
 }
 
 SerialCommandSink::SerialCommandSink(
-    std::shared_ptr<serial_package::SerialPort> port)
-    : port_(std::move(port)), output_(&std::cerr) {}
-
-SerialCommandSink::SerialCommandSink(
-    std::shared_ptr<serial_package::SerialPort> port, std::ostream& output)
-    : port_(std::move(port)), output_(&output) {}
+    std::shared_ptr<serial_package::SerialPort> port,
+    const CommandAppConfig& config, std::ostream& output)
+    : port_(std::move(port)), config_(config), output_(&output) {}
 
 SerialCommandSink::~SerialCommandSink() { stop(); }
 
@@ -129,10 +126,15 @@ bool SerialCommandSink::start() {
     if (!port_->is_open()) {
         return fail("串口未打开");
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (config_.send_rate_hz <= 0 || config_.send_rate_hz > 1000 ||
+        config_.command_timeout_ms <= 0) {
+        return fail("串口周期发送参数无效");
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
     if (worker_.joinable()) {
         return true;
     }
+    last_error_.clear();
     mailbox_.reset();
     stop_requested_.store(false, std::memory_order_release);
     cancel_requested_.store(false, std::memory_order_release);
@@ -141,6 +143,7 @@ bool SerialCommandSink::start() {
         worker_ = std::thread(&SerialCommandSink::worker_loop, this);
     } catch (...) {
         running_.store(false, std::memory_order_release);
+        lock.unlock();
         return fail("启动异步串口发送线程失败");
     }
     return true;
@@ -154,7 +157,7 @@ bool SerialCommandSink::try_submit(
             active_generation_.load(std::memory_order_acquire)) {
         return false;
     }
-    if (!mailbox_.try_publish(command)) {
+    if (!mailbox_.try_publish({command, std::chrono::steady_clock::now()})) {
         return false;
     }
     submitted_count_.fetch_add(1, std::memory_order_relaxed);
@@ -169,13 +172,21 @@ void SerialCommandSink::set_active_generation(
 }
 
 void SerialCommandSink::cancel() noexcept {
-    cancel_requested_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(wait_mutex_);
+        cancel_requested_.store(true, std::memory_order_release);
+    }
+    wait_condition_.notify_all();
 }
 
 void SerialCommandSink::stop() noexcept {
-    cancel_requested_.store(true, std::memory_order_release);
-    stop_requested_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(wait_mutex_);
+        cancel_requested_.store(true, std::memory_order_release);
+        stop_requested_.store(true, std::memory_order_release);
+    }
     mailbox_.close();
+    wait_condition_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -189,50 +200,76 @@ runtime::CommandSink::Diagnostics SerialCommandSink::diagnostics() const noexcep
 }
 
 void SerialCommandSink::worker_loop() noexcept {
-    runtime::GuidanceCommand command{};
-    while (!stop_requested_.load(std::memory_order_acquire)) {
-        if (cancel_requested_.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-        if (!mailbox_.try_consume(&command)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-        std::lock_guard<std::mutex> send_lock(send_mutex_);
-        if (command.generation !=
-            active_generation_.load(std::memory_order_acquire)) {
-            continue;
-        }
-        if (port_ == nullptr) {
-            send_failure_count_.fetch_add(1, std::memory_order_relaxed);
-            fail("串口对象为空");
-            continue;
-        }
-        if (!port_->is_open()) {
-            send_failure_count_.fetch_add(1, std::memory_order_relaxed);
-            fail("串口未打开");
-            continue;
-        }
+    using Clock = std::chrono::steady_clock;
+    const auto period = std::chrono::nanoseconds(1'000'000'000 / config_.send_rate_hz);
+    const auto timeout = std::chrono::milliseconds(config_.command_timeout_ms);
+    auto next_send_at = Clock::now();
+    PendingCommand latest{};
+    const auto cancelled = [this] {
+        return stop_requested_.load(std::memory_order_acquire) ||
+               cancel_requested_.load(std::memory_order_acquire);
+    };
 
-        std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
-        std::string error;
-        const serial_package::ControlFrameValues values =
-            detail::make_control_frame_values(command);
-        if (!serial_package::encode_control_frame(values, &frame, &error) ||
-            !port_->write_all(frame.data(), frame.size())) {
-            send_failure_count_.fetch_add(1, std::memory_order_relaxed);
-            const std::string port_error = port_->last_error();
-            fail(error.empty() ? (port_error.empty() ? "控制帧发送失败"
-                                                      : port_error)
-                               : error);
-            continue;
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(wait_mutex_);
+            if (wait_condition_.wait_until(lock, next_send_at, cancelled)) {
+                return;
+            }
         }
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            last_error_.clear();
+            std::lock_guard<std::mutex> send_lock(send_mutex_);
+            if (cancelled()) {
+                return;
+            }
+            const auto generation = active_generation_.load(std::memory_order_acquire);
+            if (latest.command.generation != generation) {
+                latest = {};
+                latest.command.generation = generation;
+            }
+            PendingCommand pending{};
+            if (mailbox_.try_consume(&pending) &&
+                pending.command.generation == generation) {
+                latest = pending;
+            }
+
+            auto command = latest.command;
+            const bool expired = latest.submitted_at == Clock::time_point{} ||
+                                 Clock::now() - latest.submitted_at >= timeout;
+            if (expired) {
+                command.valid = false;
+                command.target_found = false;
+            }
+            if (!command.launched) {
+                command.valid = false;
+            }
+            send_command(command);
+        }
+
+        next_send_at += period;
+        const auto now = Clock::now();
+        if (next_send_at <= now) {
+            // 维持周期相位，跳过已错过的时隙，不在阻塞恢复后突发补发。
+            next_send_at += period * ((now - next_send_at) / period + 1);
         }
     }
+}
+
+void SerialCommandSink::send_command(
+    const runtime::GuidanceCommand& command) noexcept {
+    std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
+    std::string error;
+    const auto values = detail::make_control_frame_values(command);
+    if (!serial_package::encode_control_frame(values, &frame, &error) ||
+        !port_->write_all(frame.data(), frame.size())) {
+        send_failure_count_.fetch_add(1, std::memory_order_relaxed);
+        const std::string port_error = port_->last_error();
+        fail(error.empty() ? (port_error.empty() ? "控制帧发送失败" : port_error)
+                           : error);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_error_.clear();
 }
 
 bool SerialCommandSink::fail(const std::string& message) {
