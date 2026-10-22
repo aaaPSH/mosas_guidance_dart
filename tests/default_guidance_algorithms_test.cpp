@@ -41,6 +41,8 @@ int main() {
     CHECK(config.algorithms.attitude.launch_detection_mode ==
           mosas::runtime::LaunchDetectionMode::two_stage);
     CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
+    CHECK(config.algorithms.png_guidance.control_channel == mosas::guidance::ControlChannel::both);
+    CHECK(config.algorithms.body_vector_pn.control_channel == mosas::guidance::ControlChannel::both);
     CHECK_NEAR(config.algorithms.body_vector_filter.sigma_a, 4.0, 1e-12);
     CHECK_NEAR(config.algorithms.body_vector_filter.sigma_l, 0.0005, 1e-12);
     CHECK_NEAR(config.algorithms.body_vector_filter.initial_rate_covariance, 1.0, 1e-12);
@@ -163,6 +165,54 @@ int main() {
             temporary_config.path, &without_algorithm, &error));
         CHECK(without_algorithm.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
     }
+    // 缺省通道保持双通道；同一配置项同时应用于两种制导律。
+    {
+        auto text = source_text.str();
+        const auto begin = text.find("\ncontrol_channel=");
+        CHECK(begin != std::string::npos);
+        text.erase(begin, text.find('\n', begin + 1) - begin);
+        { std::ofstream file(temporary_config.path); file << text; }
+        mosas::app::AppConfig without_channel;
+        CHECK(mosas::app::AppConfigLoader::load(temporary_config.path, &without_channel, &error));
+        CHECK(without_channel.algorithms.png_guidance.control_channel == mosas::guidance::ControlChannel::both);
+        CHECK(without_channel.algorithms.body_vector_pn.control_channel == mosas::guidance::ControlChannel::both);
+    }
+    for (const std::string channel : {"both", "pitch", "yaw"}) {
+        for (const std::string algorithm : {"png", "body_vector_pn"}) {
+            mosas::app::AppConfig selected;
+            CHECK(load_variant("control_channel=" + channel + "\nguidance_algorithm=" + algorithm + "\n", &selected));
+            const auto expected_channel = channel == "pitch" ? mosas::guidance::ControlChannel::pitch
+                                        : channel == "yaw" ? mosas::guidance::ControlChannel::yaw
+                                                           : mosas::guidance::ControlChannel::both;
+            CHECK(selected.algorithms.png_guidance.control_channel == expected_channel);
+            CHECK(selected.algorithms.body_vector_pn.control_channel == expected_channel);
+            auto selected_dependencies = mosas::app::make_default_guidance_algorithms(selected.algorithms);
+            auto input = observed_input;
+            input.angular_velocity = {true, {0.2}, {-0.4}};
+            input.vector_los = {true, {1.0, 0.0, 0.0}, {0.0, 0.2, -0.4}};
+            const auto output = selected_dependencies.guidance_law->calculate(input);
+            CHECK(output.valid && output.command.valid);
+            const auto command = output.command.overload_g;
+            if (channel == "pitch") {
+                CHECK_NEAR(command.y, 0.3, 1e-12);
+                CHECK(command.z == 0.0);
+            } else if (channel == "yaw") {
+                CHECK(command.y == 0.0);
+                CHECK_NEAR(command.z, -0.3, 1e-12);
+            } else {
+                CHECK(command.y > 0.0 && command.z < 0.0);
+                CHECK_NEAR(std::hypot(command.y, command.z), 0.3, 1e-12);
+            }
+            CHECK_NEAR(output.diagnostics.body_overload.y, command.y, 0.0);
+            CHECK_NEAR(output.diagnostics.body_overload.z, command.z, 0.0);
+        }
+    }
+    for (const auto* invalid : {"unknown", "pitch_only", "yaw_only", "Pitch", "1"}) {
+        mosas::app::AppConfig rejected;
+        CHECK(!load_variant("control_channel=" + std::string(invalid) + "\n", &rejected));
+        CHECK(error.find("guidance.control_channel") != std::string::npos);
+    }
+
     // Existing configurations without the selector retain the acceleration trigger.
     {
         auto text = source_text.str();

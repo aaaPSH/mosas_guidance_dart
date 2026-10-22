@@ -1,6 +1,7 @@
 #ifndef GUIDANCE_ESTIMATOR_HPP
 #define GUIDANCE_ESTIMATOR_HPP
 
+#include <mosas/guidance/control_channel.hpp>
 #include <mosas/runtime/rotation_matrix3.hpp>
 #include <mosas/guidance/png_calculation_trace.hpp>
 #include <mosas/runtime/vector3.hpp>
@@ -27,10 +28,12 @@ struct LineOfSightAngularVelocity {
     double q_z;
 };
 
-// PNG 律参数。Y/Z 方向导航系数独立配置且无量纲，重力加速度单位为 m/s²；
-// 纵向重力影响先从惯性 LOS 角速度中扣除，再计算过载，不在输出端补偿重力。
-// maximum_command_overload 是弹道系 Y/Z 合成过载上限（单位 g），
-// maximum_command_acceleration 是镖体系指令加速度模长上限（单位 m/s²）。
+/**
+ * @brief PNG 律参数；弹道系 Y/Z 导航系数独立且无量纲，重力单位为 m/s²。
+ * @note 纵向重力先在惯性 LOS 角速度域扣除，不在输出端叠加重力。
+ *       转到镖体系并选择控制通道后，按 maximum_command_overload（g）和
+ *       maximum_command_acceleration（m/s²）限制启用通道的合成指令。
+ */
 struct PngGuidanceConfig {
     double navigation_constant_y = 3.0;
     double navigation_constant_z = 3.0;
@@ -38,16 +41,19 @@ struct PngGuidanceConfig {
     double maximum_command_overload = 1.0;
     double maximum_command_acceleration =
         std::numeric_limits<double>::infinity();
+    mosas::guidance::ControlChannel control_channel = mosas::guidance::ControlChannel::both;
 };
 
-// 二维解耦 PNG 律输出。过载先在弹道系计算，再按 roll 转到镖体系；
-// navigation_acceleration 保留转换前的弹道系加速度，body 字段为转换结果。
+/**
+ * @brief PNG 最终指令；body 字段反映镖体系通道选择和限幅后的实际输出。
+ * @note navigation_acceleration 是同一最终指令的弹道系表达，仅供诊断。
+ */
 struct PngGuidanceOutput {
     bool valid;
     Vector3 navigation_acceleration;
     Vector3 body_acceleration;
     Vector3 body_overload;
-    double command_overload;  // 弹道系 y-z 平面合成指令过载 Γc，单位为 g。
+    double command_overload;  // 启用通道的合成指令过载 Γc，单位为 g。
     double command_phase;     // 弹道系 y-z 平面指令相位 φc，单位为弧度。
 };
 
@@ -193,12 +199,12 @@ public:
      * @param angular_velocity 已经过 IMU 转动补偿和滤波的惯性 LOS 角速度（rad/s）。
      * @param speed_mps 曝光时刻的动态速度（m/s）；速度方向按镖体系 +x 处理。
      * @param body_to_navigation 曝光时刻从镖体系到导航系的完整姿态旋转矩阵。
-     * @param config PNG 导航系数、重力和输出限幅配置。
+     * @param config PNG 导航系数、重力、镖体系控制通道和输出限幅配置。
      * @param trace 可选只读诊断快照输出；只复制既有中间量，不改变控制计算。
      * @return 制导计算结果；输入无效或数值异常时 valid=false。
      * @note 用完整姿态求惯性 LOS 仰角，先计算
      * s_y = q_dot_y + g*cos(q_y_inertial)/(2*V)，再以 N_y*V*s_y/g 得到纵向过载。
-     * 输出端不再叠加重力项；横向计算、roll 变换和限幅保持不变。
+     * 输出端不叠加重力项；先按 roll 转到镖体系，再清零未启用通道并限幅。
      */
     static PngGuidanceOutput calculate(
         const LineOfSight& line_of_sight,

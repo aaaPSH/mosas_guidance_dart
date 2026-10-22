@@ -442,6 +442,16 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             else return invalid();
             return true;
         }
+        if (key == "control_channel") {
+            guidance::ControlChannel channel;
+            if (value == "both") channel = guidance::ControlChannel::both;
+            else if (value == "pitch") channel = guidance::ControlChannel::pitch;
+            else if (value == "yaw") channel = guidance::ControlChannel::yaw;
+            else return invalid();
+            algorithms.png_guidance.control_channel = channel;
+            algorithms.body_vector_pn.control_channel = channel;
+            return true;
+        }
         if (key == "body_vector_navigation_constant") return set_double(&algorithms.body_vector_pn.navigation_constant) || invalid();
         if (key == "body_vector_los_sigma_a") return set_double(&algorithms.body_vector_filter.sigma_a) || invalid();
         if (key == "body_vector_los_sigma_l") return set_double(&algorithms.body_vector_filter.sigma_l) || invalid();
@@ -652,6 +662,9 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
     const auto& los_filter = config.algorithms.los_rate_filter;
     const auto& attitude = config.algorithms.attitude;
     const auto& png = config.algorithms.png_guidance;
+    if (!guidance::valid_control_channel(png.control_channel)) {
+        return fail_global(path, "控制通道无效（guidance.control_channel）", error);
+    }
     auto vector_pn = config.algorithms.body_vector_pn;
     vector_pn.gravity = attitude.gravity_mps2;
     if (!guidance::BodyVectorLosFilter::valid_config(config.algorithms.body_vector_filter) ||

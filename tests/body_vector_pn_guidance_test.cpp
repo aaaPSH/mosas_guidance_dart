@@ -4,6 +4,7 @@
 #include "body_vector_test_support.hpp"
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -176,6 +177,54 @@ int main() {
     output = guidance::BodyVectorPnGuidance(limited_config).calculate(input);
     CHECK(output.valid);
     CHECK_NEAR(std::hypot(output.command.overload_g.y, output.command.overload_g.z), 0.3, 1e-12);
+
+    // 镖体系单通道先选轴再限幅，另一轴不消耗过载或加速度额度。
+    for (const double roll : {0.0, 0.7, pi / 2.0}) {
+        auto selected_input = input;
+        selected_input.attitude = test::vector_test_attitude(0.35, roll);
+        for (const double y_rate : {-0.3, 0.0, 0.2}) {
+            selected_input.vector_los.inertial_direction_rate = {0.0, y_rate, -1.0};
+            const auto unrestricted = law.calculate(selected_input);
+            CHECK(unrestricted.valid);
+            for (const auto channel : {guidance::ControlChannel::pitch, guidance::ControlChannel::yaw}) {
+                for (const double acceleration_limit :
+                     {std::numeric_limits<double>::infinity(), 0.1 * config.gravity}) {
+                    auto selected = config;
+                    selected.control_channel = channel;
+                    selected.maximum_command_overload = 0.3;
+                    selected.maximum_command_acceleration = acceleration_limit;
+                    const auto single = guidance::BodyVectorPnGuidance(selected).calculate(selected_input);
+                    CHECK(single.valid && single.command.valid);
+                    const bool pitch_channel = channel == guidance::ControlChannel::pitch;
+                    const double raw = pitch_channel ? unrestricted.command.overload_g.y
+                                                     : unrestricted.command.overload_g.z;
+                    const double limit = std::min(0.3, acceleration_limit / config.gravity);
+                    const double expected = std::copysign(std::min(std::abs(raw), limit), raw);
+                    const auto command = single.command.overload_g;
+                    CHECK_NEAR(pitch_channel ? command.y : command.z, expected, 1e-12);
+                    CHECK((pitch_channel ? command.z : command.y) == 0.0);
+                    CHECK_NEAR(single.diagnostics.body_overload.y, command.y, 0.0);
+                    CHECK_NEAR(single.diagnostics.body_overload.z, command.z, 0.0);
+                    CHECK_NEAR(single.diagnostics.command_overload.value, std::abs(expected), 1e-12);
+                    CHECK_NEAR(single.diagnostics.body_acceleration.y, command.y * config.gravity, 1e-12);
+                    CHECK_NEAR(single.diagnostics.body_acceleration.z, command.z * config.gravity, 1e-12);
+                    CHECK_NEAR(single.diagnostics.navigation_acceleration.y,
+                               std::cos(roll) * single.diagnostics.body_acceleration.y -
+                                   std::sin(roll) * single.diagnostics.body_acceleration.z, 1e-12);
+                    CHECK_NEAR(single.diagnostics.navigation_acceleration.z,
+                               std::sin(roll) * single.diagnostics.body_acceleration.y +
+                                   std::cos(roll) * single.diagnostics.body_acceleration.z, 1e-12);
+                    selected.maximum_command_overload = 0.0;
+                    const auto zero = guidance::BodyVectorPnGuidance(selected).calculate(selected_input);
+                    CHECK(zero.valid && zero.command.overload_g.y == 0.0 && zero.command.overload_g.z == 0.0);
+                }
+            }
+        }
+    }
+    auto invalid_channel_config = config;
+    invalid_channel_config.control_channel = static_cast<guidance::ControlChannel>(-1);
+    CHECK(!guidance::BodyVectorPnGuidance::valid_config(invalid_channel_config));
+    CHECK(!guidance::BodyVectorPnGuidance(invalid_channel_config).calculate(input).valid);
 
     input.vector_los.valid = false;
     CHECK(law.calculate(input).invalid_reason == domain::GuidanceInvalidReason::invalid_rate);

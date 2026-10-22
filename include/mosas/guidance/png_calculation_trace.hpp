@@ -4,8 +4,10 @@
 
 /** @brief Optional snapshot of values already computed by PNG.
  * @note LOS elevation is in rad, rates in rad/s, overloads in g, and
- * navigation_acceleration in m/s². The raw and
- * after_overload_limit vectors are in ballistic axes, not roll-rotated body axes.
+ * navigation_acceleration in m/s². The raw and after_overload_limit vectors
+ * use ballistic axes. Raw values precede body-channel selection; after_overload_limit
+ * is the selected body command converted back to ballistic axes, before the acceleration cap.
+ * Final navigation_acceleration and body_overload reflect channel selection and both caps.
  * A reused snapshot is reset on entry; valid remains false on rejected input.
  */
 struct PngCalculationTrace {

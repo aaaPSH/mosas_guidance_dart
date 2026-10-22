@@ -4,6 +4,7 @@
 #include "test_support.hpp"
 #include "body_vector_test_support.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -166,6 +167,64 @@ int main() {
         CHECK_NEAR(adapted.command.overload_g.y, perturbed.body_overload.y, 1e-12);
         CHECK_NEAR(adapted.command.overload_g.z, perturbed.body_overload.z, 1e-12);
     }
+    // 通道选择发生在 roll 转换之后、两级限幅之前；未选轴不能挤占额度。
+    for (const double test_roll : {0.0, 0.7, std::acos(-1.0) / 2.0}) {
+        const auto test_rotation = mosas::test::runtime_test_rotation(0.35, test_roll);
+        for (const LineOfSightAngularVelocity rates :
+             {LineOfSightAngularVelocity{true, -0.25, 2.0},
+              LineOfSightAngularVelocity{true, 2.0, -0.01},
+              LineOfSightAngularVelocity{true, -2.0, -2.0}}) {
+            const auto unrestricted = PngGuidance::calculate(
+                measured_los, rates, 16.0, test_rotation, png);
+            CHECK(unrestricted.valid);
+            for (const auto channel : {mosas::guidance::ControlChannel::pitch,
+                                       mosas::guidance::ControlChannel::yaw}) {
+                for (const double acceleration_limit :
+                     {std::numeric_limits<double>::infinity(), 0.1 * png.gravity}) {
+                    auto selected = png;
+                    selected.control_channel = channel;
+                    selected.maximum_command_overload = 0.3;
+                    selected.maximum_command_acceleration = acceleration_limit;
+                    PngCalculationTrace trace;
+                    const auto single = PngGuidance::calculate(
+                        measured_los, rates, 16.0, test_rotation, selected, &trace);
+                    CHECK(single.valid && trace.valid);
+                    const bool pitch_channel = channel == mosas::guidance::ControlChannel::pitch;
+                    const double raw = pitch_channel ? unrestricted.body_overload.y
+                                                     : unrestricted.body_overload.z;
+                    const double limit = std::min(0.3, acceleration_limit / png.gravity);
+                    const double expected = std::copysign(std::min(std::abs(raw), limit), raw);
+                    CHECK_NEAR(pitch_channel ? single.body_overload.y : single.body_overload.z,
+                               expected, 1e-12);
+                    CHECK((pitch_channel ? single.body_overload.z : single.body_overload.y) == 0.0);
+                    CHECK_NEAR(single.command_overload, std::abs(expected), 1e-12);
+                    CHECK_NEAR(single.body_acceleration.y, single.body_overload.y * png.gravity, 1e-12);
+                    CHECK_NEAR(single.body_acceleration.z, single.body_overload.z * png.gravity, 1e-12);
+                    CHECK_NEAR(single.navigation_acceleration.y,
+                               std::cos(test_roll) * single.body_acceleration.y -
+                                   std::sin(test_roll) * single.body_acceleration.z, 1e-12);
+                    CHECK_NEAR(single.navigation_acceleration.z,
+                               std::sin(test_roll) * single.body_acceleration.y +
+                                   std::cos(test_roll) * single.body_acceleration.z, 1e-12);
+                    CHECK_NEAR(trace.body_overload.y, single.body_overload.y, 0.0);
+                    CHECK_NEAR(trace.body_overload.z, single.body_overload.z, 0.0);
+                    CHECK_NEAR(trace.navigation_acceleration.y, single.navigation_acceleration.y, 0.0);
+                    CHECK_NEAR(trace.navigation_acceleration.z, single.navigation_acceleration.z, 0.0);
+                    CHECK_NEAR(std::hypot(trace.after_overload_limit.y, trace.after_overload_limit.z),
+                               std::min(std::abs(raw), 0.3), 1e-12);
+                    selected.maximum_command_overload = 0.0;
+                    const auto zero = PngGuidance::calculate(
+                        measured_los, rates, 16.0, test_rotation, selected);
+                    CHECK(zero.valid && zero.body_overload.y == 0.0 && zero.body_overload.z == 0.0);
+                }
+            }
+        }
+    }
+    auto invalid_channel_config = png;
+    invalid_channel_config.control_channel = static_cast<mosas::guidance::ControlChannel>(-1);
+    CHECK(!PngGuidance::calculate(measured_los, {true, 0.0, 0.0}, 16.0,
+                                  rotation, invalid_channel_config).valid);
+
     auto invalid_rotation = rotation;
     invalid_rotation.m00 = 2.0;
     CHECK(!PngGuidance::calculate(measured_los, {true, 0.0, 0.0}, 16.0,

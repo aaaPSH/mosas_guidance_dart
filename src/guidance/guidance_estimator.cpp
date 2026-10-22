@@ -34,7 +34,8 @@ bool is_valid_png_config(const PngGuidanceConfig& config) {
          config.maximum_command_acceleration >= 0.0) ||
         (std::isinf(config.maximum_command_acceleration) &&
          config.maximum_command_acceleration > 0.0);
-    return is_finite(config.navigation_constant_y) &&
+    return mosas::guidance::valid_control_channel(config.control_channel) &&
+           is_finite(config.navigation_constant_y) &&
            is_finite(config.navigation_constant_z) &&
            is_finite(config.gravity) && config.navigation_constant_y > 0.0 &&
            config.navigation_constant_z > 0.0 && config.gravity > 0.0 &&
@@ -541,18 +542,14 @@ PngGuidanceOutput PngGuidance::calculate(
     const double roll_rad = std::atan2(-body_to_navigation.m12, body_to_navigation.m11);
     const double cos_pitch = std::cos(pitch_rad);
     const double speed_over_gravity = speed_mps / config.gravity;
-    double vertical_overload =
+    const double vertical_overload =
         config.navigation_constant_y * compensated_elevation_rate * speed_over_gravity;
-    double lateral_overload =
+    const double lateral_overload =
         config.navigation_constant_z * angular_velocity.q_z *
         speed_over_gravity * cos_pitch;
-    if (!is_finite(vertical_overload) || !is_finite(lateral_overload)) {
-        return invalid_output;
-    }
-
-    double command_overload =
-        std::hypot(vertical_overload, lateral_overload);
-    if (!is_finite(command_overload)) {
+    const double raw_command_overload = std::hypot(vertical_overload, lateral_overload);
+    if (!is_finite(vertical_overload) || !is_finite(lateral_overload) ||
+        !is_finite(raw_command_overload)) {
         return invalid_output;
     }
     if (trace) {
@@ -561,53 +558,66 @@ PngGuidanceOutput PngGuidance::calculate(
         trace->parabolic_elevation_rate_rad_s = parabolic_elevation_rate;
         trace->compensated_elevation_rate_rad_s = compensated_elevation_rate;
         trace->raw_navigation_overload = {0.0, vertical_overload, lateral_overload};
-        trace->raw_command_overload = command_overload;
+        trace->raw_command_overload = raw_command_overload;
+    }
+
+    const double cosine_roll = std::cos(roll_rad);
+    const double sine_roll = std::sin(roll_rad);
+    Vector3 body_overload{
+        0.0,
+        cosine_roll * vertical_overload + sine_roll * lateral_overload,
+        -sine_roll * vertical_overload + cosine_roll * lateral_overload};
+    if (!is_finite(body_overload)) {
+        return invalid_output;
+    }
+    // 通道属于镖体系；必须先完成 roll 转换，再选轴，避免关闭轴挤占限幅额度。
+    mosas::guidance::select_control_channel(
+        config.control_channel, body_overload.y, body_overload.z);
+    double command_overload = std::hypot(body_overload.y, body_overload.z);
+    if (!is_finite(command_overload)) {
+        return invalid_output;
     }
     if (command_overload > config.maximum_command_overload) {
         if (trace) trace->overload_limited = true;
-        const double scale =
-            config.maximum_command_overload / command_overload;
-        vertical_overload *= scale;
-        lateral_overload *= scale;
-        command_overload = std::hypot(vertical_overload, lateral_overload);
+        const double scale = config.maximum_command_overload / command_overload;
+        body_overload.y *= scale;
+        body_overload.z *= scale;
+        command_overload = std::hypot(body_overload.y, body_overload.z);
     }
 
-    if (trace) trace->after_overload_limit = {0.0, vertical_overload, lateral_overload};
-    const double command_phase = std::atan2(lateral_overload, vertical_overload);
-    Vector3 ballistic_acceleration{
-        0.0, config.gravity * vertical_overload,
-        config.gravity * lateral_overload};
-    if (!is_finite(ballistic_acceleration)) {
+    // 弹道系字段只反映所选通道的实际指令，不再参与控制计算。
+    const Vector3 ballistic_overload{
+        0.0,
+        cosine_roll * body_overload.y - sine_roll * body_overload.z,
+        sine_roll * body_overload.y + cosine_roll * body_overload.z};
+    if (trace) trace->after_overload_limit = ballistic_overload;
+    const double command_phase = command_overload == 0.0
+        ? 0.0 : std::atan2(ballistic_overload.z, ballistic_overload.y);
+    Vector3 body_acceleration{
+        0.0, config.gravity * body_overload.y, config.gravity * body_overload.z};
+    if (!is_finite(body_acceleration)) {
         return invalid_output;
     }
-    const double command_acceleration = vector_norm(ballistic_acceleration);
+    const double command_acceleration = vector_norm(body_acceleration);
     if (!is_finite(command_acceleration)) {
         return invalid_output;
     }
     if (is_finite(config.maximum_command_acceleration) &&
         command_acceleration > config.maximum_command_acceleration) {
         if (trace) trace->acceleration_limited = true;
-        const double scale =
-            config.maximum_command_acceleration / command_acceleration;
-        ballistic_acceleration.x *= scale;
-        ballistic_acceleration.y *= scale;
-        ballistic_acceleration.z *= scale;
+        const double scale = config.maximum_command_acceleration / command_acceleration;
+        body_acceleration.y *= scale;
+        body_acceleration.z *= scale;
         command_overload *= scale;
     }
-
-    const double cosine_roll = std::cos(roll_rad);
-    const double sine_roll = std::sin(roll_rad);
-    const Vector3 body_acceleration{
-        ballistic_acceleration.x,
-        cosine_roll * ballistic_acceleration.y +
-            sine_roll * ballistic_acceleration.z,
-        -sine_roll * ballistic_acceleration.y +
-            cosine_roll * ballistic_acceleration.z};
-    const Vector3 body_overload{
-        body_acceleration.x / config.gravity,
-        body_acceleration.y / config.gravity,
-        body_acceleration.z / config.gravity};
-    if (!is_finite(body_overload) || !is_finite(command_phase)) {
+    body_overload = {0.0, body_acceleration.y / config.gravity,
+                    body_acceleration.z / config.gravity};
+    const Vector3 ballistic_acceleration{
+        0.0,
+        cosine_roll * body_acceleration.y - sine_roll * body_acceleration.z,
+        sine_roll * body_acceleration.y + cosine_roll * body_acceleration.z};
+    if (!is_finite(body_overload) || !is_finite(ballistic_acceleration) ||
+        !is_finite(command_phase)) {
         return invalid_output;
     }
     if (trace) {

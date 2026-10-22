@@ -10,7 +10,8 @@ namespace mosas::guidance {
 BodyVectorPnGuidance::BodyVectorPnGuidance(const BodyVectorPnConfig &config) : config_(config) {}
 
 bool BodyVectorPnGuidance::valid_config(const BodyVectorPnConfig &c) noexcept {
-    return std::isfinite(c.navigation_constant) && c.navigation_constant > 0.0 &&
+    return valid_control_channel(c.control_channel) &&
+           std::isfinite(c.navigation_constant) && c.navigation_constant > 0.0 &&
            std::isfinite(c.gravity) && c.gravity > 0.0 &&
            std::isfinite(c.maximum_command_overload) && c.maximum_command_overload >= 0.0 &&
            !std::isnan(c.maximum_command_acceleration) && c.maximum_command_acceleration >= 0.0;
@@ -69,6 +70,7 @@ domain::GuidanceOutput BodyVectorPnGuidance::calculate(const domain::GuidanceInp
     if (!std::isfinite(gain) || !detail::finite(specific_force)) {
         return reject(domain::GuidanceInvalidReason::algorithm_rejected);
     }
+    select_control_channel(config_.control_channel, specific_force[1], specific_force[2]);
     detail::Vec3 overload{0.0, specific_force[1] / config_.gravity,
                           specific_force[2] / config_.gravity};
     double magnitude = detail::norm(overload);

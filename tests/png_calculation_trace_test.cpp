@@ -22,8 +22,10 @@ int main(){
     const LineOfSight los{true,0,0};
     for(double pitch:{-.7,0.,.6})for(double roll:{0.,.4})for(double speed:{1.,16.})
     for(double y:{-.2,0.,.2})for(double z:{-.2,0.,.2})for(double cap:{.3,1.})
-    for(double acceleration:{2.,std::numeric_limits<double>::infinity()}){
+    for(double acceleration:{2.,std::numeric_limits<double>::infinity()})
+    for(auto channel:{mosas::guidance::ControlChannel::both,mosas::guidance::ControlChannel::pitch,mosas::guidance::ControlChannel::yaw}){
         PngGuidanceConfig config;config.maximum_command_overload=cap;config.maximum_command_acceleration=acceleration;
+        config.control_channel=channel;
         PngCalculationTrace trace;
         const auto plain=PngGuidance::calculate(los,{true,y,z},speed,mosas::test::runtime_test_rotation(pitch,roll),config);
         const auto observed=PngGuidance::calculate(los,{true,y,z},speed,mosas::test::runtime_test_rotation(pitch,roll),config,&trace);
