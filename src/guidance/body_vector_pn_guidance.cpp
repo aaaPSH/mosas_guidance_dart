@@ -44,12 +44,28 @@ domain::GuidanceOutput BodyVectorPnGuidance::calculate(const domain::GuidanceInp
         return reject(domain::GuidanceInvalidReason::invalid_rate);
     }
 
-    const auto omega = detail::cross(l, u);
+    // PNG 的 q_dot_parabola=-g*cos(q_N)/(2V) 等价于下式单位方向导数。
+    // 在导航系构造切向基准，再完整旋转到镖体系；极点不需要除以 cos(q_N)。
+    const auto navigation_los = detail::apply(rotation, l);
+    const double half_gravity_over_speed = 0.5 * config_.gravity / input.speed_mps.value;
+    const detail::Vec3 parabolic_rate_navigation{
+        half_gravity_over_speed * navigation_los[1] * navigation_los[0],
+        -half_gravity_over_speed * (1.0 - navigation_los[1] * navigation_los[1]),
+        half_gravity_over_speed * navigation_los[1] * navigation_los[2]};
+    const auto parabolic_rate_dart =
+        detail::apply(detail::transpose(rotation), parabolic_rate_navigation);
+    const detail::Vec3 compensated_rate{u[0] - parabolic_rate_dart[0],
+                                        u[1] - parabolic_rate_dart[1],
+                                        u[2] - parabolic_rate_dart[2]};
+    if (!std::isfinite(half_gravity_over_speed) || !detail::finite(compensated_rate)) {
+        return reject(domain::GuidanceInvalidReason::algorithm_rejected);
+    }
+
+    const auto omega = detail::cross(l, compensated_rate);
     const auto pn_direction = detail::cross(omega, {1.0, 0.0, 0.0});
     const double gain = config_.navigation_constant * input.speed_mps.value;
-    // Rᵀ (0,-g,0) 的横向分量为 -g R[1][1/2]，不补偿未控制的纵向重力。
-    detail::Vec3 specific_force{0.0, gain * pn_direction[1] + config_.gravity * rotation[1][1],
-                                gain * pn_direction[2] + config_.gravity * rotation[1][2]};
+    // 只对补偿后的惯性 LOS 速率施加 PN 增益，不在输出端再次叠加重力。
+    detail::Vec3 specific_force{0.0, gain * pn_direction[1], gain * pn_direction[2]};
     if (!std::isfinite(gain) || !detail::finite(specific_force)) {
         return reject(domain::GuidanceInvalidReason::algorithm_rejected);
     }

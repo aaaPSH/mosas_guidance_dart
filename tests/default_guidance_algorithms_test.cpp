@@ -343,6 +343,11 @@ int main() {
     vector_config.algorithms.body_vector_pn.maximum_command_acceleration = 100.0;
     vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
     CHECK_NEAR(vector_dependencies.guidance_law->calculate(guidance_input)
-                   .diagnostics.body_acceleration.y, 10.0, 1e-12);
+                   .diagnostics.body_acceleration.y, 15.0, 1e-12);
+    guidance_input.vector_los.inertial_direction_rate.y =
+        -10.0 / (2.0 * guidance_input.speed_mps.value);
+    const auto parabolic_output = vector_dependencies.guidance_law->calculate(guidance_input);
+    CHECK(parabolic_output.valid);
+    CHECK_NEAR(parabolic_output.command.overload_g.y, 0.0, 1e-12);
     return 0;
 }

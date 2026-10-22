@@ -152,9 +152,8 @@ int verify_dynamic_speed(bool vector_guidance,
     for (std::size_t i = 1; i < output.size(); ++i) {
         const double speed = guidance_speeds[i - 1];
         CHECK(output[i].valid);
-        const double expected_y = vector_guidance
-            ? 1.0 + 3.0 * speed * 0.2 / gravity
-            : 3.0 * speed * (0.2 + gravity / (2.0 * speed)) / gravity;
+        const double expected_y =
+            3.0 * speed * (0.2 + gravity / (2.0 * speed)) / gravity;
         CHECK_NEAR(output[i].overload_g.y, expected_y, 1e-12);
         CHECK_NEAR(output[i].overload_g.x, 0.0, 1e-12);
         CHECK_NEAR(output[i].overload_g.z, 0.0, 1e-12);
@@ -240,7 +239,8 @@ int main() {
         CHECK(output[i].valid == should_be_valid);
         if (should_be_valid) {
             CHECK(output[i].source_frame_id == i);
-            CHECK_NEAR(output[i].overload_g.y, 1.0, 1e-12);
+            // 导航系 LOS 极点的抛物线基准为零，不再输出保持高度的 1g。
+            CHECK_NEAR(output[i].overload_g.y, 0.0, 1e-12);
         } else {
             CHECK_NEAR(output[i].overload_g.y, 0.0, 1e-12);
         }

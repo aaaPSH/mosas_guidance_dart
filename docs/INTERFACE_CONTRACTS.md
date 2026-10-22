@@ -143,7 +143,7 @@ using OverloadDartG = Vec3<DartFrameTag>; // 每分量以 g 为单位的无量�
 - roll 单位 rad，正方向绕 `+X` 右手规则。
 - LOS q 单位 rad，LOS rate 单位 rad/s，加速度/比力 m/s²，过载 g。
 - `DirectionDartUnit` 为镖体系单位 LOS，无量纲；`DirectionRateDartPerSec` 是 LOS 惯性导数的镖体系表达，单位 1/s。惯性导数不是相机测得的相对导数，也不是导航系坐标分量。
-- 指令过载是下发的横向比力/g，不是净运动学加速度/g。默认 PNG 在 LOS 速率域补偿自然抛物线，不在输出端另加重力；矢量 PN 仍在输出端补偿横向重力。
+- 指令过载是下发的横向比力/g，不是净运动学加速度/g。PNG 与矢量 PN 均在 LOS 速率域扣除自然抛物线基准，不在输出端另加重力；矢量 PN 的基准方向经完整姿态转换到镖体系。
 
 任何 `Vec3` 跨模块传递必须通过坐标标签/字段名表达坐标系。禁止把“navigation_acceleration”“body_overload”等不同含义复用同一个无标签数组。
 
@@ -450,7 +450,7 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 
 ### 6.2 默认 PNG 的抛物线 LOS 角速度补偿
 
-仅默认 `png` 改用角速度域重力补偿，不改变标量 LOS 滤波器的测量状态，也不影响 `body_vector_pn`。先用当前完整姿态将镖体系 LOS 单位方向转到导航系，再求惯性 LOS 仰角：
+默认 `png` 在角速度域扣除自然抛物线基准，不改变标量 LOS 滤波器的测量状态；`body_vector_pn` 使用同一基准的矢量形式（见 6.3）。PNG 先用当前完整姿态将镖体系 LOS 单位方向转到导航系，再求惯性 LOS 仰角：
 
 ```
 l_N = R_N_from_D * l_D
@@ -485,20 +485,25 @@ u_pred = C * u_previous
 新 PN 使用单个导航系数，速度方向按小攻角/侧滑模型近似为镖体 +X：
 
 ```
-omega_LOS_D = l_D × u_D
-a_PN_D = N * V * (omega_LOS_D × e_x)
-g_D = transpose(R_N_from_D) * (0,-g,0)
-f_command_D = a_PN_D - (I-e_x*transpose(e_x)) * g_D
+l_N = R_N_from_D * l_D
+e_up_N = (0,1,0)
+u_parabola_N = -g / (2 * V_actual) * (e_up_N - l_N.y * l_N)
+u_parabola_D = transpose(R_N_from_D) * u_parabola_N
+u_compensated_D = u_D - u_parabola_D
+omega_compensated_D = l_D × u_compensated_D
+f_command_D = N * V_actual * (omega_compensated_D × e_x)
 n_command_D = f_command_D / g
 ```
 
-导航项不再额外按 roll 旋转，也不使用旧横向 `cos_pitch` 因子。重力补偿后按总 Y/Z 比力同比例限幅，取过载上限和加速度上限/g 的较小值；最终 X=0、Y/Z 分别下发。弹道系诊断量仅为记录转换，不反馈到镖体系命令计算。
+`u_parabola_N` 是 `q_dot_y_parabola=-g*cos(q_y_inertial)/(2*V_actual)`、惯性 LOS 方位角速率为零的单位方向导数：`e_up_N-l_N.y*l_N` 的长度为 `cos(q_y_inertial)`，不需要除以该余弦，故导航系仰角极点也连续有效。基准经完整姿态转换到镖体系后才扣除，roll=90° 时补偿不会仍固定在镖体 Y。滤波器原始/滤波方向与惯性导数保持不变，仅在制导计算局部使用补偿值；不使用标量速率诊断作为回退。
+
+导航项不再额外按 roll 旋转，也不使用旧横向 `cos_pitch` 因子；输出端的 `+g*R[1][1/2]` 横向重力项已删除，避免重复补偿。最终按总 Y/Z 指令比力同比例限幅，取过载上限和加速度上限/g 的较小值；X=0、Y/Z 分别下发。弹道系诊断量仅为记录转换，不反馈到镖体系命令计算。
 
 角速率展示由矢量投影得到，LOS 仰角极点处可以无效，但不影响有效矢量 PN。LOS 离轴角不要求很小，但速度轴近似、实际机动能力、闭环延迟仍限制适用范围，不能据此承诺命中。
 
 新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`；`launch_speed_mps` 仅为标定发射速度初值，不再作为固定制导速度。
 
-C++ 参数结构的缺省值保持 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms，总比力限制为 1g/9.80665m/s²。仓库配置显式采用离线回放候选 sigma_a=4、sigma_l=0.0005，初始速率方差和最大间隔保持不变；总比力上限显式设为 0.3g、加速度上限保持 9.80665m/s²，避免算法切换意外提高既有上限。候选参数尚需独立实测验证。限幅包含横向重力补偿；水平 1g 已全部用于抵消重力，没有额外净向上机动余量。
+C++ 参数结构的缺省值保持 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms，总比力限制为 1g/9.80665m/s²。仓库配置显式采用离线回放候选 sigma_a=4、sigma_l=0.0005，初始速率方差和最大间隔保持不变；总比力上限显式设为 0.3g、加速度上限保持 9.80665m/s²，避免算法切换意外提高既有上限。候选参数尚需独立实测验证。限幅作用于抛物线速率补偿后的最终指令，不单独保留保持高度的重力前馈。测得的矢量惯性导数等于自然抛物线基准时输出为零；零 LOS 速率并不等于基准速率，例如水平前向 LOS、零速率时未限幅指令为 `N/2 g`。矢量 PN 保留自身几何投影，不承诺离轴场景中与标量 PNG 的各轴输出完全相同。
 
 “滚转一致性”验证保持同一物理场景并同步转换输入；不同 roll 的镖体系输出应不同，但转换回相同惯性系后的指令一致。固定镖体系输入数值只改变 roll，不是这个等价性测试。
 
