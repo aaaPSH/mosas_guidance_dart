@@ -36,8 +36,14 @@ int main() {
     CHECK(config.algorithms.attitude.launch_speed_mps > 0.0);
     CHECK(config.algorithms.attitude.launch_confirm_ns == 20'000'000);
     CHECK(config.algorithms.attitude.launch_detection_mode ==
-          mosas::runtime::LaunchDetectionMode::acceleration);
-    CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
+          mosas::runtime::LaunchDetectionMode::two_stage);
+    CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
+    CHECK_NEAR(config.algorithms.body_vector_filter.sigma_a, 4.0, 1e-12);
+    CHECK_NEAR(config.algorithms.body_vector_filter.sigma_l, 0.0005, 1e-12);
+    CHECK_NEAR(config.algorithms.body_vector_filter.initial_rate_covariance, 1.0, 1e-12);
+    CHECK_NEAR(config.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(config.algorithms.body_vector_pn.maximum_command_overload, 0.3, 1e-12);
+    CHECK_NEAR(config.algorithms.body_vector_pn.maximum_command_acceleration, 9.80665, 1e-12);
     CHECK(config.algorithms.vision_config.initial_roi.width == 640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,
                486.244430986463, 1e-9);
@@ -82,9 +88,13 @@ int main() {
     CHECK(dependencies.guidance_law != nullptr);
     CHECK(dependencies.monotonic_clock != nullptr);
     CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
-              dependencies.los_rate_filter.get()) == nullptr);
+              dependencies.los_rate_filter.get()) != nullptr);
+    CHECK(dynamic_cast<mosas::guidance::BodyVectorPnGuidance*>(
+              dependencies.guidance_law.get()) != nullptr);
+    auto png_config = config.algorithms;
+    png_config.algorithm = mosas::app::GuidanceAlgorithm::png;
     bool observed_png=false;
-    auto observed_dependencies=mosas::app::make_default_guidance_algorithms(config.algorithms,
+    auto observed_dependencies=mosas::app::make_default_guidance_algorithms(png_config,
         [&](const mosas::domain::GuidanceInput& input,const PngCalculationTrace& trace){
             observed_png=input.source_frame_id==91&&trace.valid;
         });
@@ -114,6 +124,19 @@ int main() {
         file.close();
         return file.good() && mosas::app::AppConfigLoader::load(temporary_config.path, output, &error);
     };
+    // Omitting the algorithm selector still uses PNG, independently of the shipped configuration.
+    {
+        auto text = source_text.str();
+        const auto begin = text.find("\nguidance_algorithm=");
+        CHECK(begin != std::string::npos);
+        const auto end = text.find('\n', begin + 1);
+        text.erase(begin, end - begin);
+        { std::ofstream file(temporary_config.path); file << text; }
+        mosas::app::AppConfig without_algorithm;
+        CHECK(mosas::app::AppConfigLoader::load(
+            temporary_config.path, &without_algorithm, &error));
+        CHECK(without_algorithm.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
+    }
     // Existing configurations without the selector retain the acceleration trigger.
     {
         auto text = source_text.str();
@@ -235,7 +258,7 @@ int main() {
     guidance_input.vector_los = vector_rate.vector;
     guidance_input.speed_mps.value = 13.0;
     CHECK_NEAR(vector_dependencies.guidance_law->calculate(guidance_input).command.overload_g.y,
-               1.0, 1e-12);
+               0.3, 1e-12);
 
     CHECK(load_variant("guidance_algorithm=body_vector_pn\n"
                        "body_vector_navigation_constant=4.5\n"

@@ -430,7 +430,7 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 
 #### 6.1.1 可选发射触发判据和姿态积分边界
 
-`[guidance] launch_detection_mode=acceleration|two_stage` 在启动时选择；缺省及示例配置均为 `acceleration`，未知值拒绝加载。估计器构造后模式固定，切换配置须重启；reset 保留模式，只清除标定、候选和触发锁存。此参数不改变重力补偿、LOS 算法或串口字节布局。
+`[guidance] launch_detection_mode=acceleration|two_stage` 在启动时选择；未配置该键时仍为 `acceleration`，仓库示例配置显式选择 `two_stage`，未知值拒绝加载。估计器构造后模式固定，切换配置须重启；reset 保留模式，只清除标定、候选和触发锁存。此参数不改变重力补偿、LOS 算法或串口字节布局。
 
 | 模式 | 触发时刻 | `launched` 的含义 |
 | --- | --- | --- |
@@ -468,7 +468,7 @@ n_y = N_y * V_actual * s_y / g0
 
 ### 6.3 可选镖体系矢量 PN
 
-`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；缺省使用上述带抛物线速率补偿的 PNG。标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
+`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；未配置该键时仍使用上述带抛物线速率补偿的 PNG。仓库 `config/mosas_guidance.conf` 显式选择 `body_vector_pn`。标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
 
 `BodyVectorLosFilter` 保存六状态 `[l_D,u_D]` 和完整 6×6 协方差。测量为单位 LOS；`u_D` 为惯性 LOS 导数的镖体系表达。两帧的坐标运输采用：
 
@@ -498,7 +498,7 @@ n_command_D = f_command_D / g
 
 新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`；`launch_speed_mps` 仅为标定发射速度初值，不再作为固定制导速度。
 
-默认 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms；默认总比力限制仍为 1g/9.80665m/s²，不擅自提高硬件上限。水平 1g 已全部用于抵消重力，没有额外净向上机动余量。
+C++ 参数结构的缺省值保持 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms，总比力限制为 1g/9.80665m/s²。仓库配置显式采用离线回放候选 sigma_a=4、sigma_l=0.0005，初始速率方差和最大间隔保持不变；总比力上限显式设为 0.3g、加速度上限保持 9.80665m/s²，避免算法切换意外提高既有上限。候选参数尚需独立实测验证。限幅包含横向重力补偿；水平 1g 已全部用于抵消重力，没有额外净向上机动余量。
 
 “滚转一致性”验证保持同一物理场景并同步转换输入；不同 roll 的镖体系输出应不同，但转换回相同惯性系后的指令一致。固定镖体系输入数值只改变 roll，不是这个等价性测试。
 

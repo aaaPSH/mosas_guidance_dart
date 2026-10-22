@@ -42,20 +42,28 @@ int main() {
     CHECK(cfg.app.camera.width == 640 && cfg.app.camera.height == 480);
     CHECK(cfg.app.camera.fps == 120 && cfg.app.imu.sample_rate_hz == 200);
     CHECK(cfg.app.algorithms.attitude.launch_speed_mps == 16);
-    CHECK(cfg.app.algorithms.algorithm == app::GuidanceAlgorithm::png);
-    CHECK(cfg.app.algorithms.png_guidance.maximum_command_overload == 0.3);
+    CHECK(cfg.app.algorithms.attitude.launch_detection_mode == runtime::LaunchDetectionMode::two_stage);
+    CHECK(cfg.app.algorithms.algorithm == app::GuidanceAlgorithm::body_vector_pn);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_filter.sigma_a, 4.0, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_filter.sigma_l, 0.0005, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_filter.initial_rate_covariance, 1.0, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_pn.maximum_command_overload, 0.3, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.body_vector_pn.maximum_command_acceleration, 9.80665, 1e-12);
     auto algorithms = app::make_default_guidance_algorithms(cfg.app.algorithms);
     domain::GuidanceInput input;
     input.attitude.valid = true;
     input.line_of_sight = {true, {0}, {0}};
     input.angular_velocity = {true, {0}, {0}};
+    input.vector_los = {true, {1, 0, 0}, {0, 0, 0}};
     input.speed_mps = {cfg.app.algorithms.attitude.launch_speed_mps};
     auto command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);
-    // Parabolic LOS-rate compensation still contributes when the measured rate is zero.
+    // Vector PN includes transverse gravity in the same 0.3g combined limit.
     CHECK_NEAR(command.command.overload_g.y, 0.3, 1e-12);
     input.attitude = test::vector_test_attitude(0.6108652381980153, 0.7);
     input.angular_velocity = {true, {0.5}, {-0.4}};
+    input.vector_los.inertial_direction_rate = {0, 0.5, -0.4};
     command = algorithms.guidance_law->calculate(input);
     CHECK(command.valid);
     CHECK_NEAR(std::hypot(command.command.overload_g.y,
@@ -71,7 +79,7 @@ int main() {
     app::AppConfig original;
     CHECK(app::AppConfigLoader::load(fixture.directory / "app.conf", &original, &error));
     CHECK(cfg.app.guidance.camera_intrinsics.fx == original.guidance.camera_intrinsics.fx);
-    CHECK(cfg.app.algorithms.png_guidance.maximum_command_overload == original.algorithms.png_guidance.maximum_command_overload);
+    CHECK(cfg.app.algorithms.body_vector_pn.maximum_command_overload == original.algorithms.body_vector_pn.maximum_command_overload);
     CHECK(cfg.app.algorithms.los_rate_filter.sigma_a_pitch == original.algorithms.los_rate_filter.sigma_a_pitch);
     CHECK(cfg.app.serial.device == original.serial.device); // Parsed, never opened.
     for (const auto& bad : {"[simulation]\napp_config=app.conf\n", "[simulation]\nrecording_directory=x\n",
