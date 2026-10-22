@@ -37,24 +37,40 @@ mosas::runtime::CameraFrame make_frame(std::int64_t timestamp) {
 /**
  * @brief 验证实际速度积分、曝光时刻插值和两种 PN 的过载计算链路。
  * @param vector_guidance 为 true 时验证矢量 PN，否则验证标量 PNG。
+ * @param mode 发射触发判据；验证输出时机和后续速度插值随模式选择。
  * @return 全部断言通过时为 0。
  */
-int verify_dynamic_speed(bool vector_guidance) {
+int verify_dynamic_speed(bool vector_guidance,
+                         mosas::runtime::LaunchDetectionMode mode) {
     using namespace mosas;
+    const bool two_stage = mode == runtime::LaunchDetectionMode::two_stage;
+    const std::vector<runtime::TimestampNs> command_times = two_stage
+        ? std::vector<runtime::TimestampNs>{60'000'000, 70'000'000, 90'000'000}
+        : std::vector<runtime::TimestampNs>{40'000'000, 45'000'000, 60'000'000,
+                                            70'000'000, 90'000'000};
+    const std::vector<double> guidance_speeds = two_stage
+        ? std::vector<double>{15.99, 15.97}
+        : std::vector<double>{16.015, 16.04, 16.01, 15.99};
     constexpr double gravity = 9.80665;
     auto imu = std::make_unique<test::FakeImuSource>(
         std::vector<runtime::ImuAngularVelocitySample>{
             {0, {0.0, gravity, 0.0}, {}, 0.0, 0.0},
             {10'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
             {30'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {40'000'000, {2.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {60'000'000, {-3.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {80'000'000, {1.0, gravity, 0.0}, {}, 0.0, 0.0}});
+            {40'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
+            {50'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
+            {60'000'000, {2.0, 0.0, 0.0}, {}, 0.0, 0.0},
+            {80'000'000, {-3.0, 0.0, 0.0}, {}, 0.0, 0.0},
+            {100'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0}});
     auto* imu_control = imu.get();
     auto camera = std::make_unique<test::FakeCameraSource>(
-        std::vector<runtime::CameraFrame>{make_frame(40'000'000),
-                                        make_frame(50'000'000),
-                                        make_frame(70'000'000)});
+        std::vector<runtime::CameraFrame>{make_frame(20'000'000),
+                                        make_frame(40'000'000),
+                                        // two_stage 下区间跨越 50 ms 确认点；acceleration 下已触发。
+                                        make_frame(45'000'000),
+                                        make_frame(60'000'000),
+                                        make_frame(70'000'000),
+                                        make_frame(90'000'000)});
     auto* camera_control = camera.get();
     auto commands = std::make_unique<test::FakeCommandSink>();
     auto* command_control = commands.get();
@@ -66,6 +82,7 @@ int verify_dynamic_speed(bool vector_guidance) {
     auto* rate_control = rate.get();
     runtime::RuntimeSupervisorDependencies dependencies;
     runtime::AttitudeEstimatorConfig estimator_config;
+    estimator_config.launch_detection_mode = mode;
     estimator_config.launch_speed_mps = 16.0;
     dependencies.flight_state_estimator =
         std::make_unique<runtime::LegacyFlightStateEstimatorAdapter>(estimator_config);
@@ -85,13 +102,13 @@ int verify_dynamic_speed(bool vector_guidance) {
         dependencies.guidance_law =
             std::make_unique<guidance::ExistingPngGuidanceLawAdapter>(pn);
     }
-    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(80'000'000);
+    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(100'000'000);
     runtime::RuntimeSupervisorConfig config;
-    config.capture_queue_capacity = 3;
+    config.capture_queue_capacity = 6;
     runtime::RuntimeSupervisor runtime(std::move(imu), std::move(camera),
                                        std::move(commands), config, std::move(dependencies), {});
     CHECK(runtime.start());
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 5; ++i) {
         domain::VisionDetection detection;
         detection.observation.valid = true;
         vision_control->push(detection);
@@ -103,27 +120,37 @@ int verify_dynamic_speed(bool vector_guidance) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
         const auto latest = runtime.latest_state();
-        if (latest && latest->time.monotonic_ns == 80'000'000)
+        if (latest && latest->time.monotonic_ns == 100'000'000)
             break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(runtime.latest_state().has_value());
-    CHECK(runtime.latest_state()->time.monotonic_ns == 80'000'000);
-    CHECK_NEAR(runtime.latest_state()->speed_mps.value, 15.98, 1e-12);
+    CHECK(runtime.latest_state()->time.monotonic_ns == 100'000'000);
+    CHECK_NEAR(runtime.latest_state()->speed_mps.value,
+               two_stage ? 15.98 : 16.0, 1e-12);
     camera_control->release();
     while (std::chrono::steady_clock::now() < deadline &&
-           command_control->commands().size() < 3) {
+           command_control->commands().size() < command_times.size()) {
         CHECK(!runtime.faulted());
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     runtime.stop();
     CHECK(!runtime.faulted());
     const auto output = command_control->commands();
-    CHECK(output.size() == 3);
+    CHECK(output.size() == command_times.size());
+    // 触发前的图像不能建立飞行速率基准或下发；触发后的首帧仅发送零过载。
     CHECK(!output[0].valid);
-    // 使用曝光时刻的 15.99/15.97 m/s，而不是标定初速 16 或最新速度 15.98。
+    CHECK(rate_control->call_count() == command_times.size());
+    CHECK(runtime.timing().vision.samples == 5);
+    CHECK(runtime.timing().guidance.samples == guidance_speeds.size());
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        CHECK(output[i].source_time.monotonic_ns == command_times[i]);
+        CHECK(output[i].launched);
+        CHECK(output[i].target_found);
+    }
+    // 两种模式均使用曝光时刻速度，而非标定初速或最新 IMU 速度。
     for (std::size_t i = 1; i < output.size(); ++i) {
-        const double speed = i == 1 ? 15.99 : 15.97;
+        const double speed = guidance_speeds[i - 1];
         CHECK(output[i].valid);
         const double expected_y = vector_guidance
             ? 1.0 + 3.0 * speed * 0.2 / gravity
@@ -220,7 +247,10 @@ int main() {
         CHECK_NEAR(output[i].overload_g.x, 0.0, 1e-12);
         CHECK_NEAR(output[i].overload_g.z, 0.0, 1e-12);
     }
-    CHECK(verify_dynamic_speed(false) == 0);
-    CHECK(verify_dynamic_speed(true) == 0);
+    for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
+                            runtime::LaunchDetectionMode::two_stage}) {
+        CHECK(verify_dynamic_speed(false, mode) == 0);
+        CHECK(verify_dynamic_speed(true, mode) == 0);
+    }
     return 0;
 }

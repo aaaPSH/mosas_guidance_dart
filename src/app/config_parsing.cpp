@@ -483,8 +483,23 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
         if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
         if (key == "attitude_gyro_bias_filter_alpha") return set_double(&algorithms.attitude.gyro_bias_filter_alpha) || invalid();
+        if (key == "launch_detection_mode") {
+            if (value == "acceleration") {
+                algorithms.attitude.launch_detection_mode = runtime::LaunchDetectionMode::acceleration;
+                return true;
+            }
+            if (value == "two_stage") {
+                algorithms.attitude.launch_detection_mode = runtime::LaunchDetectionMode::two_stage;
+                return true;
+            }
+            return invalid();
+        }
         if (key == "launch_ax_threshold_mps2") return set_double(&algorithms.attitude.launch_ax_threshold_mps2) || invalid();
         if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_confirm_ns) || invalid();
+        if (key == "launch_release_acceleration_max_mps2") return set_double(&algorithms.attitude.launch_release_acceleration_max_mps2) || invalid();
+        if (key == "launch_release_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_release_confirm_ns) || invalid();
+        if (key == "launch_release_timeout_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_release_timeout_ns) || invalid();
+        if (key == "attitude_maximum_gap_ms") return parse_timestamp_ms(value, &algorithms.attitude.maximum_sample_gap_ns) || invalid();
         if (key == "accelerometer_specific_force") return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
         if (key == "png_navigation_constant_y") return set_double(&algorithms.png_guidance.navigation_constant_y) || invalid();
         if (key == "png_navigation_constant_z") return set_double(&algorithms.png_guidance.navigation_constant_z) || invalid();
@@ -635,10 +650,11 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
         !guidance::BodyVectorPnGuidance::valid_config(vector_pn)) {
         return fail_global(path, "镖体系矢量 PN 参数无效", error);
     }
+    if (!runtime::AttitudeEstimator::valid_config(attitude)) {
+        return fail_global(path, "姿态/发射触发参数无效", error);
+    }
     const auto& intrinsics = config.guidance.camera_intrinsics;
-    if (!std::isfinite(attitude.launch_speed_mps) ||
-        attitude.launch_speed_mps <= 0.0 ||
-        config.guidance.history_capacity == 0 ||
+    if (config.guidance.history_capacity == 0 ||
         config.guidance.max_imu_age_ns <= 0 ||
         config.guidance.max_camera_future_ns < 0 ||
         config.guidance.max_camera_age_ns <= 0 ||
@@ -656,13 +672,6 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
         los_filter.sigma_a <= 0.0 || los_filter.sigma_q <= 0.0 ||
         los_filter.sigma_a_pitch < 0.0 || los_filter.sigma_a_yaw < 0.0 ||
         los_filter.initial_covariance < 0.0 ||
-        attitude.gravity_mps2 <= 0.0 ||
-        attitude.stationary_acceleration_tolerance_mps2 <= 0.0 ||
-        attitude.gyro_stationary_threshold_rad_s <= 0.0 ||
-        attitude.gyro_bias_filter_alpha <= 0.0 ||
-        attitude.gyro_bias_filter_alpha > 1.0 ||
-        attitude.launch_ax_threshold_mps2 <= 0.0 ||
-        attitude.launch_confirm_ns <= 0 ||
         png.navigation_constant_y <= 0.0 ||
         png.navigation_constant_z <= 0.0 || png.gravity <= 0.0 ||
         png.maximum_command_overload < 0.0 ||

@@ -124,15 +124,26 @@ int main() {
     CHECK(state->attitude.time.source==domain::TimestampSource::simulation);
     CHECK(recorded_time.source==domain::TimestampSource::simulation);
     stopped=true;pipeline.cancel_source();pipeline.join_worker();pipeline.stop_source();
-    runtime::LegacyFlightStateEstimatorAdapter legacy;
-    domain::FlightStateSnapshot flight;
-    for(int i=0;i<50;++i) {
-        domain::ImuKinematicSample input; input.time=domain::make_simulation_time(i*5'000'000); input.acceleration={i<20?0.0:250.0,9.80665,0};
-        flight=legacy.update(input);
+    for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
+                            runtime::LaunchDetectionMode::two_stage}) {
+        runtime::AttitudeEstimatorConfig config;
+        config.launch_detection_mode = mode;
+        runtime::LegacyFlightStateEstimatorAdapter legacy(config);
+        domain::FlightStateSnapshot flight;
+        const int trigger_index = mode == runtime::LaunchDetectionMode::two_stage ? 42 : 24;
+        for (int i = 0; i < 50; ++i) {
+            const bool accelerating = i >= 20 && i < 40;
+            const bool released = i >= 40;
+            domain::ImuKinematicSample input;
+            input.time = domain::make_simulation_time(i * 5'000'000);
+            input.acceleration = {accelerating ? 250.0 : 0.0, released ? 0.0 : 9.80665, 0.0};
+            flight = legacy.update(input);
+            CHECK((flight.launch.phase == domain::LaunchPhase::launched) == (i >= trigger_index));
+        }
+        CHECK(flight.launch.transition_time.monotonic_ns == trigger_index * 5'000'000);
+        CHECK(flight.launch.transition_time.source == domain::TimestampSource::simulation);
+        CHECK(flight.launch.transition_time.source_time_ns == flight.launch.transition_time.monotonic_ns);
     }
-    CHECK(flight.launch.phase==domain::LaunchPhase::launched);
-    CHECK(flight.launch.transition_time.source==domain::TimestampSource::simulation);
-    CHECK(flight.launch.transition_time.source_time_ns==flight.launch.transition_time.monotonic_ns);
     CHECK(verify_frame_metadata()==0);
     return 0;
 }

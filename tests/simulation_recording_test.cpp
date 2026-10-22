@@ -96,11 +96,13 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
     for(int shot=0;shot<2;++shot) {
         if(shot){snapshot.session_id=602;server.set_snapshot(snapshot);}
         CHECK(advance(runner,[&]{return runner.running() && runner.session_id()==snapshot.session_id;}));
-        // Stationary history, followed by the original speed / 100 ms ramp.
+        // Stationary history, a 100 ms acceleration ramp, then low-specific-force flight.
         // Neither protocol flight phase nor estimator launch state is injected.
         for(std::int64_t time=0;time<=200'000'000;time+=5'000'000) {
-            CHECK(server.submit(Imu{3,{time>100'000'000?original.algorithms.attitude.launch_speed_mps/0.1:0,
-                                      0,standard_gravity},{}},time));
+            const bool accelerating=time>50'000'000 && time<=150'000'000;
+            const bool released=time>150'000'000;
+            CHECK(server.submit(Imu{3,{accelerating?original.algorithms.attitude.launch_speed_mps/0.1:0,
+                                      0,released?0:standard_gravity},{}},time));
             if(time==180'000'000) {
                 // Wait before advancing simulation time beyond the 10 ms sync
                 // budget or overwriting the transport's intentional latest-only image slot.
@@ -117,7 +119,9 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
         CHECK(diagnostics.imu_recording.accepted_count==41 && diagnostics.imu_recording.healthy);
         CHECK(diagnostics.video.dropped_count==0 && diagnostics.telemetry.dropped_count==0);
         CHECK(diagnostics.imu_recording.dropped_count==0);
-        CHECK(contains(log,"MOSAS launch_detected_ns="));
+        const auto launch_ns = original.algorithms.attitude.launch_detection_mode ==
+            runtime::LaunchDetectionMode::two_stage ? "165000000" : "75000000";
+        CHECK(contains(log, std::string("MOSAS launch_detected_ns=") + launch_ns));
         CHECK(files_in(recordings,".avi").size()==static_cast<std::size_t>(shot));
         runner.stop(); // Less than 4 seconds: joins workers, encodes partial window, flushes CSVs.
         CHECK(!runner.running() && runner.last_error().empty());
@@ -233,7 +237,12 @@ int main() {
     const auto path=std::filesystem::path(MOSAS_SOURCE_DIR)/"config/mosas_guidance.conf";
     const auto before=read_bytes(path);
     CHECK(app::AppConfigLoader::load(path,&original,&error));
-    CHECK(match_partial_windows_survive_two_sessions(original)==0);
+    for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
+                            runtime::LaunchDetectionMode::two_stage}) {
+        auto selected = original;
+        selected.algorithms.attitude.launch_detection_mode = mode;
+        CHECK(match_partial_windows_survive_two_sessions(selected) == 0);
+    }
     CHECK(prelaunch_and_debug_follow_original_policy(original)==0);
     CHECK(recording_errors_are_visible(original)==0);
     CHECK(read_bytes(path)==before);

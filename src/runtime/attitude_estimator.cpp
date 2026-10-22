@@ -1,26 +1,13 @@
 #include <mosas/runtime/attitude_estimator.hpp>
 
-#include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace mosas::runtime {
 namespace {
 
 constexpr double kEpsilon = 1e-12;
-constexpr TimestampNs kMinimumIntegrationGapNs = 1'000'000;
 
 bool finite(double value) noexcept { return std::isfinite(value); }
-
-TimestampNs maximum_integration_gap_ns(
-    const AttitudeEstimatorConfig& config) noexcept {
-    if (config.launch_confirm_ns >
-        std::numeric_limits<TimestampNs>::max() / 100) {
-        return std::numeric_limits<TimestampNs>::max();
-    }
-    return std::max(kMinimumIntegrationGapNs,
-                    config.launch_confirm_ns * 100);
-}
 
 }  // namespace
 
@@ -31,7 +18,9 @@ AttitudeEstimator::AttitudeEstimator(const AttitudeEstimatorConfig& config)
 
 bool AttitudeEstimator::valid_config(
     const AttitudeEstimatorConfig& config) noexcept {
-    return finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
+    return (config.launch_detection_mode == LaunchDetectionMode::acceleration ||
+            config.launch_detection_mode == LaunchDetectionMode::two_stage) &&
+           finite(config.gravity_mps2) && config.gravity_mps2 > 0.0 &&
            finite(config.launch_speed_mps) && config.launch_speed_mps > 0.0 &&
            finite(config.stationary_acceleration_tolerance_mps2) &&
            config.stationary_acceleration_tolerance_mps2 > 0.0 &&
@@ -42,7 +31,15 @@ bool AttitudeEstimator::valid_config(
            config.gyro_bias_filter_alpha <= 1.0 &&
            finite(config.launch_ax_threshold_mps2) &&
            config.launch_ax_threshold_mps2 > 0.0 &&
-           config.launch_confirm_ns > 0;
+           config.launch_confirm_ns > 0 &&
+           finite(config.launch_release_acceleration_max_mps2) &&
+           config.launch_release_acceleration_max_mps2 > 0.0 &&
+           config.launch_release_acceleration_max_mps2 <
+               config.gravity_mps2 -
+                   config.stationary_acceleration_tolerance_mps2 &&
+           config.launch_release_confirm_ns > 0 &&
+           config.launch_release_timeout_ns > config.launch_release_confirm_ns &&
+           config.maximum_sample_gap_ns > 0;
 }
 
 bool AttitudeEstimator::finite_vector(const Vector3& value) noexcept {
@@ -144,7 +141,7 @@ AttitudeEstimate AttitudeEstimator::make_estimate(
     estimate.pitch_rad = pitch;
     estimate.roll_rad = roll;
     estimate.speed_mps = speed_mps_;
-    estimate.launched = launched_;
+    estimate.launched = launch_stage_ == LaunchStage::triggered;
     estimate.valid = valid;
     estimate.launch_timestamp_ns = launch_timestamp_ns_;
     estimate.corrected_angular_velocity = corrected_angular_velocity_;
@@ -202,107 +199,109 @@ bool AttitudeEstimator::update_prelaunch_attitude(
     return true;
 }
 
+void AttitudeEstimator::reset_launch_detection() noexcept {
+    launch_stage_ = LaunchStage::awaiting_acceleration;
+    launch_candidate_start_ns_ = -1;
+    acceleration_confirmed_ns_ = -1;
+    has_launch_baseline_ = false;
+}
+
 void AttitudeEstimator::update_launch_state(
-    double current_ax, TimestampNs timestamp_ns) noexcept {
-    const double delta_x = current_ax - launch_baseline_x_;
-    if (delta_x < config_.launch_ax_threshold_mps2) {
+    double current_ax, double acceleration_norm,
+    TimestampNs timestamp_ns) noexcept {
+    if (launch_stage_ == LaunchStage::awaiting_release &&
+        timestamp_ns - acceleration_confirmed_ns_ >
+            config_.launch_release_timeout_ns) {
+        // 过期加速证据不能让后续跌落成为一次发射，必须重新静止校准。
+        reset_launch_detection();
+        return;
+    }
+    const bool accelerating =
+        launch_stage_ == LaunchStage::awaiting_acceleration;
+    const bool threshold_met =
+        accelerating
+            ? current_ax - launch_baseline_x_ >= config_.launch_ax_threshold_mps2
+            : acceleration_norm <= config_.launch_release_acceleration_max_mps2;
+    if (!threshold_met) {
         launch_candidate_start_ns_ = -1;
         return;
     }
     if (launch_candidate_start_ns_ < 0) {
         launch_candidate_start_ns_ = timestamp_ns;
+    }
+    const TimestampNs confirmation_ns =
+        accelerating ? config_.launch_confirm_ns
+                     : config_.launch_release_confirm_ns;
+    if (timestamp_ns - launch_candidate_start_ns_ < confirmation_ns) {
         return;
     }
-    if (timestamp_ns >= launch_candidate_start_ns_ &&
-        timestamp_ns - launch_candidate_start_ns_ >=
-            config_.launch_confirm_ns) {
-        launched_ = true;
+    launch_candidate_start_ns_ = -1;
+    if (accelerating &&
+        config_.launch_detection_mode == LaunchDetectionMode::two_stage) {
+        launch_stage_ = LaunchStage::awaiting_release;
+        acceleration_confirmed_ns_ = timestamp_ns;
+    } else {
+        launch_stage_ = LaunchStage::triggered;
         launch_timestamp_ns_ = timestamp_ns;
-        launch_candidate_start_ns_ = -1;
     }
 }
 
 AttitudeEstimate AttitudeEstimator::update(
     const ImuAngularVelocitySample& sample) noexcept {
+    // 旧样本不属于当前连续段，即使载荷损坏也不能撤销当前检测证据。
+    if (sample.timestamp_ns >= 0 && sample.timestamp_ns <= last_timestamp_ns_) {
+        return last_estimate_;
+    }
+    const double acceleration_norm = vector_norm(sample.acceleration);
+    const bool was_launched = launch_stage_ == LaunchStage::triggered;
     if (sample.timestamp_ns < 0 || !finite_vector(sample.acceleration) ||
-        !finite_vector(sample.angular_velocity)) {
+        !finite(acceleration_norm) || !finite_vector(sample.angular_velocity)) {
+        if (!was_launched) {
+            reset_launch_detection();
+        }
+        has_timestamp_ = false;
         return last_estimate_;
     }
-    if (has_timestamp_ && sample.timestamp_ns <= last_timestamp_ns_) {
-        return last_estimate_;
+
+    const bool continuous =
+        has_timestamp_ && sample.timestamp_ns - last_timestamp_ns_ <=
+                              config_.maximum_sample_gap_ns;
+    if (has_timestamp_ && !continuous && !was_launched) {
+        reset_launch_detection();
     }
 
-    const TimestampNs maximum_gap = maximum_integration_gap_ns(config_);
-    const bool timestamp_gap_valid =
-        !has_timestamp_ || sample.timestamp_ns - last_timestamp_ns_ <= maximum_gap;
-    if (!timestamp_gap_valid) {
-        // 长时间没有连续 IMU 样本时，不能用跨断流时长确认起飞。
-        launch_candidate_start_ns_ = -1;
-    }
-
-    if (!has_launch_baseline_) {
-        launch_baseline_x_ = sample.acceleration.x;
-        has_launch_baseline_ = true;
-    }
-
-    const bool was_launched = launched_;
+    bool attitude_valid = last_estimate_.valid;
     const bool stationary =
-        !was_launched &&
+        launch_stage_ == LaunchStage::awaiting_acceleration &&
         is_stationary(sample.acceleration, sample.angular_velocity);
     if (stationary) {
-        update_gyro_bias(sample.angular_velocity);
-        launch_baseline_x_ = sample.acceleration.x;
+        attitude_valid = update_prelaunch_attitude(sample.acceleration);
+        if (attitude_valid) {
+            update_gyro_bias(sample.angular_velocity);
+            launch_baseline_x_ = sample.acceleration.x;
+            has_launch_baseline_ = true;
+        }
     }
     corrected_angular_velocity_ = {
         sample.angular_velocity.x - gyro_bias_.x,
         sample.angular_velocity.y - gyro_bias_.y,
         sample.angular_velocity.z - gyro_bias_.z};
 
-    bool attitude_valid = launched_ || last_estimate_.valid;
-    if (!was_launched && has_launch_baseline_) {
-        update_launch_state(sample.acceleration.x, sample.timestamp_ns);
+    if (!was_launched && has_launch_baseline_ && attitude_valid) {
+        update_launch_state(sample.acceleration.x, acceleration_norm,
+                            sample.timestamp_ns);
     }
 
-    const auto integrate = [&] {
-        if (!has_timestamp_) {
-            return;
-        }
-        const double dt_seconds = static_cast<double>(
-                                      sample.timestamp_ns - last_timestamp_ns_) *
-                                  1e-9;
-        if (finite(dt_seconds) && dt_seconds > 0.0 &&
-            timestamp_gap_valid && attitude_valid) {
-            orientation_ = normalize(multiply(
-                orientation_,
-                delta_from_body_rate(corrected_angular_velocity_,
-                                     dt_seconds)));
-            if (was_launched) {
-                // 标定初速已经包含发射加速；确认起飞帧不再重复累加。
-                const double pitch = pitch_from_matrix(to_matrix(orientation_));
-                speed_mps_ += (sample.acceleration.x -
-                               config_.gravity_mps2 * std::sin(pitch)) *
-                              dt_seconds;
-            }
-        }
-    };
-
-    if (!launched_ && stationary) {
-        attitude_valid = update_prelaunch_attitude(sample.acceleration);
-        if (!attitude_valid) {
-            launch_candidate_start_ns_ = -1;
-        }
-    } else {
-        // 非静止时传播姿态；确认起飞后同时积分扣除纵向重力的速度。
-        const double acceleration_norm = vector_norm(sample.acceleration);
-        const bool prelaunch_near_zero_acceleration =
-            !launched_ &&
-            (!finite(acceleration_norm) || acceleration_norm < kEpsilon);
-        if (prelaunch_near_zero_acceleration) {
-            attitude_valid = false;
-            launch_candidate_start_ns_ = -1;
-        } else {
-            integrate();
-        }
+    // 只从触发确认的下一连续帧开始积分；不回补所选判据的确认窗口。
+    if (was_launched && continuous && attitude_valid) {
+        const double dt_seconds =
+            static_cast<double>(sample.timestamp_ns - last_timestamp_ns_) * 1e-9;
+        orientation_ = normalize(multiply(
+            orientation_,
+            delta_from_body_rate(corrected_angular_velocity_, dt_seconds)));
+        const double pitch = pitch_from_matrix(to_matrix(orientation_));
+        speed_mps_ += (sample.acceleration.x -
+                       config_.gravity_mps2 * std::sin(pitch)) * dt_seconds;
     }
 
     last_timestamp_ns_ = sample.timestamp_ns;
@@ -317,12 +316,10 @@ void AttitudeEstimator::reset() noexcept {
     corrected_angular_velocity_ = {0.0, 0.0, 0.0};
     speed_mps_ = config_.launch_speed_mps;
     launch_baseline_x_ = 0.0;
-    launch_candidate_start_ns_ = -1;
+    reset_launch_detection();
     last_timestamp_ns_ = -1;
-    has_launch_baseline_ = false;
     has_gyro_bias_ = false;
     has_timestamp_ = false;
-    launched_ = false;
     launch_timestamp_ns_ = -1;
     last_estimate_ = make_estimate(-1, false);
 }

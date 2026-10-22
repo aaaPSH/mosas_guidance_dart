@@ -34,6 +34,9 @@ int main() {
     CHECK(mosas::app::AppConfigLoader::load(config_path, &config, &error));
     CHECK(std::isfinite(config.algorithms.attitude.launch_speed_mps));
     CHECK(config.algorithms.attitude.launch_speed_mps > 0.0);
+    CHECK(config.algorithms.attitude.launch_confirm_ns == 20'000'000);
+    CHECK(config.algorithms.attitude.launch_detection_mode ==
+          mosas::runtime::LaunchDetectionMode::acceleration);
     CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::png);
     CHECK(config.algorithms.vision_config.initial_roi.width == 640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,
@@ -93,11 +96,68 @@ int main() {
     CHECK(observed_png);
 
     const auto load_variant = [&](const std::string& keys, mosas::app::AppConfig* output) {
+        auto text = source_text.str();
+        std::istringstream overrides(keys);
+        std::string line;
+        std::string additions;
+        while (std::getline(overrides, line)) {
+            const auto position = text.find("\n" + line.substr(0, line.find('=')) + "=");
+            if (position == std::string::npos) {
+                additions += line + '\n';
+            } else {
+                const auto end = text.find('\n', position + 1);
+                text.replace(position + 1, end - position - 1, line);
+            }
+        }
         std::ofstream file(temporary_config.path);
-        file << source_text.str() << "\n[guidance]\n" << keys;
+        file << text << "\n[guidance]\n" << additions;
         file.close();
         return file.good() && mosas::app::AppConfigLoader::load(temporary_config.path, output, &error);
     };
+    // Existing configurations without the selector retain the acceleration trigger.
+    {
+        auto text = source_text.str();
+        const auto begin = text.find("\nlaunch_detection_mode=");
+        CHECK(begin != std::string::npos);
+        const auto end = text.find('\n', begin + 1);
+        text.erase(begin, end - begin);
+        { std::ofstream file(temporary_config.path); file << text; }
+        mosas::app::AppConfig without_selector;
+        CHECK(mosas::app::AppConfigLoader::load(
+            temporary_config.path, &without_selector, &error));
+        CHECK(without_selector.algorithms.attitude.launch_detection_mode ==
+              mosas::runtime::LaunchDetectionMode::acceleration);
+    }
+    for (const std::string mode : {"acceleration", "two_stage"}) {
+        mosas::app::AppConfig selected;
+        CHECK(load_variant("launch_detection_mode=" + mode + "\n", &selected));
+        const bool two_stage = mode == "two_stage";
+        CHECK(selected.algorithms.attitude.launch_detection_mode ==
+              (two_stage ? mosas::runtime::LaunchDetectionMode::two_stage
+                         : mosas::runtime::LaunchDetectionMode::acceleration));
+        auto selected_dependencies =
+            mosas::app::make_default_guidance_algorithms(selected.algorithms);
+        mosas::domain::ImuKinematicSample imu;
+        imu.time.monotonic_ns = 0;
+        imu.acceleration = {0.0, selected.algorithms.attitude.gravity_mps2, 0.0};
+        selected_dependencies.flight_state_estimator->update(imu);
+        imu.acceleration = {30.0, 0.0, 0.0};
+        imu.time.monotonic_ns = 5'000'000;
+        selected_dependencies.flight_state_estimator->update(imu);
+        imu.time.monotonic_ns = 25'000'000;
+        const auto acceleration_state =
+            selected_dependencies.flight_state_estimator->update(imu);
+        CHECK((acceleration_state.launch.phase ==
+               mosas::domain::LaunchPhase::launched) == !two_stage);
+        imu.acceleration = {1.0, 0.0, 0.0};
+        imu.time.monotonic_ns = 30'000'000;
+        selected_dependencies.flight_state_estimator->update(imu);
+        imu.time.monotonic_ns = 40'000'000;
+        const auto triggered = selected_dependencies.flight_state_estimator->update(imu);
+        CHECK(triggered.launch.phase == mosas::domain::LaunchPhase::launched);
+        CHECK(triggered.launch.transition_time.monotonic_ns ==
+              (two_stage ? 40'000'000 : 25'000'000));
+    }
     for (const double speed : {13.0, 16.0}) {
         mosas::app::AppConfig speed_config;
         auto speed_text = source_text.str();
@@ -117,6 +177,8 @@ int main() {
         CHECK(mosas::app::AppConfigLoader::load(temporary_config.path,
                                                &speed_config, &error));
         CHECK_NEAR(speed_config.algorithms.attitude.launch_speed_mps, speed, 1e-12);
+        speed_config.algorithms.attitude.launch_detection_mode =
+            mosas::runtime::LaunchDetectionMode::two_stage;
         for (const auto algorithm : {mosas::app::GuidanceAlgorithm::png,
                                      mosas::app::GuidanceAlgorithm::body_vector_pn}) {
             speed_config.algorithms.algorithm = algorithm;
@@ -132,10 +194,16 @@ int main() {
             imu.time.monotonic_ns = 10'000'000;
             speed_dependencies.flight_state_estimator->update(imu);
             imu.time.monotonic_ns = 30'000'000;
+            const auto rail_state = speed_dependencies.flight_state_estimator->update(imu);
+            CHECK(rail_state.launch.phase == mosas::domain::LaunchPhase::pre_launch);
+            imu.acceleration = {1.0, 0.0, 0.0};
+            imu.time.monotonic_ns = 40'000'000;
+            speed_dependencies.flight_state_estimator->update(imu);
+            imu.time.monotonic_ns = 50'000'000;
             const auto launched_state = speed_dependencies.flight_state_estimator->update(imu);
             CHECK(launched_state.launch.phase == mosas::domain::LaunchPhase::launched);
             CHECK_NEAR(launched_state.speed_mps.value, speed, 1e-12);
-            imu.time.monotonic_ns = 40'000'000;
+            imu.time.monotonic_ns = 60'000'000;
             imu.acceleration.x = 2.0;
             CHECK_NEAR(speed_dependencies.flight_state_estimator->update(imu)
                            .speed_mps.value, speed + 0.02, 1e-12);
@@ -146,6 +214,10 @@ int main() {
     CHECK(vector_config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
     CHECK_NEAR(vector_config.algorithms.body_vector_pn.navigation_constant, 3.0, 1e-12);
     CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.attitude.launch_release_acceleration_max_mps2, 3.0, 1e-12);
+    CHECK(vector_config.algorithms.attitude.launch_release_confirm_ns == 10'000'000);
+    CHECK(vector_config.algorithms.attitude.launch_release_timeout_ns == 500'000'000);
+    CHECK(vector_config.algorithms.attitude.maximum_sample_gap_ns == 20'000'000);
     auto vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
     CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
               vector_dependencies.los_rate_filter.get()) != nullptr);
@@ -180,8 +252,22 @@ int main() {
     CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.08, 1e-12);
     CHECK(std::isinf(vector_config.algorithms.body_vector_pn.maximum_command_acceleration));
     for (const char* bad : {
+             "launch_detection_mode=unknown\n", "launch_detection_mode=1\n",
+             "launch_detection_mode=Two_Stage\n",
              "launch_speed_mps=0\n", "launch_speed_mps=-1\n",
              "launch_speed_mps=inf\n", "launch_speed_mps=nan\n",
+             "launch_release_acceleration_max_mps2=0\n",
+             "launch_release_acceleration_max_mps2=-1\n",
+             "launch_release_acceleration_max_mps2=9.6\n",
+             "launch_release_acceleration_max_mps2=nan\n",
+             "launch_release_acceleration_max_mps2=inf\n",
+             "launch_release_confirm_ms=0\n", "launch_release_confirm_ms=-1\n",
+             "launch_release_confirm_ms=inf\n", "launch_release_confirm_ms=500\n",
+             "launch_release_timeout_ms=0\n", "launch_release_timeout_ms=-1\n",
+             "launch_release_timeout_ms=5\n", "launch_release_timeout_ms=10\n",
+             "launch_release_timeout_ms=inf\n",
+             "attitude_maximum_gap_ms=0\n", "attitude_maximum_gap_ms=-1\n",
+             "attitude_maximum_gap_ms=nan\n",
              "guidance_algorithm=unknown\n", "body_vector_navigation_constant=0\n",
              "body_vector_los_sigma_a=0\n", "body_vector_los_sigma_l=0\n",
              "body_vector_los_initial_rate_covariance=-1\n",
@@ -191,6 +277,14 @@ int main() {
              "body_vector_los_sigma_a=nan\n"}) {
         CHECK(!load_variant(bad, &vector_config));
     }
+    CHECK(load_variant("launch_release_acceleration_max_mps2=2.5\n"
+                       "launch_release_confirm_ms=15\n"
+                       "launch_release_timeout_ms=250\n"
+                       "attitude_maximum_gap_ms=12\n", &vector_config));
+    CHECK_NEAR(vector_config.algorithms.attitude.launch_release_acceleration_max_mps2, 2.5, 1e-12);
+    CHECK(vector_config.algorithms.attitude.launch_release_confirm_ns == 15'000'000);
+    CHECK(vector_config.algorithms.attitude.launch_release_timeout_ns == 250'000'000);
+    CHECK(vector_config.algorithms.attitude.maximum_sample_gap_ns == 12'000'000);
     CHECK(load_variant("body_vector_maximum_command_overload=0\n", &vector_config));
 
     // 工厂使用与姿态估计相同的重力，不采用独立且可能冲突的 PN 重力副本。

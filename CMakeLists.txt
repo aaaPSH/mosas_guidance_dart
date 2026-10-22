@@ -367,6 +367,11 @@ if(BUILD_TESTING)
     target_link_libraries(attitude_adapter_test PRIVATE mosas_runtime)
     add_test(NAME attitude_adapter_test COMMAND attitude_adapter_test)
 
+    add_executable(launch_detection_test tests/launch_detection_test.cpp)
+    configure_mosas_target(launch_detection_test)
+    target_link_libraries(launch_detection_test PRIVATE mosas_runtime)
+    add_test(NAME launch_detection_test COMMAND launch_detection_test)
+
     add_executable(body_vector_runtime_test
         tests/body_vector_runtime_test.cpp
         tests/fakes/fake_camera_source.cpp

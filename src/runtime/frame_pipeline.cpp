@@ -389,7 +389,9 @@ void FramePipeline::processing_worker() noexcept {
                 if (!launch_generation.has_value()) {
                     const auto state = imu_pipeline_.latest_state();
                     if (!state.has_value() ||
-                        state->launch.phase != domain::LaunchPhase::launched) {
+                        state->launch.phase != domain::LaunchPhase::launched ||
+                        timestamp_ns < state->launch.transition_time.monotonic_ns) {
+                        // 历史图像可能早于最新 IMU 的触发确认，不能借用未来状态下发。
                         return true;
                     }
                     launch_generation = state->launch.generation;
@@ -404,7 +406,7 @@ void FramePipeline::processing_worker() noexcept {
                         if (generation_is_current &&
                             !callbacks_.stop_requested() &&
                             !callbacks_.faulted()) {
-                            // 此路径仅在已发射后提交；零过载不清除发射标志和当前帧识别位。
+                            // 此路径仅在所选判据已触发后提交；零过载不清除状态标志。
                             sent = command_sink_.try_submit(
                                 detail::make_neutral_command(
                                     detail::resolve_sensor_time(
@@ -726,6 +728,18 @@ void FramePipeline::processing_worker() noexcept {
             result.overlay.line_of_sight_q_y = line_of_sight.q_y;
             result.overlay.line_of_sight_q_z = line_of_sight.q_z;
 
+            if (!attitude_lookup->launched) {
+                // 触发前图像仍可识别目标，但不建立飞行滤波状态或计算制导。
+                mark_guidance_invalid(
+                    domain::GuidanceInvalidReason::launch_not_confirmed);
+                reset_rate_segment();
+                if (!enqueue_processed_frame()) {
+                    return;
+                }
+                result = ProcessedFrame{};
+                continue;
+            }
+
             if (!has_frame_timestamp) {
                 los_rate_filter_->reset();
                 // 首帧仅建立基准；占位 dt 不用于矢量状态的时间传播。
@@ -743,8 +757,7 @@ void FramePipeline::processing_worker() noexcept {
                 }
                 previous_frame_timestamp_ns = timestamp_ns;
                 has_frame_timestamp = true;
-                if (attitude_lookup->launched &&
-                    !submit_neutral_command(
+                if (!submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
                     return;
                 }
@@ -770,8 +783,7 @@ void FramePipeline::processing_worker() noexcept {
                         << ", dt_seconds=" << dt_seconds;
                 log_output_diagnostic("视线角速度时间步长无效", details.str());
                 reset_rate_segment();
-                if (attitude_lookup->launched &&
-                    !submit_neutral_command(
+                if (!submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
                     return;
                 }
@@ -793,8 +805,7 @@ void FramePipeline::processing_worker() noexcept {
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
                 log_output_diagnostic("视线角速度暂不可用", details.str());
-                if (attitude_lookup->launched &&
-                    !submit_neutral_command(
+                if (!submit_neutral_command(
                         timestamp_ns, attitude_lookup->launch_generation)) {
                     return;
                 }
@@ -850,12 +861,12 @@ void FramePipeline::processing_worker() noexcept {
                         << static_cast<double>(bracket_age_ns) / 1e6;
                 log_output_diagnostic("制导算法输出无效", details.str());
             }
-            if (attitude_lookup->launched && !result.guidance.valid &&
+            if (!result.guidance.valid &&
                 !submit_neutral_command(timestamp_ns,
                                         attitude_lookup->launch_generation)) {
                 return;
             }
-            if (attitude_lookup->launched && result.guidance.valid &&
+            if (result.guidance.valid &&
                 !callbacks_.faulted() && !callbacks_.stop_requested()) {
                 result.overlay.body_overload_valid = true;
                 result.overlay.body_overload =

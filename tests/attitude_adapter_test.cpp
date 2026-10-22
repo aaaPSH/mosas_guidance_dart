@@ -8,6 +8,7 @@
 
 int main() {
     mosas::runtime::AttitudeEstimatorConfig config;
+    config.launch_detection_mode = mosas::runtime::LaunchDetectionMode::two_stage;
     config.launch_speed_mps = 16.0;
     mosas::runtime::AttitudeEstimator estimator(config);
 
@@ -55,16 +56,15 @@ int main() {
     });
     CHECK(!new_candidate.launched);
 
+    const auto rail_acceleration = estimator.update({
+        50'000'000, {15.0, 0.0, 9.80665}, {}, 0.0, 0.0});
+    CHECK(!rail_acceleration.launched);
+    CHECK(!estimator.update({60'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0}).launched);
     const auto launched = estimator.update({
-        50'000'000,
-        {15.0, 0.0, 9.80665},
-        {0.0, 0.0, 0.0},
-        0.0,
-        0.0,
-    });
+        70'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0});
     CHECK(launched.valid);
     CHECK(launched.launched);
-    CHECK(launched.launch_timestamp_ns == 50'000'000);
+    CHECK(launched.launch_timestamp_ns == 70'000'000);
     CHECK_NEAR(launched.speed_mps, 16.0, 1e-12);
     CHECK_NEAR(launched.pitch_rad, 0.0, 1e-12);
     CHECK_NEAR(launched.roll_rad, -1.5707963267948966, 1e-12);
@@ -73,30 +73,30 @@ int main() {
     CHECK_NEAR(launched.corrected_angular_velocity.z, 0.0, 1e-12);
 
     const auto duplicate_timestamp = estimator.update({
-        50'000'000,
+        70'000'000,
         {100.0, 0.0, 9.80665},
         {1.0, 0.0, 0.0},
         0.0,
         0.0,
     });
     CHECK(duplicate_timestamp.launched);
-    CHECK(duplicate_timestamp.launch_timestamp_ns == 50'000'000);
+    CHECK(duplicate_timestamp.launch_timestamp_ns == 70'000'000);
     CHECK_NEAR(duplicate_timestamp.speed_mps, 16.0, 1e-12);
 
     const auto accelerating = estimator.update(
-        {60'000'000, {2.0, 0.0, 0.0}, {}, 0.0, 0.0});
+        {80'000'000, {2.0, 0.0, 0.0}, {}, 0.0, 0.0});
     CHECK_NEAR(accelerating.speed_mps, 16.02, 1e-12);
     const auto decelerating = estimator.update(
-        {80'000'000, {-3.0, 0.0, 0.0}, {}, 0.0, 0.0});
+        {100'000'000, {-3.0, 0.0, 0.0}, {}, 0.0, 0.0});
     CHECK_NEAR(decelerating.speed_mps, 15.96, 1e-12);
     const auto reversed = estimator.update(
-        {70'000'000, {100.0, 0.0, 0.0}, {}, 0.0, 0.0});
-    CHECK(reversed.timestamp_ns == 80'000'000);
+        {90'000'000, {100.0, 0.0, 0.0}, {}, 0.0, 0.0});
+    CHECK(reversed.timestamp_ns == 100'000'000);
     CHECK_NEAR(reversed.speed_mps, 15.96, 1e-12);
     const auto invalid = estimator.update(
-        {90'000'000, {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0},
+        {110'000'000, {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0},
          {}, 0.0, 0.0});
-    CHECK(invalid.timestamp_ns == 80'000'000);
+    CHECK(invalid.timestamp_ns == 100'000'000);
     CHECK_NEAR(invalid.speed_mps, 15.96, 1e-12);
     const auto gap = estimator.update(
         {3'000'000'000, {100.0, 0.0, 0.0}, {}, 0.0, 0.0});
@@ -117,43 +117,50 @@ int main() {
              gravity * std::cos(initial_pitch), 0.0}, {}, 0.0, 0.0});
     pitched_estimator.update(
         {10'000'000, {30.0, 0.0, 0.0}, {}, 0.0, 0.0});
+    CHECK(!pitched_estimator.update(
+        {30'000'000, {30.0, 0.0, 0.0}, {}, 0.0, 0.0}).launched);
+    pitched_estimator.update({40'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0});
     const auto pitched_launch = pitched_estimator.update(
-        {30'000'000, {30.0, 0.0, 0.0}, {}, 0.0, 0.0});
+        {50'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0});
     CHECK(pitched_launch.launched);
     CHECK_NEAR(pitched_launch.speed_mps, 16.0, 1e-12);
     const auto pitched = pitched_estimator.update(
-        {40'000'000, {2.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0, 0.0});
+        {60'000'000, {2.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0, 0.0});
     CHECK_NEAR(pitched.pitch_rad, initial_pitch + 0.01, 1e-12);
     CHECK_NEAR(pitched.speed_mps,
                16.0 + (2.0 - gravity * std::sin(pitched.pitch_rad)) * 0.01,
                1e-12);
     const auto balanced = pitched_estimator.update(
-        {50'000'000, {gravity * std::sin(pitched.pitch_rad), 0.0, 0.0},
+        {70'000'000, {gravity * std::sin(pitched.pitch_rad), 0.0, 0.0},
          {}, 0.0, 0.0});
     CHECK_NEAR(balanced.speed_mps, pitched.speed_mps, 1e-12);
 
     mosas::runtime::LegacyFlightStateEstimatorAdapter adapter(config);
-    const auto adapt_sample = [](std::int64_t timestamp_ns, double acceleration_x) {
+    const auto adapt_sample = [](std::int64_t timestamp_ns, double acceleration_x,
+                                 double acceleration_z = 9.80665) {
         mosas::domain::ImuKinematicSample sample{};
         sample.time.monotonic_ns = timestamp_ns;
         sample.time.source_domain = mosas::domain::ClockDomain::monotonic;
         sample.time.source =
             mosas::domain::TimestampSource::imu_uart_receive_estimate;
         sample.time.quality = mosas::domain::TimestampQuality::estimated;
-        sample.acceleration = {acceleration_x, 0.0, 9.80665};
+        sample.acceleration = {acceleration_x, 0.0, acceleration_z};
         return sample;
     };
     adapter.update(adapt_sample(0, 0.0));
     adapter.update(adapt_sample(10'000'000, 15.0));
     adapter.update(adapt_sample(20'000'000, 0.0));
     adapter.update(adapt_sample(30'000'000, 15.0));
+    CHECK(adapter.update(adapt_sample(50'000'000, 15.0)).launch.phase ==
+          mosas::domain::LaunchPhase::pre_launch);
+    adapter.update(adapt_sample(60'000'000, 1.0, 0.0));
     const auto adapted_flight_state =
-        adapter.update(adapt_sample(50'000'000, 15.0));
+        adapter.update(adapt_sample(70'000'000, 1.0, 0.0));
     CHECK(adapted_flight_state.attitude.valid);
     CHECK(adapted_flight_state.launch.phase ==
           mosas::domain::LaunchPhase::launched);
     CHECK(adapted_flight_state.launch.transition_time.monotonic_ns ==
-          50'000'000);
+          70'000'000);
     CHECK(adapted_flight_state.launch.reason ==
           mosas::domain::LaunchReason::threshold_confirmed);
     CHECK_NEAR(adapted_flight_state.attitude.pitch_rad.value, 0.0, 1e-12);
@@ -162,7 +169,7 @@ int main() {
     CHECK_NEAR(adapted_flight_state.attitude.corrected_angular_velocity.z,
                0.0, 1e-12);
     CHECK_NEAR(adapted_flight_state.speed_mps.value, 16.0, 1e-12);
-    const auto adapted_accelerating = adapter.update(adapt_sample(60'000'000, 2.0));
+    const auto adapted_accelerating = adapter.update(adapt_sample(80'000'000, 2.0, 0.0));
     CHECK_NEAR(adapted_accelerating.speed_mps.value, 16.02, 1e-12);
     adapter.reset();
     CHECK_NEAR(adapter.update(adapt_sample(0, 0.0)).speed_mps.value, 16.0, 1e-12);

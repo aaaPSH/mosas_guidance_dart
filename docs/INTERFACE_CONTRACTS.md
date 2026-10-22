@@ -296,7 +296,7 @@ struct GuidanceCommand {
     bool valid;
     GuidanceInvalidReason invalid_reason;
     DartOverloadG overload_g;
-    bool launched; // 当前周期是否已检测到发射，独立于制导有效性
+    bool launched; // 当前周期是否已按所选发射判据触发，独立于制导有效性
     bool target_found; // 当前帧视觉识别结果，独立于制导有效性
 };
 
@@ -412,21 +412,41 @@ public:
 
 - 识别只输出 observation，不更新全局状态、不提交命令。
 - Attitude 与 Launch 作为不同概念供下游使用。运行时先依赖 `IFlightStateEstimator`，由现有 `AttitudeEstimator` 适配器一次更新并返回姿态、起飞状态和纵向速度，避免重复消费 IMU；在行为回归通过后，内部实现才可组合独立 `IAttitudeEstimator` 和 `ILaunchDetector`。
-- LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新起飞 generation、长丢帧或时间异常时显式 reset。
+- LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新起飞 generation、长丢帧或时间异常时显式 reset。所选发射判据触发前可识别目标和计算 LOS，但不更新飞行 LOS 速率滤波器、不计算制导或下发制导指令；触发后的首个有效图像仅建立新的速率基准。
 - `GuidanceCommand` 的过载坐标固定为 Dart；输出与串口编码分离。
 - 对无效状态返回原因，不用“零向量”代表 invalid。由 Runtime 的基线兼容策略决定是否提交/不提交；不得由单个算法隐式发安全命令。
 
 ### 6.1 同步纵向速度估计
 
-`[guidance] launch_speed_mps` 的配置键保持不变，内部由 `AttitudeEstimatorConfig::launch_speed_mps` 持有，要求有限且大于零。起飞前、起飞确认帧和 reset 后保持该初值；确认起飞后的连续有效 IMU 样本在姿态更新后执行：
+`[guidance] launch_speed_mps` 的配置键保持不变，内部由 `AttitudeEstimatorConfig::launch_speed_mps` 持有，要求有限且大于零，表示发射触发确认帧采用的标定初速。触发前、确认帧和 reset 后保持该初值；确认帧不积分姿态或速度，下一连续有效 IMU 样本起，先传播姿态，再执行：
 
 ```
 V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 ```
 
-`ax_imu_k` 为输入的镖体 X 轴加速度（m/s²），`pitch_k` 为当前帧俯仰角（rad），`dt` 使用实际相邻 IMU 时间戳差（s）。不重复累加起飞确认前的发射加速，也不额外扣除启动加速度基线。无效样本和非递增时间戳不更新状态；超过现有姿态积分最大间隔的断流区间不积分，恢复后从新的连续样本继续。
+`ax_imu_k` 为输入的镖体 X 轴比力（m/s²），`pitch_k` 为当前帧俯仰角（rad），`dt` 使用实际相邻 IMU 时间戳差（s）。不回补所选判据的确认窗口，不额外扣除启动加速度基线。`acceleration` 从加速确认后的下一帧开始积分，仍可能包含剩余架上加速；`two_stage` 从离架确认后的下一帧开始积分。无效样本和非递增时间戳不更新输出状态；非递增样本忽略，无效样本中断积分连续性。超过 `attitude_maximum_gap_ms`（默认 20 ms）的断流区间不积分，恢复后从新的连续样本继续。
 
 速度作为 `FlightStateSnapshot::speed_mps` 发布，随完整姿态写入同一历史槽并线性插值到相机曝光时刻；不外推、不跨起飞状态、起飞时刻或 generation 插值。PNG 和矢量 PN 均使用该曝光时刻速度，而非初值或最新 IMU 速度。积分结果不人为钳位为正数；速度非正时沿用两种制导律的无效输入处理，不回退为固定初速。
+
+#### 6.1.1 可选发射触发判据和姿态积分边界
+
+`[guidance] launch_detection_mode=acceleration|two_stage` 在启动时选择；缺省及示例配置均为 `acceleration`，未知值拒绝加载。估计器构造后模式固定，切换配置须重启；reset 保留模式，只清除标定、候选和触发锁存。此参数不改变重力补偿、LOS 算法或串口字节布局。
+
+| 模式 | 触发时刻 | `launched` 的含义 |
+| --- | --- | --- |
+| `acceleration`（默认） | X 轴相对静止基线增量达到阈值，并连续满足确认时长 | 原单阶段加速判据确认，不保证实际离架 |
+| `two_stage` | 加速确认后，再连续满足低比力离架判据 | 两阶段判据均确认 |
+
+两种模式共用当前的静止标定、触发前非静止姿态冻结、异常保护及触发后积分。开关仅切换触发判据/时刻，不回滚旧版本的整套姿态传播或滤波实现。`LaunchPhase::launched`、串口发射标志和 match 录像窗口均跟随所选判据；`transition_time` 是该判据的确认帧时间，`LaunchReason::threshold_confirmed` 表示所选判据已满足。
+
+1. 待加速阶段只使用满足静止条件（比力模长接近重力且角速度足够小）的样本校准姿态、陀螺零偏和 X 轴基线；未获得静止基线时禁止启动发射检测。其他触发前样本保持姿态，不进行陀螺传播。
+2. 两种模式共用 `launch_ax_threshold_mps2`（默认 14.709975 m/s²）和 `launch_confirm_ms`（默认 20 ms）。加速确认后，`acceleration` 立即触发并锁存；`two_stage` 仅进入待离架状态，冻结校准结果但不启用制导。
+3. 仅 `two_stage` 在待离架阶段使用 `launch_release_acceleration_max_mps2`（默认 3 m/s²）及 `launch_release_confirm_ms`（默认 10 ms），低比力连续确认后才触发。比力阈值必须严格低于静止校准区间，单独失重或短冲击不能绕过加速确认。
+4. 仅 `two_stage` 使用 `launch_release_timeout_ms`（默认 500 ms）：加速确认后超时未确认离架，取消候选并要求重新静止校准；超时必须大于低比力确认时长，允许恰在边界完成确认。两种模式均在触发前遇到新的无效样本或超过 `attitude_maximum_gap_ms` 的断流时取消候选并要求重校准，不把不连续时长算作有效证据。重复和回退的非负时间戳优先忽略，即使载荷无效也不能清除当前检测证据或打断后续积分。
+
+所有模式都校验完整配置，包括当前模式未使用的三项离架参数，避免切换后出现潜伏的无效配置。
+
+这些默认值依据 2026-10-17 的单次 IMU 记录设定，必须通过更多实测确认；IMU 低比力是离架证据，不是独立硬件离架传感器。记录中的架上加速出现约 58.85 m/s² 的平台，可能存在量程饱和，因此不从该段积分反推离架速度。
 
 ### 6.2 默认 PNG 的抛物线 LOS 角速度补偿
 
@@ -503,7 +523,7 @@ n_command_D = f_command_D / g
 | 字节位置（从 0 开始） | 含义 |
 | --- | --- |
 | 0..1 | 帧头 `AA 55` |
-| 2 | 发射标志：未发射为 `0`，已检测到发射为 `1`（原 Roll 字节） |
+| 2 | 发射标志：所选发射判据未确认为 `0`，确认后为 `1`（原 Roll 字节） |
 | 3 | 识别位：当前帧识别到目标为 `1`，未识别或未执行识别为 `0` |
 | 4..5 | Yaw 过载 |
 | 6..7 | Pitch 过载 |
@@ -511,7 +531,7 @@ n_command_D = f_command_D / g
 | 10..11 | CRC-16/CCITT-FALSE，小端，覆盖 bytes 2..9（含发射标志和识别位） |
 | 12..13 | 帧尾 `0D 0A` |
 
-发射标志由现有起飞检测提供，检测到发射后本周期保持为 `1`，复位后为 `0`；目标丢失、制导失效或故障清零均不清除已发射状态。识别成功但首帧视线角速度尚不可用时，仍发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。起飞前不发送控制指令的规则不变；运行时故障清零时识别位为 `0`。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。20-byte IMU 上行帧及字段转换不变。
+发射标志采用 `launch_detection_mode` 所选判据：`acceleration` 加速确认即置 `1`，`two_stage` 还须离架确认；触发后本周期保持为 `1`，复位后为 `0`。目标丢失、制导失效或故障清零均不清除已触发状态。触发后的首个有效图像仅建立速率基准，即使识别成功也发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。触发前不发送控制指令；曝光时刻早于确认的历史图像，包括插值区间跨触发边界的图像，不得借用最新 IMU 的已触发状态下发清零指令。运行时故障清零时识别位为 `0`。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。20-byte IMU 上行帧及字段转换不变。
 
 ## 8. 运行时组装和输出模式
 
@@ -541,7 +561,8 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 - **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
 - **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
-- **协议回归**：串口协议测试验证固定帧长、过载量化、两个标志独立为 0/1 且都参与 CRC；命令适配器和运行时测试验证正常制导、首帧速率不可用、目标丢失及故障清零的状态标志，并保持起飞前不发送指令。
+- **发射触发**：`launch_detection_test`、`attitude_adapter_test` 验证默认加速触发、可选两阶段确认、误触发拒绝、超时边界、断流/异常样本及复位重校准；`body_vector_runtime_test` 在两种模式及两种 PN 下验证触发前不建立飞行滤波状态、跨触发边界不下发、使用触发后的动态速度；默认算法和仿真测试覆盖参数解析、缺省/非法模式、确认时刻元数据及两种模式下真实 Socket 录制链路。
+- **协议回归**：串口协议测试验证固定帧长、过载量化、两个标志独立为 0/1 且都参与 CRC；命令适配器和运行时测试验证正常制导、首帧速率不可用、目标丢失及故障清零的状态标志，并保持所选判据触发前不发送指令。
 
 设置 `MOSAS_BUILD_APPLICATION=OFF`、`MOSAS_BUILD_OPENCV_ADAPTERS=ON`、`BUILD_TESTING=ON` 可构建本地输出及模式组合测试，无需配置 Nori SDK；`MOSAS_BUILD_WIRELESS` 控制是否构建 RTSP 适配器及链接 FFmpeg。纯 runtime 测试不需要 OpenCV。
 

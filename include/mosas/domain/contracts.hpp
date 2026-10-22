@@ -40,11 +40,13 @@ struct AttitudeState {
     bool valid = false;
 };
 
+/** @brief launched 表示所选发射判据已确认；仅 two_stage 模式额外要求离架确认。 */
 enum class LaunchPhase { unknown, pre_launch, launched };
 enum class LaunchReason { threshold_confirmed, not_started, invalid_imu, stale_imu };
 
 struct LaunchState {
     LaunchPhase phase = LaunchPhase::unknown;
+    /** @brief 所选发射判据的确认帧时间；不回溯到候选起点。 */
     SensorTime transition_time{};
     std::uint64_t generation = 0;
     LaunchReason reason = LaunchReason::not_started;
@@ -55,7 +57,7 @@ struct FlightStateSnapshot {
     ImuKinematicSample imu_sample{};
     AttitudeState attitude{};
     LaunchState launch{};
-    /** @brief 与姿态同一时刻的纵向速度，单位 m/s；起飞前保持标定初速。 */
+    /** @brief 与姿态同一时刻的纵向速度，单位 m/s；触发前及确认帧保持标定初速。 */
     Quantity<MetersPerSecond> speed_mps{};
 };
 
@@ -78,7 +80,7 @@ struct GuidanceCommand {
     GuidanceInvalidReason invalid_reason =
         GuidanceInvalidReason::launch_not_confirmed;
     DartOverloadG overload_g{};
-    /** @brief 当前周期是否已检测到发射，独立于制导有效性。 */
+    /** @brief 当前周期是否已按所选发射判据触发，独立于制导有效性。 */
     bool launched = false;
     /** @brief 当前帧是否识别到目标；未执行识别或故障时为 false。 */
     bool target_found = false;

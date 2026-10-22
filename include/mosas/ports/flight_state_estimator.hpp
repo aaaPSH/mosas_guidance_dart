@@ -8,6 +8,7 @@ namespace mosas::ports {
 /**
  * @brief 将单个 IMU 样本转换为一致的姿态、纵向速度与起飞状态快照。
  * @note 一个样本只调用一次 update，以避免姿态与起飞估计器重复消费样本；实例由单一 IMU 工作线程调用。
+ * launched 表示所选发射判据已确认；触发前非静止阶段不积分姿态或速度。
  */
 class IFlightStateEstimator {
 public:
