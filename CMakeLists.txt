@@ -273,7 +273,7 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES config/mosas_guidance.conf
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/mosas
 )
-install(PROGRAMS scripts/run_guidance.sh
+install(PROGRAMS scripts/run_guidance.sh scripts/calibrate_camera_imu_sync.py
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
@@ -282,6 +282,19 @@ install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
 endif()  # MOSAS_BUILD_APPLICATION
 
 if(BUILD_TESTING)
+    # 仅部署 C++ 程序的主机无需安装离线 Python 分析依赖。
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy; import cv2"
+            RESULT_VARIABLE MOSAS_SYNC_PYTHON_AVAILABLE
+            OUTPUT_QUIET ERROR_QUIET)
+        if(MOSAS_SYNC_PYTHON_AVAILABLE EQUAL 0)
+            add_test(NAME camera_imu_sync_calibration_test
+                COMMAND ${Python3_EXECUTABLE} -B
+                    ${PROJECT_SOURCE_DIR}/tests/camera_imu_sync_calibration_test.py)
+            set_tests_properties(camera_imu_sync_calibration_test PROPERTIES TIMEOUT 60)
+        endif()
+    endif()
     if(TARGET mosas_simulation)
         foreach(test simulation_sources_test simulation_command_sink_test simulation_sync_test simulation_runner_test simulation_contract_test simulation_recording_test simulation_pre_acquisition_test simulation_audit_test)
             add_executable(${test} tests/${test}.cpp)
