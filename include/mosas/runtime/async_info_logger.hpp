@@ -39,7 +39,8 @@ public:
     /**
      * @brief 非阻塞地提交结构化日志事件。
      * @param event 固定大小的日志事件；包含单调时间戳和消息内容。
-     * @return 事件被队列接收时为 true；队列满或 logger 未运行时为 false。
+     * @return 事件被接收时为 true；生产者锁竞争、队列满或 logger 已停止时为 false。
+     * @note 不等待其他生产者；锁竞争和队列满均丢弃本次事件并增加 dropped_count。
      */
     bool try_submit(const RuntimeLogEvent& event) noexcept override;
 
@@ -70,8 +71,7 @@ private:
     void set_error(const char* message) noexcept;
 
     std::ostream* output_ = nullptr;
-    // Submissions can originate from frame, IMU, and output workers.
-    // Serialize enqueues so the underlying ring remains single-producer.
+    // 多个 worker 只尝试取得生产者锁，保持底层环形队列单生产者语义且不阻塞控制链。
     std::mutex producer_mutex_;
     SpscRing<RuntimeLogEvent> queue_;
     std::atomic<bool> stop_requested_{false};

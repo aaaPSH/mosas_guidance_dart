@@ -529,7 +529,7 @@ C++ 参数结构的缺省值保持 N=3、sigma_a=8、sigma_l=0.0035、初始速�
 - `ITelemetryRecorder`：与视频 recorder 相同的生命周期和逐帧记录接口。
 - `IVisualizationSink`：`start/reset/publish/cancel/stop/last_error`。
 - `IImuRecorder`：接收 `domain::ImuKinematicSample`，以非阻塞 `try_record` 提交，并提供 `SinkDiagnostics`。
-- `IAsyncLogger`：接收固定大小的 `RuntimeLogEvent`，提供诊断并在停止时 flush。未注入 logger 或 logger 未运行时不输出日志；拒绝提交时也不回退到同步 I/O。启动错误和运行期故障由 `last_error()` 保留，App 决定如何展示。
+- `IAsyncLogger`：接收固定大小的 `RuntimeLogEvent`，提供诊断并在停止时 flush。`AsyncInfoLogger` 只尝试取得生产者锁；锁竞争或队列满时立即拒绝该事件并增加 dropped_count，不等待其他生产者，也不回退到同步 I/O。未注入 logger 或 logger 未运行时不输出日志。启动错误和运行期故障由 `last_error()` 保留，App 决定如何展示。
 
 `SinkDiagnostics` 记录 enabled/healthy、accepted/dropped/failure 计数、队列深度/容量和 sink 自身的 `last_error`。`RuntimeOutputDiagnostics` 分别命名 video、telemetry、visualization、IMU recording 和 logging；未启用 sink 的快照为 disabled、healthy、计数为零。
 

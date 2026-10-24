@@ -46,7 +46,11 @@ bool AsyncInfoLogger::try_submit(const RuntimeLogEvent& event) noexcept {
         return false;
     }
     try {
-        std::lock_guard<std::mutex> lock(producer_mutex_);
+        std::unique_lock<std::mutex> lock(producer_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            dropped_count_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         if (!running_.load(std::memory_order_acquire) ||
             stop_requested_.load(std::memory_order_acquire)) {
             return false;

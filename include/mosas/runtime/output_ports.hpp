@@ -123,7 +123,7 @@ public:
     /**
      * @brief 非阻塞地提交固定大小日志事件。
      * @param event 含单调时钟时间和结构化消息字段的日志事件。
-     * @return 被队列接收时为 true；队列满或 logger 不可用时为 false。
+     * @return 被队列接收时为 true；竞争、队列满或 logger 不可用时可立即拒绝并返回 false。
      */
     virtual bool try_submit(const RuntimeLogEvent& event) noexcept = 0;
     /** @brief 返回日志队列和写入错误快照。 @return logger 诊断信息。 */

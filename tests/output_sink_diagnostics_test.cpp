@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <streambuf>
 #include <string>
@@ -311,13 +312,18 @@ int main() {
         constexpr std::size_t producer_count = 4;
         constexpr std::size_t events_per_producer = 100;
         std::atomic<std::size_t> rejected_count{0};
+        std::atomic<std::size_t> remaining_producers{producer_count};
         std::vector<std::thread> producers;
         for (std::size_t producer = 0; producer < producer_count; ++producer) {
             producers.emplace_back([&, producer] {
+                remaining_producers.fetch_sub(1, std::memory_order_acq_rel);
+                while (remaining_producers.load(std::memory_order_acquire) != 0) {
+                    std::this_thread::yield();
+                }
                 for (std::size_t event = 0; event < events_per_producer; ++event) {
                     const auto timestamp = static_cast<std::int64_t>(
                         producer * events_per_producer + event);
-                    if (!logger.try_submit_text(timestamp, "concurrent event")) {
+                    if (!logger.try_submit_text(timestamp, "concurrent event " + std::to_string(timestamp))) {
                         rejected_count.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
@@ -326,17 +332,26 @@ int main() {
         for (std::thread& producer : producers) {
             producer.join();
         }
-        CHECK(rejected_count.load(std::memory_order_relaxed) == 0);
         logger.stop_and_flush();
         const auto diagnostics = logger.diagnostics();
-        CHECK(diagnostics.accepted_count ==
+        // 抢锁竞争允许拒绝提交，但每次尝试必须计入接收或丢弃，且不能破坏已接收事件。
+        CHECK(diagnostics.healthy);
+        CHECK(diagnostics.accepted_count > 0);
+        CHECK(diagnostics.accepted_count + diagnostics.dropped_count ==
               producer_count * events_per_producer);
-        CHECK(diagnostics.dropped_count == 0);
+        CHECK(diagnostics.dropped_count == rejected_count.load(std::memory_order_relaxed));
         CHECK(diagnostics.queue_depth == 0);
-        const std::string logged_output = output_stream.str();
-        CHECK(static_cast<std::size_t>(
-                  std::count(logged_output.begin(), logged_output.end(), '\n')) ==
-              producer_count * events_per_producer);
+        std::istringstream logged_output(output_stream.str());
+        std::set<std::size_t> event_ids;
+        std::string line;
+        while (std::getline(logged_output, line)) {
+            const std::string prefix = "concurrent event ";
+            CHECK(line.rfind(prefix, 0) == 0);
+            const auto event_id = std::stoul(line.substr(prefix.size()));
+            CHECK(event_id < producer_count * events_per_producer);
+            CHECK(event_ids.insert(event_id).second);
+        }
+        CHECK(event_ids.size() == diagnostics.accepted_count);
     }
 
     return 0;
