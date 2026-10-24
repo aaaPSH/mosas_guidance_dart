@@ -330,6 +330,15 @@ if(BUILD_TESTING)
     target_link_libraries(imu_time_model_test PRIVATE mosas_contract_core)
     add_test(NAME imu_time_model_test COMMAND imu_time_model_test)
 
+    add_executable(raw_imu_receive_buffer_test
+        tests/raw_imu_receive_buffer_test.cpp
+        src/adapters/raw_imu_receive_buffer.cpp
+    )
+    configure_mosas_target(raw_imu_receive_buffer_test)
+    target_link_libraries(raw_imu_receive_buffer_test PRIVATE Threads::Threads)
+    add_test(NAME raw_imu_receive_buffer_test COMMAND raw_imu_receive_buffer_test)
+    set_tests_properties(raw_imu_receive_buffer_test PROPERTIES TIMEOUT 10)
+
     add_executable(body_vector_los_filter_test tests/body_vector_los_filter_test.cpp)
     configure_mosas_target(body_vector_los_filter_test)
     target_link_libraries(body_vector_los_filter_test PRIVATE mosas_guidance)
