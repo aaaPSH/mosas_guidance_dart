@@ -288,6 +288,28 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     int integer = 0;
     double decimal = 0.0;
 
+    if (section == "app") {
+        if (key == "enable_timing_statistics") {
+            return parse_bool(value, &config->enable_timing_statistics) || invalid();
+        }
+        return invalid();
+    }
+
+    if (section == "sync_calibration") {
+        auto& capture = config->sync_calibration;
+        if (key == "output_dir") {
+            capture.directory = value;
+            return true;
+        }
+        if (key == "seconds") return parse_double(value, &capture.seconds) || invalid();
+        if (key == "fps") return parse_int(value, &capture.fps) || invalid();
+        if (key == "max_mib" && parse_int(value, &integer) && integer >= 64 && integer <= 65536) {
+            capture.max_bytes = static_cast<std::uint64_t>(integer) * 1024 * 1024;
+            return true;
+        }
+        return invalid();
+    }
+
     if (section == "camera") {
         if (key == "device") {
             config->camera.device = value;
@@ -710,7 +732,7 @@ bool load_hardware_config(const std::filesystem::path& path, AppConfig* config,
     }
     AppConfig loaded;
     std::set<std::string> seen;
-    if (!read_ini(path, {"camera", "imu", "command", "serial", "guidance", "output", "wireless"},
+    if (!read_ini(path, {"app", "camera", "imu", "command", "serial", "guidance", "output", "wireless", "sync_calibration"},
                   [&](std::size_t line, const std::string& section,
                       const std::string& key, const std::string& value) {
                       return parse_key(path, line, section, key, value, &loaded, &seen, error);
@@ -740,6 +762,11 @@ bool load_hardware_config(const std::filesystem::path& path, AppConfig* config,
             std::filesystem::absolute(path).parent_path() /
             loaded.output.recording_path;
         loaded.output.recording_path = absolute_path.lexically_normal().string();
+    }
+    if (!loaded.sync_calibration.directory.empty()) {
+        loaded.sync_calibration.directory =
+            (std::filesystem::absolute(path).parent_path() / loaded.sync_calibration.directory)
+                .lexically_normal();
     }
     loaded.guidance.camera_capture =
         runtime::CameraCaptureConfig{loaded.camera.capture_mode};

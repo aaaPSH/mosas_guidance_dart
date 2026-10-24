@@ -32,6 +32,17 @@ int main() {
         std::filesystem::path(MOSAS_SOURCE_DIR) / "config" /
         "mosas_guidance.conf";
     CHECK(mosas::app::AppConfigLoader::load(config_path, &config, &error));
+    CHECK(!config.enable_timing_statistics);
+    CHECK(config.sync_calibration.directory.empty());
+    mosas::app::AppConfig calibration_config;
+    CHECK(mosas::app::AppConfigLoader::load(
+        config_path.parent_path() / "mosas_sync_calibration.conf", &calibration_config, &error));
+    CHECK(calibration_config.enable_timing_statistics);
+    CHECK(calibration_config.sync_calibration.directory ==
+          (config_path.parent_path().parent_path() / "data" / "sync_capture_01"));
+    CHECK_NEAR(calibration_config.sync_calibration.seconds, 45.0, 0.0);
+    CHECK(calibration_config.sync_calibration.fps == 30);
+    CHECK(calibration_config.sync_calibration.max_bytes == 2048ULL * 1024 * 1024);
     CHECK(config.camera.fps == 120);
     CHECK(config.command.send_rate_hz == 100);
     CHECK(config.command.command_timeout_ms == 100);
