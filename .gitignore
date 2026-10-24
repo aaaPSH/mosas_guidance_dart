@@ -2,10 +2,11 @@
 /build/
 /.worktrees/
 
-# 正式架构与接口契约纳入版本控制，其余本地设计资料不提交到 Git
+# 正式契约与标定使用说明纳入版本控制，本地设计资料不提交到 Git
 /docs/*
 !/docs/ARCHITECTURE_DESIGN.md
 !/docs/INTERFACE_CONTRACTS.md
+!/docs/CAMERA_IMU_SYNC_CALIBRATION.md
 /camera_sdk/
 /README.md
 

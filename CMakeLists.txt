@@ -147,7 +147,7 @@ if(MOSAS_BUILD_SIMULATION_APPLICATION)
         src/app/simulation_contract.cpp)
     configure_mosas_target(mosas_simulation)
     target_link_libraries(mosas_simulation PUBLIC mosas_app_core dart_sim_transport::dart_sim_transport)
-    add_executable(mosas_simulation_app examples/mosas_simulation_app.cpp)
+    add_executable(mosas_simulation_app main/mosas_simulation_app.cpp)
     configure_mosas_target(mosas_simulation_app)
     target_link_libraries(mosas_simulation_app PRIVATE mosas_simulation)
     install(TARGETS mosas_simulation_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -211,6 +211,7 @@ configure_mosas_target(serial_package)
 target_link_libraries(serial_package PUBLIC mosas_contract_core Threads::Threads)
 
 add_library(mosas_app STATIC
+    src/app/device_application.cpp
     src/adapters/command_adapter.cpp
     src/adapters/host_adapters.cpp
     src/adapters/imu_stream_decoder.cpp
@@ -220,6 +221,16 @@ add_library(mosas_app STATIC
     src/adapters/serial_imu_source.cpp
 )
 configure_mosas_target(mosas_app)
+# 相对安装目录随前缀迁移；显式配置的绝对安装路径则保持不变。
+if(IS_ABSOLUTE "${CMAKE_INSTALL_SYSCONFDIR}" OR IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}")
+    set(MOSAS_DEVICE_INSTALL_CONFIG_DIRECTORY "${CMAKE_INSTALL_FULL_SYSCONFDIR}/mosas")
+else()
+    file(RELATIVE_PATH MOSAS_DEVICE_INSTALL_CONFIG_DIRECTORY
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}/mosas")
+endif()
+target_compile_definitions(mosas_app PRIVATE
+    MOSAS_DEVICE_INSTALL_CONFIG_DIRECTORY="${MOSAS_DEVICE_INSTALL_CONFIG_DIRECTORY}")
 target_include_directories(mosas_app
     PUBLIC
         ${OpenCV_INCLUDE_DIRS}
@@ -239,14 +250,11 @@ if(MOSAS_BUILD_WIRELESS)
     target_link_libraries(mosas_app PUBLIC mosas_wireless)
 endif()
 
-add_executable(mosas_guidance_app
-    examples/mosas_guidance_app.cpp
-)
-configure_mosas_target(mosas_guidance_app)
-target_link_libraries(mosas_guidance_app PRIVATE mosas_app)
-if(MOSAS_BUILD_WIRELESS)
-    target_compile_definitions(mosas_guidance_app PRIVATE MOSAS_APP_HAS_WIRELESS=1)
-endif()
+foreach(application mosas_guidance_app mosas_sync_calibration_app)
+    add_executable(${application} main/${application}.cpp)
+    configure_mosas_target(${application})
+    target_link_libraries(${application} PRIVATE mosas_app)
+endforeach()
 
 set(MOSAS_INSTALL_TARGETS
     mosas_contract_core
@@ -258,6 +266,7 @@ set(MOSAS_INSTALL_TARGETS
     mosas_app_core
     mosas_app
     mosas_guidance_app
+    mosas_sync_calibration_app
 )
 if(MOSAS_BUILD_WIRELESS)
     list(APPEND MOSAS_INSTALL_TARGETS
@@ -270,10 +279,11 @@ install(TARGETS ${MOSAS_INSTALL_TARGETS}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(FILES config/mosas_guidance.conf
+install(FILES config/mosas_guidance.conf config/mosas_sync_calibration.conf
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/mosas
 )
-install(PROGRAMS scripts/run_guidance.sh scripts/calibrate_camera_imu_sync.py
+install(PROGRAMS scripts/run_guidance.sh scripts/run_sync_calibration.sh
+    scripts/calibrate_camera_imu_sync.py
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(FILES "${MOSAS_CAMERA_SDK_LIBRARY}"
@@ -285,6 +295,19 @@ if(BUILD_TESTING)
     # 仅部署 C++ 程序的主机无需安装离线 Python 分析依赖。
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        if(TARGET mosas_sync_calibration_app)
+            add_test(NAME device_application_entry_test
+                COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/device_application_entry_test.py
+                    $<TARGET_FILE:mosas_sync_calibration_app> $<TARGET_FILE:mosas_guidance_app>
+                    ${PROJECT_SOURCE_DIR}/config/mosas_guidance.conf
+                    ${PROJECT_SOURCE_DIR}/config/mosas_sync_calibration.conf)
+            set_tests_properties(device_application_entry_test PROPERTIES TIMEOUT 20)
+            add_test(NAME device_application_install_test
+                COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/device_application_install_test.py
+                    ${PROJECT_BINARY_DIR})
+            set_tests_properties(device_application_install_test PROPERTIES
+                TIMEOUT 60 RESOURCE_LOCK mosas_install_manifest)
+        endif()
         execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy; import cv2"
             RESULT_VARIABLE MOSAS_SYNC_PYTHON_AVAILABLE
             OUTPUT_QUIET ERROR_QUIET)

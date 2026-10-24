@@ -616,3 +616,17 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 `simulation_config_test`、`simulation_contract_test` 验证原配置与握手；`simulation_sources_test`、`simulation_command_sink_test`、`simulation_sync_test`、`simulation_runner_test` 覆盖适配器、丢流/溢出、同步屏障、原插值拒绝及生命周期。`simulation_recording_test` 使用真实 Socket 来源、原算法和原输出，验证两发 match 部分落盘、完整 IMU、debug/prelaunch、文件隔离及错误可见，临时文件由 RAII 清理。这些不构成 Gazebo 闭环验收。
 
 实际步骤、DSIM v1 和验收状态见 SIM 仓库 `docs/mosas-simulation.md`。2026-10-14 的实际尝试受无可用 X/Ogre 渲染及 DDS 服务未 ready 阻塞，没有发射/实际录制；历史 PNG 非零执行证据采用旧参数，不能替代当前配置验收。
+
+## 11. 原程序负载下的相机／IMU 标定采集
+
+实际场上运行由 `main/mosas_guidance_app.cpp` / `scripts/run_guidance.sh` 启动，默认读取 `config/mosas_guidance.conf`；标定采集由独立的 `main/mosas_sync_calibration_app.cpp` / `scripts/run_sync_calibration.sh` 启动，默认读取 `config/mosas_sync_calibration.conf`。两个入口均为无参数 `main()`，不再解析命令行参数。两个配置文件各自包含完整的设备、算法和输出设置，互不引用；标定文件另有 `[sync_calibration] output_dir/seconds/fps/max_mib`，两者各自通过 `[app] enable_timing_statistics` 控制退出统计。标定目录的相对路径按配置文件所在目录解析，只在标定入口执行采集预检。源码脚本仅保留构建选项，切到项目根目录后无参数启动程序；直接启动源码构建的二进制也须在项目根目录执行。安装后脚本直接启动同目录的可执行文件，不调用 CMake；程序通过 Linux `/proc/self/exe` 定位 CMake 安装配置目录，默认是 `<prefix>/etc/mosas/`，不依赖启动工作目录。安装配置目录或文件缺失时明确失败，不回退到当前目录的配置。公共 `device_application` 支持负责设备初始化、原算法／输出组装和统计，各入口独立选择命令 sink 并控制生命周期。
+
+标定入口通过输入源装饰器旁路记录，不增加第二个相机／串口读取者，不增加人工压力，不改变原算法及源时间补偿。它只构造无设备资源的内存 CommandSink，不调用生产命令工厂，连清零帧也不发送；执行器仍须物理断能。场上入口按原配置构造生产命令 sink，不含标定分支。
+
+原 SDK 图像在 prepare 前独立拷贝，后台转灰度写入 version=2 数据目录；不能共享会被 prepare 原地翻转的像素。相机倒装 180°且现有内参来自正立图像，离线分析复现原 resize／180° flip 后使用该内参。IMU 全速记录未经估计器修正的数据，图像默认抽样 30 Hz，均保留整数纳秒的运行时间和逆补偿时间。
+
+旁路队列／文件有界，记录溢出、数据错误、预算超限、文件关闭失败及中断均不能写 complete=true。原生产者退出、记录队列排空并成功关闭文件后才原子完成元数据。报告保留接收诊断、原阶段实际样本数和记录开销；停发 TX、缺失发射后分支及额外记录负载限制必须明确，不宣称完全等价于所有实际运行状态或硬件同步。
+
+`device_application_entry_test` 验证源码入口的默认文件隔离、预检和失败清理；`device_application_install_test` 将真实安装产物放入临时前缀，从其他工作目录验证无参数启动、采集目录解析，以及缺失安装配置时不回退。测试只使用不存在的串口，临时产物在结束后清理。
+
+使用步骤、内参方向、文件格式、偏移符号及拒绝条件见 [`CAMERA_IMU_SYNC_CALIBRATION.md`](CAMERA_IMU_SYNC_CALIBRATION.md)。

@@ -478,7 +478,7 @@ def main(argv=None):
     @return 接受估计并写入报告时返回 0，拒绝数据或报告失败返回 1，命令行错误返回 2。
     """
     parser = argparse.ArgumentParser(description="真实程序负载下的棋盘格/IMU 相对时延标定，不修改生产配置")
-    parser.add_argument("--data", type=Path, required=True, help="version-2 标定采集目录")
+    parser.add_argument("--data", type=Path, required=True, help="标定配置 sync_calibration.output_dir 指定的采集目录")
     parser.add_argument("--intrinsics", type=Path, required=True, help="翻转 180°后正立图像的内参/畸变 JSON")
     parser.add_argument("--columns", type=int, required=True, help="棋盘格内角点列数")
     parser.add_argument("--rows", type=int, required=True, help="棋盘格内角点行数")
