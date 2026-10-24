@@ -37,6 +37,9 @@ find_package(Threads REQUIRED)
 
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
+    if(MOSAS_BUILD_APPLICATION)
+        list(APPEND MOSAS_OPENCV_COMPONENTS imgcodecs)
+    endif()
     find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
 
     add_library(mosas_vision STATIC
@@ -76,7 +79,7 @@ target_link_libraries(mosas_runtime
         Threads::Threads
 )
 
-# Output adapters and their tests do not require the camera SDK.
+# 输出适配器及其测试不依赖相机 SDK。
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     if(MOSAS_BUILD_WIRELESS)
         find_package(PkgConfig REQUIRED)
@@ -114,10 +117,11 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     endif()
 endif()
 
-# Configuration and algorithm composition are host code, not camera/serial I/O.
+# 配置解析和算法组装属于宿主逻辑，不执行相机或串口 I/O。
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     add_library(mosas_app_core STATIC
         src/app/app_config.cpp
+        src/app/camera_imu_sync_session.cpp
         src/app/config_parsing.cpp
         src/app/simulation_config.cpp
         src/app/default_guidance_algorithms.cpp
@@ -476,6 +480,13 @@ if(BUILD_TESTING)
         target_link_libraries(output_sink_diagnostics_test PRIVATE mosas_output)
         add_test(NAME output_sink_diagnostics_test
             COMMAND output_sink_diagnostics_test)
+
+        add_executable(camera_imu_sync_capture_test tests/camera_imu_sync_capture_test.cpp)
+        configure_mosas_target(camera_imu_sync_capture_test)
+        target_include_directories(camera_imu_sync_capture_test PRIVATE ${PROJECT_SOURCE_DIR}/src/app)
+        target_link_libraries(camera_imu_sync_capture_test PRIVATE mosas_app_core)
+        add_test(NAME camera_imu_sync_capture_test COMMAND camera_imu_sync_capture_test)
+        set_tests_properties(camera_imu_sync_capture_test PROPERTIES TIMEOUT 15)
 
         add_executable(mode_composition_test tests/mode_composition_test.cpp)
         configure_mosas_target(mode_composition_test)

@@ -98,6 +98,18 @@ struct GuidanceAlgorithmConfig {
     runtime::AttitudeEstimatorConfig attitude{};
 };
 
+/**
+ * @brief 有界标定记录设置；图像抽样不改变相机采集帧率。
+ */
+struct CameraImuSyncOptions {
+    std::filesystem::path directory;
+    double seconds = 45.0;
+    int fps = 30;
+    std::uint64_t max_bytes = 2048ULL * 1024 * 1024;
+    std::size_t image_queue_capacity = 8;
+    std::size_t imu_queue_capacity = 4096;
+};
+
 struct AppConfig {
     CameraAppConfig camera{};
     ImuAppConfig imu{};
