@@ -122,6 +122,7 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     add_library(mosas_app_core STATIC
         src/app/app_config.cpp
         src/app/camera_imu_sync_session.cpp
+        src/app/camera_imu_sync_sources.cpp
         src/app/config_parsing.cpp
         src/app/simulation_config.cpp
         src/app/default_guidance_algorithms.cpp
@@ -487,6 +488,12 @@ if(BUILD_TESTING)
         target_link_libraries(camera_imu_sync_capture_test PRIVATE mosas_app_core)
         add_test(NAME camera_imu_sync_capture_test COMMAND camera_imu_sync_capture_test)
         set_tests_properties(camera_imu_sync_capture_test PROPERTIES TIMEOUT 15)
+
+        add_executable(camera_imu_sync_composition_test tests/camera_imu_sync_composition_test.cpp)
+        configure_mosas_target(camera_imu_sync_composition_test)
+        target_link_libraries(camera_imu_sync_composition_test PRIVATE mosas_app_core)
+        add_test(NAME camera_imu_sync_composition_test COMMAND camera_imu_sync_composition_test)
+        set_tests_properties(camera_imu_sync_composition_test PROPERTIES TIMEOUT 15)
 
         add_executable(mode_composition_test tests/mode_composition_test.cpp)
         configure_mosas_target(mode_composition_test)
