@@ -71,7 +71,7 @@ void SimulationSession::accept(Message message){
         if(s.phase_start_ns<metadata_.session.phase_start_ns)throw std::runtime_error("session phase time rollback");
         metadata_.session=s;break;
     }
-    case Type::camera_info:break; // Already validated and immutable by the transport handshake.
+    case Type::camera_info:break; // 已由传输握手校验，此后保持不变。
     case Type::command_status:{auto s=std::get<CommandStatus>(message.payload);
         if(s.status==CommandResult::applied||s.status==CommandResult::limited){++counters_.applied;if(s.applied_left_g!=0||s.applied_up_g!=0)++counters_.nonzero_applied;}break;}
     default:throw std::runtime_error("unexpected simulation message");
@@ -89,7 +89,7 @@ void SimulationSession::pump()noexcept{
         while(!cancelled()){
             if(!endpoint_.connected())throw std::runtime_error("simulation disconnected: "+endpoint_.diagnostic());
             Message message;
-            // Drain control in bounded batches; image and fault checks must not starve.
+            // 分批有界消费控制通道，避免图像接收及故障检查被持续控制流饿死。
             for(int i=0;i<32 && endpoint_.receive(Channel::control,message,0ms);++i)accept(std::move(message));
             if(endpoint_.receive(Channel::image,message,0ms))accept(std::move(message));
             {std::lock_guard<std::mutex> lock(mutex_);auto reference=last_image_>=0?last_image_:image_enabled_since_;
