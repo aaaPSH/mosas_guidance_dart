@@ -16,7 +16,7 @@ bool equal(double a, double b) {
     return std::isfinite(a) && std::isfinite(b) &&
            std::abs(a-b) <= 1e-6*std::max({1.0,std::abs(a),std::abs(b)});
 }
-/** @brief Simulation requires every configured recording sink; hardware runtime policy is unchanged. */
+/** @brief 仿真要求所有已配置的记录输出均健康；不改变硬件运行时的故障策略。 @param outputs 输出诊断快照。 */
 void require_healthy_outputs(const runtime::RuntimeOutputDiagnostics& outputs) {
     for(const auto& sink : {std::make_pair("video",&outputs.video),
                             std::make_pair("telemetry",&outputs.telemetry),
@@ -36,6 +36,7 @@ std::uint64_t SimulationRunner::session_id() const noexcept {
     return session_ ? session_->metadata().session_id : 0;
 }
 runtime::RuntimeTiming SimulationRunner::timing() const {
+    std::lock_guard<std::mutex> lock(supervisor_mutex_);
     return supervisor_ ? supervisor_->timing() : runtime::RuntimeTiming{};
 }
 runtime::RuntimeOutputDiagnostics SimulationRunner::output_diagnostics() const {
@@ -77,7 +78,10 @@ void SimulationRunner::finish(std::string error) {
                <<" processing_fps_host="<<performance.processing_fps<<" output_fps_host="<<performance.output_fps;
         report(summary.str());
         session_->clear_watermark();
-        supervisor_.reset();
+        {
+            std::lock_guard<std::mutex> lock(supervisor_mutex_);
+            supervisor_.reset();
+        }
     }
     camera_=nullptr;
     pre_acquisition_.reset();
@@ -162,10 +166,13 @@ void SimulationRunner::step() {
                 algorithms.vision_detector=std::move(ports.vision_detector);
                 command_sink=std::move(ports.command_sink);
             }
-            supervisor_=std::make_unique<runtime::RuntimeSupervisor>(
-                std::make_unique<adapters::SimulationImuSource>(session_),std::move(camera),
-                std::move(command_sink),runtime_config,
-                std::move(algorithms),std::move(outputs));
+            {
+                std::lock_guard<std::mutex> lock(supervisor_mutex_);
+                supervisor_=std::make_unique<runtime::RuntimeSupervisor>(
+                    std::make_unique<adapters::SimulationImuSource>(session_),std::move(camera),
+                    std::move(command_sink),runtime_config,
+                    std::move(algorithms),std::move(outputs));
+            }
             session_->bind_watermark([this]{return supervisor_->latest_state();});
             if(!supervisor_->start())throw std::runtime_error(supervisor_->last_error());
             require_healthy_outputs(supervisor_->output_diagnostics());

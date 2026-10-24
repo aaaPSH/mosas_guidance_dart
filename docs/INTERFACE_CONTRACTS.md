@@ -610,7 +610,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 - `SimulationCommandSink` 将 `left_g=-overload_g.z`、`up_g=overload_g.y`，保留来源图像时间及 frame ID。Socket session 与 MOSAS generation 分别检查；generation 切换清除未发送旧命令。
 - `validate_simulation_metadata` 按已加载原配置核对握手尺寸/RGB8、相机/IMU rate、fx/fy/cx/cy、安装旋转、世界重力和 g0；保持 1e-6 相对/绝对容差。实际渲染须使用原非中心 K，Gazebo 侧恢复已知 XML 序列化精度后校验完整投影才报告 camera_ready，不只修改握手标定。
 - `SimulationRunner` 为每个 ready 新 session 创建 RuntimeSupervisor，复用原算法、输出工厂并注入仿真 clock。启动/请求速度使用原配置，不从物理真值更新；不匹配则拒绝。配置的输出 sink 在报告 ready 前及运行中须健康；这是仿真应用层策略，不改变硬件 Runtime 的非致命 IMU/logger 故障策略。
-- `SimulationRunner::timing()` / `output_diagnostics()` 只读封装原诊断。finish 先 stop/join、编码/刷新，再报告各 sink 的 accepted/dropped/failures/last_error，最后清水位并销毁 session。配置 Hz 与主机实测吞吐分别报告；SimulationCameraSource 不把握手标称 Hz 冒充实际 capture FPS。
+- `SimulationRunner::timing()` / `output_diagnostics()` 只读封装原诊断。`timing()` 通过监督器所有权互斥锁与创建、销毁同步，可由其他线程查询，但运行器对象须保持存活；它不是无等待接口。其他公开方法、输出诊断和析构均由同一生命周期线程调用。finish 先 stop/join、编码/刷新，再报告各 sink 的 accepted/dropped/failures/last_error，最后清水位并销毁 session。配置 Hz 与主机实测吞吐分别报告；SimulationCameraSource 不把握手标称 Hz 冒充实际 capture FPS。
 - 原 debug/match 输出使用独立运行目录，保存 AVI、遥测 CSV 和全程 IMU CSV。match 由原起飞判据自然触发，未满窗口正常停止也保存部分数据；下一 session 不覆盖上一发。当前 640×480 / 120 Hz、match 4000 ms 的 BGR 窗口约 442 MB，内存上限仍为 1,105,920,000 bytes，超限启动前拒绝；默认父目录 `/home/panshenghe/dart_sim_ws/recordings/`。
 
 `simulation_config_test`、`simulation_contract_test` 验证原配置与握手；`simulation_sources_test`、`simulation_command_sink_test`、`simulation_sync_test`、`simulation_runner_test` 覆盖适配器、丢流/溢出、同步屏障、原插值拒绝及生命周期。`simulation_recording_test` 使用真实 Socket 来源、原算法和原输出，验证两发 match 部分落盘、完整 IMU、debug/prelaunch、文件隔离及错误可见，临时文件由 RAII 清理。这些不构成 Gazebo 闭环验收。
