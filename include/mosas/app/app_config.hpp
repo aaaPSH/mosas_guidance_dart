@@ -2,8 +2,6 @@
 #define MOSAS_APP_CONFIG_HPP
 
 #include <mosas/guidance/ballistic_png_guidance.hpp>
-#include <mosas/guidance/body_vector_los_filter.hpp>
-#include <mosas/guidance/body_vector_pn_guidance.hpp>
 #include <mosas/guidance/guidance_estimator.hpp>
 #include <mosas/guidance/inertial_vector_los_filter.hpp>
 #include <mosas/runtime/attitude_estimator.hpp>
@@ -100,8 +98,6 @@ struct GuidanceAlgorithmConfig {
     // 过渡兼容字段
     LineOfSightRateFilterConfig los_rate_filter{};
     PngGuidanceConfig png_guidance{};
-    guidance::BodyVectorLosFilterConfig body_vector_filter{};
-    guidance::BodyVectorPnConfig body_vector_pn{};
 };
 
 /**

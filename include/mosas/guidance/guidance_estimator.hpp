@@ -155,37 +155,9 @@ public:
     LineOfSightRateSample sample() const;
 
 private:
-    class TwoStateLosKalmanFilter {
-    public:
-        TwoStateLosKalmanFilter(double sigma_a, double sigma_q,
-                                double initial_covariance);
-
-        void reset();
-        void initialize(double q_b, double initial_rate = 0.0);
-        double update(bool valid, double z_qb, double c_omega, double dt);
-        bool is_initialized() const { return initialized_; }
-        double estimated_angle() const { return q_b_; }
-        double estimated_rate() const { return q_dot_i_; }
-
-    private:
-        double sigma_a_ = 8.0;
-        double r_ = 0.0035 * 0.0035;
-        double initial_covariance_ = 1.0;
-        bool initialized_ = false;
-        double q_b_ = 0.0;
-        double q_dot_i_ = 0.0;
-        double p00_ = 0.0;
-        double p01_ = 0.0;
-        double p10_ = 0.0;
-        double p11_ = 1.0;
-    };
-
     bool has_previous_ = false;
-    bool filter_enabled_ = true;
     double previous_q_y_ = 0.0;
     double previous_q_z_ = 0.0;
-    TwoStateLosKalmanFilter q_y_filter_;
-    TwoStateLosKalmanFilter q_z_filter_;
     LineOfSightAngularVelocity angular_velocity_{false, 0.0, 0.0};
     LineOfSightRateSample sample_{};
 };

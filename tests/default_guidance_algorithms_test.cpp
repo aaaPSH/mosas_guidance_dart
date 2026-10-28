@@ -55,13 +55,13 @@ int main() {
           mosas::runtime::LaunchDetectionMode::two_stage);
     CHECK(config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
     CHECK(config.algorithms.png_guidance.control_channel == mosas::guidance::ControlChannel::both);
-    CHECK(config.algorithms.body_vector_pn.control_channel == mosas::guidance::ControlChannel::both);
-    CHECK_NEAR(config.algorithms.body_vector_filter.sigma_a, 4.0, 1e-12);
-    CHECK_NEAR(config.algorithms.body_vector_filter.sigma_l, 0.0005, 1e-12);
-    CHECK_NEAR(config.algorithms.body_vector_filter.initial_rate_covariance, 1.0, 1e-12);
-    CHECK_NEAR(config.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
-    CHECK_NEAR(config.algorithms.body_vector_pn.maximum_command_overload, 0.3, 1e-12);
-    CHECK_NEAR(config.algorithms.body_vector_pn.maximum_command_acceleration, 9.80665, 1e-12);
+    CHECK(config.algorithms.ballistic_png.control_channel == mosas::guidance::ControlChannel::both);
+    CHECK_NEAR(config.algorithms.inertial_filter.sigma_a, 4.0, 1e-12);
+    CHECK_NEAR(config.algorithms.inertial_filter.sigma_l, 0.0005, 1e-12);
+    CHECK_NEAR(config.algorithms.inertial_filter.initial_rate_covariance, 1.0, 1e-12);
+    CHECK_NEAR(config.algorithms.inertial_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(config.algorithms.ballistic_png.maximum_command_overload, 0.3, 1e-12);
+    CHECK_NEAR(config.algorithms.ballistic_png.maximum_command_acceleration, 9.80665, 1e-12);
     CHECK(config.algorithms.vision_config.initial_roi.width == 640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,
                486.244430986463, 1e-9);
@@ -192,7 +192,7 @@ int main() {
         mosas::app::AppConfig without_channel;
         CHECK(mosas::app::AppConfigLoader::load(temporary_config.path, &without_channel, &error));
         CHECK(without_channel.algorithms.png_guidance.control_channel == mosas::guidance::ControlChannel::both);
-        CHECK(without_channel.algorithms.body_vector_pn.control_channel == mosas::guidance::ControlChannel::both);
+        CHECK(without_channel.algorithms.ballistic_png.control_channel == mosas::guidance::ControlChannel::both);
     }
     for (const std::string channel : {"both", "pitch", "yaw"}) {
         for (const std::string algorithm : {"png", "body_vector_pn"}) {
@@ -202,7 +202,7 @@ int main() {
                                         : channel == "yaw" ? mosas::guidance::ControlChannel::yaw
                                                            : mosas::guidance::ControlChannel::both;
             CHECK(selected.algorithms.png_guidance.control_channel == expected_channel);
-            CHECK(selected.algorithms.body_vector_pn.control_channel == expected_channel);
+            CHECK(selected.algorithms.ballistic_png.control_channel == expected_channel);
             auto selected_dependencies = mosas::app::make_default_guidance_algorithms(selected.algorithms);
             auto input = observed_input;
             input.angular_velocity = {true, {0.2}, {-0.4}};
@@ -328,8 +328,8 @@ int main() {
     mosas::app::AppConfig vector_config;
     CHECK(load_variant("guidance_algorithm=body_vector_pn\n", &vector_config));
     CHECK(vector_config.algorithms.algorithm == mosas::app::GuidanceAlgorithm::body_vector_pn);
-    CHECK_NEAR(vector_config.algorithms.body_vector_pn.navigation_constant, 3.0, 1e-12);
-    CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.ballistic_png.navigation_constant_y, 3.0, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.inertial_filter.maximum_gap_seconds, 0.2, 1e-12);
     CHECK_NEAR(vector_config.algorithms.attitude.launch_release_acceleration_max_mps2, 3.0, 1e-12);
     CHECK(vector_config.algorithms.attitude.launch_release_confirm_ns == 10'000'000);
     CHECK(vector_config.algorithms.attitude.launch_release_timeout_ns == 500'000'000);
@@ -361,12 +361,12 @@ int main() {
                        "body_vector_los_maximum_gap_ms=80\n"
                        "body_vector_maximum_command_overload=3\n"
                        "body_vector_maximum_command_acceleration=inf\n", &vector_config));
-    CHECK_NEAR(vector_config.algorithms.body_vector_pn.navigation_constant, 4.5, 1e-12);
-    CHECK_NEAR(vector_config.algorithms.body_vector_filter.sigma_a, 2.0, 1e-12);
-    CHECK_NEAR(vector_config.algorithms.body_vector_filter.sigma_l, 0.001, 1e-12);
-    CHECK_NEAR(vector_config.algorithms.body_vector_filter.initial_rate_covariance, 0.5, 1e-12);
-    CHECK_NEAR(vector_config.algorithms.body_vector_filter.maximum_gap_seconds, 0.08, 1e-12);
-    CHECK(std::isinf(vector_config.algorithms.body_vector_pn.maximum_command_acceleration));
+    CHECK_NEAR(vector_config.algorithms.ballistic_png.navigation_constant_y, 4.5, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.inertial_filter.sigma_a, 2.0, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.inertial_filter.sigma_l, 0.001, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.inertial_filter.initial_rate_covariance, 0.5, 1e-12);
+    CHECK_NEAR(vector_config.algorithms.inertial_filter.maximum_gap_seconds, 0.08, 1e-12);
+    CHECK(std::isinf(vector_config.algorithms.ballistic_png.maximum_command_acceleration));
     for (const char* bad : {
              "launch_detection_mode=unknown\n", "launch_detection_mode=1\n",
              "launch_detection_mode=Two_Stage\n",
@@ -408,8 +408,6 @@ int main() {
     vector_config.algorithms.attitude.gravity_mps2 = 10.0;
     vector_config.algorithms.ballistic_png.maximum_command_overload = 3.0;
     vector_config.algorithms.ballistic_png.maximum_command_acceleration = 100.0;
-    vector_config.algorithms.body_vector_pn.maximum_command_overload = 3.0;
-    vector_config.algorithms.body_vector_pn.maximum_command_acceleration = 100.0;
     vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
     CHECK_NEAR(vector_dependencies.guidance_law->calculate(guidance_input)
                    .diagnostics.body_acceleration.y, 15.0, 1e-12);

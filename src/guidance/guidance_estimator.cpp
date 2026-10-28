@@ -19,15 +19,6 @@ bool is_valid_line_of_sight(const LineOfSight& value) {
     return value.valid && is_finite(value.q_y) && is_finite(value.q_z);
 }
 
-bool is_valid_rate_filter_config(const LineOfSightRateFilterConfig& config) {
-    return is_finite(config.sigma_a) && config.sigma_a > 0.0 &&
-           is_finite(config.sigma_q) && config.sigma_q > 0.0 &&
-           is_finite(config.initial_covariance) &&
-           config.initial_covariance >= 0.0 &&
-           is_finite(config.sigma_a_pitch) && config.sigma_a_pitch >= 0.0 &&
-           is_finite(config.sigma_a_yaw) && config.sigma_a_yaw >= 0.0;
-}
-
 bool is_valid_png_config(const PngGuidanceConfig& config) {
     const bool maximum_acceleration_valid =
         (is_finite(config.maximum_command_acceleration) &&
@@ -90,14 +81,6 @@ Vector3 multiply(const RotationMatrix3& matrix, const Vector3& value) {
         matrix.m00 * value.x + matrix.m01 * value.y + matrix.m02 * value.z,
         matrix.m10 * value.x + matrix.m11 * value.y + matrix.m12 * value.z,
         matrix.m20 * value.x + matrix.m21 * value.y + matrix.m22 * value.z,
-    };
-}
-
-Vector3 cross_product(const Vector3& lhs, const Vector3& rhs) {
-    return {
-        lhs.y * rhs.z - lhs.z * rhs.y,
-        lhs.z * rhs.x - lhs.x * rhs.z,
-        lhs.x * rhs.y - lhs.y * rhs.x,
     };
 }
 
@@ -170,155 +153,7 @@ Vector3 line_of_sight_unit(const LineOfSight& line_of_sight) {
             cos_elevation * sin_azimuth};
 }
 
-double dot_product(const Vector3& lhs, const Vector3& rhs) {
-    return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
-}
-
-/**
- * @brief 将镖体角速度引起的 LOS 单位向量变化率投影到角度速率。
- * @param line_of_sight 当前 LOS 角（rad）。
- * @param body_angular_velocity 镖体系角速度（rad/s）。
- * @param q_y_rate 非空输出指针，接收俯仰 LOS 角速度（rad/s）。
- * @param q_z_rate 非空输出指针，接收偏航 LOS 角速度（rad/s）。
- * @return 投影有效时为 true；接近仰角奇异点或输入非有限时为 false。
- */
-bool body_rotation_rate(const LineOfSight& line_of_sight,
-                        const Vector3& body_angular_velocity,
-                        double* q_y_rate, double* q_z_rate) {
-    if (q_y_rate == nullptr || q_z_rate == nullptr ||
-        !is_finite(body_angular_velocity)) {
-        return false;
-    }
-    const double cos_elevation = std::cos(line_of_sight.q_y);
-    if (!is_finite(cos_elevation) || std::abs(cos_elevation) < kEpsilon) {
-        return false;
-    }
-    const Vector3 unit = line_of_sight_unit(line_of_sight);
-    const Vector3 rotation_rate = cross_product(body_angular_velocity, unit);
-    const Vector3 elevation_basis{
-        -std::sin(line_of_sight.q_y) * std::cos(line_of_sight.q_z),
-        cos_elevation,
-        -std::sin(line_of_sight.q_y) * std::sin(line_of_sight.q_z)};
-    const Vector3 azimuth_derivative{
-        -cos_elevation * std::sin(line_of_sight.q_z), 0.0,
-        cos_elevation * std::cos(line_of_sight.q_z)};
-    *q_y_rate = dot_product(rotation_rate, elevation_basis);
-    *q_z_rate = dot_product(rotation_rate, azimuth_derivative) /
-                (cos_elevation * cos_elevation);
-    return is_finite(*q_y_rate) && is_finite(*q_z_rate);
-}
-
 }  // namespace
-
-LineOfSightRateEstimator::TwoStateLosKalmanFilter::TwoStateLosKalmanFilter(
-    double sigma_a, double sigma_q, double initial_covariance)
-    : sigma_a_(sigma_a > 0.0 ? sigma_a : 8.0),
-      r_(sigma_q > 0.0 ? sigma_q * sigma_q : 0.0035 * 0.0035),
-      initial_covariance_(initial_covariance >= 0.0 ? initial_covariance : 1.0) {
-    reset();
-}
-
-void LineOfSightRateEstimator::TwoStateLosKalmanFilter::reset() {
-    initialized_ = false;
-    q_b_ = 0.0;
-    q_dot_i_ = 0.0;
-    p00_ = r_;
-    p01_ = 0.0;
-    p10_ = 0.0;
-    p11_ = initial_covariance_;
-}
-
-void LineOfSightRateEstimator::TwoStateLosKalmanFilter::initialize(
-    double q_b, double initial_rate) {
-    q_b_ = q_b;
-    q_dot_i_ = initial_rate;
-    p00_ = r_;
-    p01_ = 0.0;
-    p10_ = 0.0;
-    p11_ = initial_covariance_;
-    initialized_ = true;
-}
-
-/**
- * @brief 执行两状态 LOS 角/角速度 Kalman 预测及可选测量更新。
- * @param valid 当前角度测量是否有效。
- * @param z_qb 有效时的 LOS 角测量（rad）。
- * @param c_omega 镖体转动在该角度通道上的已知前馈项（rad/s）。
- * @param dt 两次更新之间的时间（s），须为有限正数。
- * @return 估计角速度（rad/s）；非法 dt 返回 NaN，内部数值异常时也会重置滤波状态。
- * @note 测量无效时只传播角度和角速度状态及协方差，不执行测量校正。
- */
-double LineOfSightRateEstimator::TwoStateLosKalmanFilter::update(
-    bool valid, double z_qb, double c_omega, double dt) {
-    if (!is_finite(dt) || dt <= 0.0) {
-        return std::numeric_limits<double>::quiet_NaN();
-    }
-    const double dt_eff = std::max(dt, 1e-4);
-
-    if (!initialized_) {
-        if (valid) {
-            initialize(z_qb, 0.0);
-        }
-        return 0.0;
-    }
-
-    // 1. 状态预测: x_pred = F * x + B * c_omega
-    // F = [1, dt; 0, 1], B = [-dt; 0]
-    const double q_b_pred = q_b_ + (q_dot_i_ - c_omega) * dt_eff;
-    const double q_dot_i_pred = q_dot_i_;
-
-    // 2. 协方差预测: P_pred = F * P * F^T + Q
-    const double dt2 = dt_eff * dt_eff;
-    const double dt3 = dt2 * dt_eff;
-    const double dt4 = dt2 * dt2;
-    const double q_scale = sigma_a_ * sigma_a_;
-    const double q00 = q_scale * dt4 / 4.0;
-    const double q01 = q_scale * dt3 / 2.0;
-    const double q11 = q_scale * dt2;
-
-    const double p00_pred = p00_ + 2.0 * dt_eff * p01_ + dt2 * p11_ + q00;
-    const double p01_pred = p01_ + dt_eff * p11_ + q01;
-    const double p10_pred = p01_pred;
-    const double p11_pred = p11_ + q11;
-
-    if (!is_finite(q_b_pred) || !is_finite(q_dot_i_pred) ||
-        !is_finite(p00_pred) || !is_finite(p11_pred)) {
-        reset();
-        return std::numeric_limits<double>::quiet_NaN();
-    }
-
-    // 若视觉目标丢失 (valid == false): 保持纯惯导外推
-    if (!valid) {
-        q_b_ = q_b_pred;
-        q_dot_i_ = q_dot_i_pred;
-        p00_ = p00_pred;
-        p01_ = p01_pred;
-        p10_ = p10_pred;
-        p11_ = p11_pred;
-        return q_dot_i_;
-    }
-
-    // 3. 测量更新: z = [1, 0] * x + v
-    const double innovation = z_qb - q_b_pred;
-    const double s = p00_pred + r_;
-    if (!is_finite(s) || s <= 0.0) {
-        reset();
-        return std::numeric_limits<double>::quiet_NaN();
-    }
-
-    const double k0 = p00_pred / s;
-    const double k1 = p10_pred / s;
-
-    q_b_ = q_b_pred + k0 * innovation;
-    q_dot_i_ = q_dot_i_pred + k1 * innovation;
-
-    p00_ = std::max(0.0, (1.0 - k0) * p00_pred);
-    p01_ = (1.0 - k0) * p01_pred;
-    p10_ = p01_;
-    p11_ = std::max(0.0, p11_pred - k1 * p01_pred);
-
-    return q_dot_i_;
-}
 
 LineOfSight GuidanceEstimator::calculate(
     const VisionResult& result, const CameraIntrinsics& intrinsics) {
@@ -344,23 +179,8 @@ LineOfSight GuidanceEstimator::calculate_body(
 }
 
 LineOfSightRateEstimator::LineOfSightRateEstimator(
-    const LineOfSightRateFilterConfig& config)
-    : filter_enabled_(is_valid_rate_filter_config(config)
-                          ? config.enable_filter
-                          : true),
-      q_y_filter_(
-          is_valid_rate_filter_config(config)
-              ? (config.sigma_a_pitch > 0.0 ? config.sigma_a_pitch : config.sigma_a)
-              : 8.0,
-          is_valid_rate_filter_config(config) ? config.sigma_q : 0.0035,
-          is_valid_rate_filter_config(config) ? config.initial_covariance : 1.0),
-      q_z_filter_(
-          is_valid_rate_filter_config(config)
-              ? (config.sigma_a_yaw > 0.0 ? config.sigma_a_yaw : config.sigma_a)
-              : 8.0,
-          is_valid_rate_filter_config(config) ? config.sigma_q : 0.0035,
-          is_valid_rate_filter_config(config) ? config.initial_covariance : 1.0),
-      sample_{} {
+    const LineOfSightRateFilterConfig& /*config*/)
+    : sample_{} {
     reset();
 }
 
@@ -368,8 +188,6 @@ void LineOfSightRateEstimator::reset() {
     has_previous_ = false;
     previous_q_y_ = 0.0;
     previous_q_z_ = 0.0;
-    q_y_filter_.reset();
-    q_z_filter_.reset();
     angular_velocity_ = {false, 0.0, 0.0};
     sample_ = {};
 }
@@ -377,129 +195,39 @@ void LineOfSightRateEstimator::reset() {
 LineOfSightAngularVelocity LineOfSightRateEstimator::update(
     const LineOfSight& line_of_sight, const Vector3& body_angular_velocity,
     double dt) {
-    if (!is_finite(body_angular_velocity) || !is_finite(dt) || dt <= 0.0) {
+    (void)body_angular_velocity;
+    if (!is_finite(dt) || dt <= 0.0 || !is_valid_line_of_sight(line_of_sight)) {
         reset();
         return angular_velocity_;
     }
 
-    LineOfSight los_for_rotation = line_of_sight;
-    if (!is_valid_line_of_sight(line_of_sight)) {
-        if (filter_enabled_ && q_y_filter_.is_initialized() &&
-            q_z_filter_.is_initialized()) {
-            los_for_rotation = {true, q_y_filter_.estimated_angle(),
-                                q_z_filter_.estimated_angle()};
-        } else {
-            reset();
-            return angular_velocity_;
-        }
-    }
-
-    double rotation_q_y = 0.0;
-    double rotation_q_z = 0.0;
-    if (!body_rotation_rate(los_for_rotation, body_angular_velocity,
-                            &rotation_q_y, &rotation_q_z)) {
-        reset();
-        return angular_velocity_;
-    }
-
-    if (!filter_enabled_) {
-        if (!is_valid_line_of_sight(line_of_sight)) {
-            reset();
-            return angular_velocity_;
-        }
-        if (!has_previous_) {
-            previous_q_y_ = line_of_sight.q_y;
-            previous_q_z_ = line_of_sight.q_z;
-            has_previous_ = true;
-            angular_velocity_ = {false, 0.0, 0.0};
-            sample_.line_of_sight = line_of_sight;
-            sample_.raw_angular_velocity = {false, 0.0, 0.0};
-            sample_.filtered_angular_velocity = angular_velocity_;
-            return angular_velocity_;
-        }
-
-        const double observed_q_y = (line_of_sight.q_y - previous_q_y_) / dt;
-        const double observed_q_z =
-            normalize_angle(line_of_sight.q_z - previous_q_z_) / dt;
+    if (!has_previous_) {
         previous_q_y_ = line_of_sight.q_y;
         previous_q_z_ = line_of_sight.q_z;
-        if (!is_finite(observed_q_y) || !is_finite(observed_q_z)) {
-            reset();
-            return angular_velocity_;
-        }
-
-        const LineOfSightAngularVelocity compensated_rate{
-            true, observed_q_y + rotation_q_y, observed_q_z + rotation_q_z};
-        if (!is_finite(compensated_rate.q_y) ||
-            !is_finite(compensated_rate.q_z)) {
-            reset();
-            return angular_velocity_;
-        }
-        angular_velocity_ = compensated_rate;
+        has_previous_ = true;
+        angular_velocity_ = {false, 0.0, 0.0};
         sample_.line_of_sight = line_of_sight;
-        sample_.raw_angular_velocity = compensated_rate;
+        sample_.raw_angular_velocity = {false, 0.0, 0.0};
         sample_.filtered_angular_velocity = angular_velocity_;
         return angular_velocity_;
     }
 
-    if (is_valid_line_of_sight(line_of_sight)) {
-        if (!has_previous_) {
-            q_y_filter_.initialize(line_of_sight.q_y);
-            q_z_filter_.initialize(line_of_sight.q_z);
-            has_previous_ = true;
-            previous_q_y_ = line_of_sight.q_y;
-            previous_q_z_ = line_of_sight.q_z;
-            angular_velocity_ = {false, 0.0, 0.0};
-            sample_.line_of_sight = line_of_sight;
-            sample_.raw_angular_velocity = {false, 0.0, 0.0};
-            sample_.filtered_angular_velocity = angular_velocity_;
-            return angular_velocity_;
-        }
+    const double observed_q_y = (line_of_sight.q_y - previous_q_y_) / dt;
+    const double observed_q_z =
+        normalize_angle(line_of_sight.q_z - previous_q_z_) / dt;
+    previous_q_y_ = line_of_sight.q_y;
+    previous_q_z_ = line_of_sight.q_z;
 
-        const double observed_q_y = (line_of_sight.q_y - previous_q_y_) / dt;
-        const double observed_q_z =
-            normalize_angle(line_of_sight.q_z - previous_q_z_) / dt;
-        previous_q_y_ = line_of_sight.q_y;
-        previous_q_z_ = line_of_sight.q_z;
-
-        const LineOfSightAngularVelocity raw_rate{
-            is_finite(observed_q_y) && is_finite(observed_q_z),
-            observed_q_y + rotation_q_y, observed_q_z + rotation_q_z};
-        sample_.line_of_sight = line_of_sight;
-        sample_.raw_angular_velocity = raw_rate;
-
-        const double filtered_q_y =
-            q_y_filter_.update(true, line_of_sight.q_y, rotation_q_y, dt);
-        const double filtered_q_z =
-            q_z_filter_.update(true, line_of_sight.q_z, rotation_q_z, dt);
-        if (!is_finite(filtered_q_y) || !is_finite(filtered_q_z)) {
-            reset();
-            return angular_velocity_;
-        }
-        angular_velocity_ = {true, filtered_q_y, filtered_q_z};
-        sample_.filtered_angular_velocity = angular_velocity_;
-        return angular_velocity_;
-    } else {
-        // 视觉目标丢失时，利用 IMU 角速度执行状态预测外推
-        if (q_y_filter_.is_initialized() && q_z_filter_.is_initialized()) {
-            const double filtered_q_y =
-                q_y_filter_.update(false, 0.0, rotation_q_y, dt);
-            const double filtered_q_z =
-                q_z_filter_.update(false, 0.0, rotation_q_z, dt);
-            if (!is_finite(filtered_q_y) || !is_finite(filtered_q_z)) {
-                reset();
-                return angular_velocity_;
-            }
-            angular_velocity_ = {true, filtered_q_y, filtered_q_z};
-            sample_.line_of_sight = {false, q_y_filter_.estimated_angle(),
-                                     q_z_filter_.estimated_angle()};
-            sample_.raw_angular_velocity = {false, 0.0, 0.0};
-            sample_.filtered_angular_velocity = angular_velocity_;
-            return angular_velocity_;
-        }
+    if (!is_finite(observed_q_y) || !is_finite(observed_q_z)) {
         reset();
         return angular_velocity_;
     }
+
+    angular_velocity_ = {true, observed_q_y, observed_q_z};
+    sample_.line_of_sight = line_of_sight;
+    sample_.raw_angular_velocity = angular_velocity_;
+    sample_.filtered_angular_velocity = angular_velocity_;
+    return angular_velocity_;
 }
 
 LineOfSightAngularVelocity LineOfSightRateEstimator::angular_velocity() const {

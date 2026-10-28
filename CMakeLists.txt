@@ -56,8 +56,6 @@ endif()
 add_library(mosas_guidance STATIC
     src/guidance/guidance_estimator.cpp
     src/guidance/default_algorithm_adapters.cpp
-    src/guidance/body_vector_pn_guidance.cpp
-    src/guidance/body_vector_los_filter.cpp
     src/guidance/inertial_vector_los_filter.cpp
     src/guidance/ballistic_png_guidance.cpp
 )
@@ -382,11 +380,6 @@ if(BUILD_TESTING)
     add_test(NAME raw_imu_receive_buffer_test COMMAND raw_imu_receive_buffer_test)
     set_tests_properties(raw_imu_receive_buffer_test PROPERTIES TIMEOUT 10)
 
-    add_executable(body_vector_los_filter_test tests/body_vector_los_filter_test.cpp)
-    configure_mosas_target(body_vector_los_filter_test)
-    target_link_libraries(body_vector_los_filter_test PRIVATE mosas_guidance)
-    add_test(NAME body_vector_los_filter_test COMMAND body_vector_los_filter_test)
-
     add_executable(inertial_vector_los_filter_test tests/inertial_vector_los_filter_test.cpp)
     configure_mosas_target(inertial_vector_los_filter_test)
     target_link_libraries(inertial_vector_los_filter_test PRIVATE mosas_guidance)
@@ -396,11 +389,6 @@ if(BUILD_TESTING)
     configure_mosas_target(ballistic_png_guidance_test)
     target_link_libraries(ballistic_png_guidance_test PRIVATE mosas_guidance)
     add_test(NAME ballistic_png_guidance_test COMMAND ballistic_png_guidance_test)
-
-    add_executable(body_vector_pn_guidance_test tests/body_vector_pn_guidance_test.cpp)
-    configure_mosas_target(body_vector_pn_guidance_test)
-    target_link_libraries(body_vector_pn_guidance_test PRIVATE mosas_guidance)
-    add_test(NAME body_vector_pn_guidance_test COMMAND body_vector_pn_guidance_test)
 
     add_executable(png_calculation_trace_test tests/png_calculation_trace_test.cpp)
     configure_mosas_target(png_calculation_trace_test)

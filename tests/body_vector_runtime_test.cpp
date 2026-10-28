@@ -1,6 +1,6 @@
-#include <mosas/guidance/body_vector_los_filter.hpp>
-#include <mosas/guidance/body_vector_pn_guidance.hpp>
+#include <mosas/guidance/ballistic_png_guidance.hpp>
 #include <mosas/guidance/default_algorithm_adapters.hpp>
+#include <mosas/guidance/inertial_vector_los_filter.hpp>
 #include <mosas/runtime/legacy_flight_state_adapter.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 
@@ -90,10 +90,10 @@ int verify_dynamic_speed(bool vector_guidance,
     dependencies.los_estimator = std::move(los);
     dependencies.los_rate_filter = std::move(rate);
     if (vector_guidance) {
-        guidance::BodyVectorPnConfig pn;
+        guidance::BallisticPngConfig pn;
         pn.maximum_command_overload = 10.0;
         pn.maximum_command_acceleration = std::numeric_limits<double>::infinity();
-        dependencies.guidance_law = std::make_unique<guidance::BodyVectorPnGuidance>(pn);
+        dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>(pn);
     } else {
         PngGuidanceConfig pn;
         pn.navigation_constant_y = 3.0;
@@ -192,8 +192,8 @@ int main() {
     dependencies.flight_state_estimator = std::move(flight);
     dependencies.vision_detector = std::move(vision);
     dependencies.los_estimator = std::move(los);
-    dependencies.los_rate_filter = std::make_unique<guidance::BodyVectorLosFilter>();
-    dependencies.guidance_law = std::make_unique<guidance::BodyVectorPnGuidance>();
+    dependencies.los_rate_filter = std::make_unique<guidance::InertialVectorLosFilter>();
+    dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
     dependencies.monotonic_clock = std::make_unique<test::FakeClock>(1'100'000'000);
     runtime::RuntimeSupervisorConfig config;
     config.capture_queue_capacity = 16;
@@ -207,8 +207,7 @@ int main() {
     state.launch.phase = domain::LaunchPhase::launched;
     state.launch.transition_time.monotonic_ns = 900'000'000;
     flight_control->set_result(state);
-    // 极点处两个角速率诊断无效，但矢量估计仍有效，应正常调用新 PN。
-    los_control->set_result({true, {std::acos(-1.0) / 2.0}, {0.0}});
+    los_control->set_result({true, {0.0}, {0.0}});
     for (int i = 0; i < 7; ++i) {
         domain::VisionDetection detection;
         detection.observation.valid = i != 2;
@@ -239,8 +238,7 @@ int main() {
         CHECK(output[i].valid == should_be_valid);
         if (should_be_valid) {
             CHECK(output[i].source_frame_id == i);
-            // 导航系 LOS 极点的抛物线基准为零，不再输出保持高度的 1g。
-            CHECK_NEAR(output[i].overload_g.y, 0.0, 1e-12);
+            CHECK_NEAR(output[i].overload_g.y, 1.5, 1e-12);
         } else {
             CHECK_NEAR(output[i].overload_g.y, 0.0, 1e-12);
         }

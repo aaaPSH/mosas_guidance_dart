@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -471,51 +472,38 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             else if (value == "yaw") channel = guidance::ControlChannel::yaw;
             else return invalid();
             algorithms.png_guidance.control_channel = channel;
-            algorithms.body_vector_pn.control_channel = channel;
             algorithms.ballistic_png.control_channel = channel;
             return true;
         }
-        if (key == "body_vector_navigation_constant") {
-            if (!set_double(&algorithms.body_vector_pn.navigation_constant)) return invalid();
-            algorithms.ballistic_png.navigation_constant_y = algorithms.body_vector_pn.navigation_constant;
-            algorithms.ballistic_png.navigation_constant_z = algorithms.body_vector_pn.navigation_constant;
-            return true;
-        }
-        if (key == "body_vector_los_sigma_a") {
-            if (!set_double(&algorithms.body_vector_filter.sigma_a)) return invalid();
-            algorithms.inertial_filter.sigma_a = algorithms.body_vector_filter.sigma_a;
-            return true;
-        }
-        if (key == "body_vector_los_sigma_l") {
-            if (!set_double(&algorithms.body_vector_filter.sigma_l)) return invalid();
-            algorithms.inertial_filter.sigma_l = algorithms.body_vector_filter.sigma_l;
-            return true;
-        }
-        if (key == "body_vector_los_initial_rate_covariance") {
-            if (!set_double(&algorithms.body_vector_filter.initial_rate_covariance)) return invalid();
-            algorithms.inertial_filter.initial_rate_covariance = algorithms.body_vector_filter.initial_rate_covariance;
-            return true;
-        }
-        if (key == "body_vector_los_maximum_gap_ms") {
+        if (key == "ballistic_png_navigation_constant" || key == "body_vector_navigation_constant") {
             if (!parse_double(value, &decimal)) return invalid();
-            algorithms.body_vector_filter.maximum_gap_seconds = decimal * 0.001;
+            algorithms.ballistic_png.navigation_constant_y = decimal;
+            algorithms.ballistic_png.navigation_constant_z = decimal;
+            return true;
+        }
+        if (key == "inertial_los_sigma_a" || key == "body_vector_los_sigma_a") {
+            return set_double(&algorithms.inertial_filter.sigma_a) || invalid();
+        }
+        if (key == "inertial_los_sigma_l" || key == "body_vector_los_sigma_l") {
+            return set_double(&algorithms.inertial_filter.sigma_l) || invalid();
+        }
+        if (key == "inertial_los_initial_rate_covariance" || key == "body_vector_los_initial_rate_covariance") {
+            return set_double(&algorithms.inertial_filter.initial_rate_covariance) || invalid();
+        }
+        if (key == "inertial_los_maximum_gap_ms" || key == "body_vector_los_maximum_gap_ms") {
+            if (!parse_double(value, &decimal)) return invalid();
             algorithms.inertial_filter.maximum_gap_seconds = decimal * 0.001;
             return true;
         }
-        if (key == "body_vector_maximum_command_overload") {
-            if (!set_double(&algorithms.body_vector_pn.maximum_command_overload)) return invalid();
-            algorithms.ballistic_png.maximum_command_overload = algorithms.body_vector_pn.maximum_command_overload;
-            return true;
+        if (key == "ballistic_png_maximum_command_overload" || key == "body_vector_maximum_command_overload") {
+            return set_double(&algorithms.ballistic_png.maximum_command_overload) || invalid();
         }
-        if (key == "body_vector_maximum_command_acceleration") {
+        if (key == "ballistic_png_maximum_command_acceleration" || key == "body_vector_maximum_command_acceleration") {
             if (value == "inf") {
-                algorithms.body_vector_pn.maximum_command_acceleration = std::numeric_limits<double>::infinity();
                 algorithms.ballistic_png.maximum_command_acceleration = std::numeric_limits<double>::infinity();
                 return true;
             }
-            if (!set_double(&algorithms.body_vector_pn.maximum_command_acceleration)) return invalid();
-            algorithms.ballistic_png.maximum_command_acceleration = algorithms.body_vector_pn.maximum_command_acceleration;
-            return true;
+            return set_double(&algorithms.ballistic_png.maximum_command_acceleration) || invalid();
         }
         if (key == "initial_roi_x") return set_int(&algorithms.vision_config.initial_roi.x) || invalid();
         if (key == "initial_roi_y") return set_int(&algorithms.vision_config.initial_roi.y) || invalid();
@@ -537,21 +525,15 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "camera_cx") return set_double(&config->guidance.camera_intrinsics.cx) || invalid();
         if (key == "camera_cy") return set_double(&config->guidance.camera_intrinsics.cy) || invalid();
         if (key == "los_kalman_sigma_a" || key == "los_process_noise") {
-            if (!set_double(&algorithms.los_rate_filter.sigma_a)) return invalid();
-            algorithms.inertial_filter.sigma_a = algorithms.los_rate_filter.sigma_a;
-            return true;
+            return set_double(&algorithms.los_rate_filter.sigma_a) || invalid();
         }
         if (key == "los_kalman_sigma_q" || key == "los_measurement_noise") {
-            if (!set_double(&algorithms.los_rate_filter.sigma_q)) return invalid();
-            algorithms.inertial_filter.sigma_l = algorithms.los_rate_filter.sigma_q;
-            return true;
+            return set_double(&algorithms.los_rate_filter.sigma_q) || invalid();
         }
         if (key == "los_kalman_sigma_a_pitch") return set_double(&algorithms.los_rate_filter.sigma_a_pitch) || invalid();
         if (key == "los_kalman_sigma_a_yaw") return set_double(&algorithms.los_rate_filter.sigma_a_yaw) || invalid();
         if (key == "los_initial_covariance") {
-            if (!set_double(&algorithms.los_rate_filter.initial_covariance)) return invalid();
-            algorithms.inertial_filter.initial_rate_covariance = algorithms.los_rate_filter.initial_covariance;
-            return true;
+            return set_double(&algorithms.los_rate_filter.initial_covariance) || invalid();
         }
         if (key == "los_enable_filter") return parse_bool(value, &algorithms.los_rate_filter.enable_filter) || invalid();
         if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
@@ -576,33 +558,24 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "attitude_maximum_gap_ms") return parse_timestamp_ms(value, &algorithms.attitude.maximum_sample_gap_ns) || invalid();
         if (key == "accelerometer_specific_force") return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
         if (key == "png_navigation_constant_y") {
-            if (!set_double(&algorithms.png_guidance.navigation_constant_y)) return invalid();
-            algorithms.ballistic_png.navigation_constant_y = algorithms.png_guidance.navigation_constant_y;
-            return true;
+            return set_double(&algorithms.png_guidance.navigation_constant_y) || invalid();
         }
         if (key == "png_navigation_constant_z") {
-            if (!set_double(&algorithms.png_guidance.navigation_constant_z)) return invalid();
-            algorithms.ballistic_png.navigation_constant_z = algorithms.png_guidance.navigation_constant_z;
-            return true;
+            return set_double(&algorithms.png_guidance.navigation_constant_z) || invalid();
         }
         if (key == "png_gravity") {
             if (!set_double(&algorithms.png_guidance.gravity)) {
                 return invalid();
             }
             algorithms.attitude.gravity_mps2 = algorithms.png_guidance.gravity;
-            algorithms.body_vector_pn.gravity = algorithms.png_guidance.gravity;
             algorithms.ballistic_png.gravity = algorithms.png_guidance.gravity;
             return true;
         }
         if (key == "png_maximum_command_overload") {
-            if (!set_double(&algorithms.png_guidance.maximum_command_overload)) return invalid();
-            algorithms.ballistic_png.maximum_command_overload = algorithms.png_guidance.maximum_command_overload;
-            return true;
+            return set_double(&algorithms.png_guidance.maximum_command_overload) || invalid();
         }
         if (key == "png_maximum_command_acceleration") {
-            if (!set_double(&algorithms.png_guidance.maximum_command_acceleration)) return invalid();
-            algorithms.ballistic_png.maximum_command_acceleration = algorithms.png_guidance.maximum_command_acceleration;
-            return true;
+            return set_double(&algorithms.png_guidance.maximum_command_acceleration) || invalid();
         }
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
             const int row = key[16] - '0';
@@ -741,12 +714,6 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
     const auto& png = config.algorithms.png_guidance;
     if (!guidance::valid_control_channel(png.control_channel)) {
         return fail_global(path, "控制通道无效（guidance.control_channel）", error);
-    }
-    auto vector_pn = config.algorithms.body_vector_pn;
-    vector_pn.gravity = attitude.gravity_mps2;
-    if (!guidance::BodyVectorLosFilter::valid_config(config.algorithms.body_vector_filter) ||
-        !guidance::BodyVectorPnGuidance::valid_config(vector_pn)) {
-        return fail_global(path, "镖体系矢量 PN 参数无效", error);
     }
     auto ballistic_pn = config.algorithms.ballistic_png;
     ballistic_pn.gravity = attitude.gravity_mps2;
