@@ -59,6 +59,7 @@ add_library(mosas_guidance STATIC
     src/guidance/body_vector_pn_guidance.cpp
     src/guidance/body_vector_los_filter.cpp
     src/guidance/inertial_vector_los_filter.cpp
+    src/guidance/ballistic_png_guidance.cpp
 )
 configure_mosas_target(mosas_guidance)
 
@@ -390,6 +391,11 @@ if(BUILD_TESTING)
     configure_mosas_target(inertial_vector_los_filter_test)
     target_link_libraries(inertial_vector_los_filter_test PRIVATE mosas_guidance)
     add_test(NAME inertial_vector_los_filter_test COMMAND inertial_vector_los_filter_test)
+
+    add_executable(ballistic_png_guidance_test tests/ballistic_png_guidance_test.cpp)
+    configure_mosas_target(ballistic_png_guidance_test)
+    target_link_libraries(ballistic_png_guidance_test PRIVATE mosas_guidance)
+    add_test(NAME ballistic_png_guidance_test COMMAND ballistic_png_guidance_test)
 
     add_executable(body_vector_pn_guidance_test tests/body_vector_pn_guidance_test.cpp)
     configure_mosas_target(body_vector_pn_guidance_test)
