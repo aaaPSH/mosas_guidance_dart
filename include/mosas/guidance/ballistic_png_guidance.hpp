@@ -3,6 +3,7 @@
 
 #include <mosas/domain/algorithm_results.hpp>
 #include <mosas/guidance/control_channel.hpp>
+#include <mosas/guidance/png_calculation_trace.hpp>
 #include <mosas/ports/guidance_law.hpp>
 
 namespace mosas::guidance {
@@ -21,7 +22,8 @@ struct BallisticPngConfig {
  */
 class BallisticPngGuidance final : public ports::IGuidanceLaw {
 public:
-    explicit BallisticPngGuidance(const BallisticPngConfig& config = {});
+    explicit BallisticPngGuidance(const BallisticPngConfig& config = {},
+                                 PngTraceObserver observer = nullptr);
 
     static bool valid_config(const BallisticPngConfig& config) noexcept;
 
@@ -30,6 +32,7 @@ public:
 
 private:
     BallisticPngConfig config_;
+    PngTraceObserver observer_;
 };
 
 }  // namespace mosas::guidance

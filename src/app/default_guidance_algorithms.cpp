@@ -1,6 +1,8 @@
 #include <mosas/app/default_guidance_algorithms.hpp>
 
+#include <mosas/guidance/ballistic_png_guidance.hpp>
 #include <mosas/guidance/default_algorithm_adapters.hpp>
+#include <mosas/guidance/inertial_vector_los_filter.hpp>
 #include <mosas/runtime/clock.hpp>
 #include <mosas/runtime/legacy_flight_state_adapter.hpp>
 #include <mosas/vision/opencv_vision_detector.hpp>
@@ -20,19 +22,14 @@ runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
             config.attitude);
     dependencies.los_estimator =
         std::make_unique<guidance::ExistingLosEstimatorAdapter>();
-    if (config.algorithm == GuidanceAlgorithm::body_vector_pn) {
-        dependencies.los_rate_filter =
-            std::make_unique<guidance::BodyVectorLosFilter>(config.body_vector_filter);
-        auto pn = config.body_vector_pn;
-        pn.gravity = config.attitude.gravity_mps2;
-        dependencies.guidance_law = std::make_unique<guidance::BodyVectorPnGuidance>(pn);
-    } else {
-        dependencies.los_rate_filter =
-            std::make_unique<guidance::ExistingLosRateFilterAdapter>(config.los_rate_filter);
-        dependencies.guidance_law =
-            std::make_unique<guidance::ExistingPngGuidanceLawAdapter>(
-                config.png_guidance, std::move(trace_observer));
-    }
+
+    dependencies.los_rate_filter =
+        std::make_unique<guidance::InertialVectorLosFilter>(config.inertial_filter);
+    auto png = config.ballistic_png;
+    png.gravity = config.attitude.gravity_mps2;
+    dependencies.guidance_law =
+        std::make_unique<guidance::BallisticPngGuidance>(png, std::move(trace_observer));
+
     dependencies.monotonic_clock =
         std::make_unique<runtime::SystemMonotonicClock>();
     return dependencies;

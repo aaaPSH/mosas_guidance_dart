@@ -40,7 +40,7 @@ int main() {
     };
     CHECK(load(base));
     CHECK(cfg.app.camera.width == 640 && cfg.app.camera.height == 480);
-    CHECK(cfg.app.camera.fps == 120 && cfg.app.imu.sample_rate_hz == 200);
+    CHECK(cfg.app.camera.fps == 120 && cfg.app.imu.sample_rate_hz == 1000);
     CHECK(cfg.app.algorithms.attitude.launch_speed_mps == 16);
     CHECK(cfg.app.algorithms.attitude.launch_detection_mode == runtime::LaunchDetectionMode::two_stage);
     CHECK(cfg.app.algorithms.algorithm == app::GuidanceAlgorithm::body_vector_pn);

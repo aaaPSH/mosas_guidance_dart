@@ -12,7 +12,7 @@ int main() {
     using namespace mosas; using namespace dart_sim_transport;
     app::AppConfig original;std::string error;
     CHECK(app::AppConfigLoader::load(std::filesystem::path(MOSAS_SOURCE_DIR)/"config/mosas_guidance.conf",&original,&error));
-    CameraInfo camera;camera.width=640;camera.height=480;camera.stride=1920;camera.camera_hz=120;camera.imu_hz=200;
+    CameraInfo camera;camera.width=640;camera.height=480;camera.stride=1920;camera.camera_hz=120;camera.imu_hz=original.imu.sample_rate_hz;
     camera.fx=486.244430986463;camera.fy=486.544705399672;camera.cx=308.810501121211;camera.cy=244.693205492819;
     ServerSnapshot good{101,0,Session{0,Phase::ready,3},camera};
     app::validate_simulation_metadata(original,good);

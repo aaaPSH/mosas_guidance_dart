@@ -1,5 +1,7 @@
 #include <mosas/app/app_config.hpp>
 #include <mosas/app/default_guidance_algorithms.hpp>
+#include <mosas/guidance/ballistic_png_guidance.hpp>
+#include <mosas/guidance/inertial_vector_los_filter.hpp>
 
 #include "test_support.hpp"
 
@@ -103,9 +105,9 @@ int main() {
     CHECK(dependencies.los_rate_filter != nullptr);
     CHECK(dependencies.guidance_law != nullptr);
     CHECK(dependencies.monotonic_clock != nullptr);
-    CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
+    CHECK(dynamic_cast<mosas::guidance::InertialVectorLosFilter*>(
               dependencies.los_rate_filter.get()) != nullptr);
-    CHECK(dynamic_cast<mosas::guidance::BodyVectorPnGuidance*>(
+    CHECK(dynamic_cast<mosas::guidance::BallisticPngGuidance*>(
               dependencies.guidance_law.get()) != nullptr);
     auto png_config = config.algorithms;
     png_config.algorithm = mosas::app::GuidanceAlgorithm::png;
@@ -115,7 +117,11 @@ int main() {
             observed_png=input.source_frame_id==91&&trace.valid;
         });
     mosas::domain::GuidanceInput observed_input;
-    observed_input.source_frame_id=91;observed_input.line_of_sight={true,{0},{0}};
+    observed_input.source_frame_id=91;
+    observed_input.vector_los.valid = true;
+    observed_input.vector_los.direction = {1.0, 0.0, 0.0};
+    observed_input.vector_los.inertial_direction_rate = {0.0, 0.0, 0.0};
+    observed_input.line_of_sight={true,{0},{0}};
     observed_input.angular_velocity={true,{0},{0}};observed_input.attitude.valid=true;
     observed_input.speed_mps.value=config.algorithms.attitude.launch_speed_mps;
     CHECK(observed_dependencies.guidance_law->calculate(observed_input).valid);
@@ -329,9 +335,9 @@ int main() {
     CHECK(vector_config.algorithms.attitude.launch_release_timeout_ns == 500'000'000);
     CHECK(vector_config.algorithms.attitude.maximum_sample_gap_ns == 20'000'000);
     auto vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);
-    CHECK(dynamic_cast<mosas::guidance::BodyVectorLosFilter*>(
+    CHECK(dynamic_cast<mosas::guidance::InertialVectorLosFilter*>(
               vector_dependencies.los_rate_filter.get()) != nullptr);
-    CHECK(dynamic_cast<mosas::guidance::BodyVectorPnGuidance*>(
+    CHECK(dynamic_cast<mosas::guidance::BallisticPngGuidance*>(
               vector_dependencies.guidance_law.get()) != nullptr);
     mosas::domain::LosRateFilterInput filter_input;
     filter_input.attitude.valid = true;
@@ -400,6 +406,8 @@ int main() {
     // 工厂使用与姿态估计相同的重力，不采用独立且可能冲突的 PN 重力副本。
     vector_config.algorithms.algorithm = mosas::app::GuidanceAlgorithm::body_vector_pn;
     vector_config.algorithms.attitude.gravity_mps2 = 10.0;
+    vector_config.algorithms.ballistic_png.maximum_command_overload = 3.0;
+    vector_config.algorithms.ballistic_png.maximum_command_acceleration = 100.0;
     vector_config.algorithms.body_vector_pn.maximum_command_overload = 3.0;
     vector_config.algorithms.body_vector_pn.maximum_command_acceleration = 100.0;
     vector_dependencies = mosas::app::make_default_guidance_algorithms(vector_config.algorithms);

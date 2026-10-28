@@ -26,8 +26,10 @@ bool valid_rotation_matrix(const std::array<double, 9>& m) noexcept {
 
 }  // namespace
 
-BallisticPngGuidance::BallisticPngGuidance(const BallisticPngConfig& config)
-    : config_(valid_config(config) ? config : BallisticPngConfig{}) {}
+BallisticPngGuidance::BallisticPngGuidance(const BallisticPngConfig& config,
+                                           PngTraceObserver observer)
+    : config_(valid_config(config) ? config : BallisticPngConfig{}),
+      observer_(std::move(observer)) {}
 
 bool BallisticPngGuidance::valid_config(const BallisticPngConfig& c) noexcept {
     return valid_control_channel(c.control_channel) &&
@@ -44,11 +46,16 @@ domain::GuidanceOutput BallisticPngGuidance::calculate(
     output.command.source_frame_id = input.source_frame_id;
     output.command.source_time = input.time;
 
-    const auto reject = [&output](domain::GuidanceInvalidReason reason) {
+    PngCalculationTrace trace;
+
+    const auto reject = [&](domain::GuidanceInvalidReason reason) {
         output.valid = false;
         output.invalid_reason = reason;
         output.command.valid = false;
         output.command.invalid_reason = reason;
+        if (observer_) {
+            observer_(input, trace);
+        }
         return output;
     };
 
@@ -155,6 +162,27 @@ domain::GuidanceOutput BallisticPngGuidance::calculate(
     output.diagnostics.body_acceleration = {0.0, n_y_D * config_.gravity, n_z_D * config_.gravity};
     output.diagnostics.command_overload.value = std::hypot(n_y_D, n_z_D);
     output.diagnostics.command_phase.value = std::atan2(n_y_D, n_z_D);
+
+    if (observer_) {
+        trace.valid = true;
+        trace.inertial_los_elevation_rad = std::asin(std::clamp(l_N[1], -1.0, 1.0));
+        trace.measured_elevation_rate_rad_s = q_dot_y_N;
+        trace.parabolic_elevation_rate_rad_s = q_dot_parabola;
+        trace.compensated_elevation_rate_rad_s = q_dot_y_comp;
+        trace.raw_navigation_overload = {0.0, n_y_B, n_z_B};
+        trace.raw_command_overload = std::hypot(n_y_B, n_z_B);
+        trace.overload_limited = (mag > config_.maximum_command_overload);
+        trace.acceleration_limited =
+            (mag * config_.gravity > config_.maximum_command_acceleration);
+        trace.after_overload_limit = {0.0, n_y_D, n_z_D};
+        trace.navigation_acceleration = {output.diagnostics.navigation_acceleration.x,
+                                         output.diagnostics.navigation_acceleration.y,
+                                         output.diagnostics.navigation_acceleration.z};
+        trace.body_overload = {output.diagnostics.body_overload.x,
+                               output.diagnostics.body_overload.y,
+                               output.diagnostics.body_overload.z};
+        observer_(input, trace);
+    }
 
     return output;
 }

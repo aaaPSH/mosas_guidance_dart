@@ -60,6 +60,7 @@ bool contains(const std::vector<std::string>& log,const std::string& text) {
 
 app::SimulationConfig configuration(const Fixture& fixture,const app::AppConfig& original) {
     app::SimulationConfig config;config.app=original;
+    config.app.imu.sample_rate_hz=200;
     config.app_config_path=std::filesystem::path(MOSAS_SOURCE_DIR)/"config/mosas_guidance.conf";
     config.socket_directory=(fixture.root/"model").string();
     config.app.output.recording_path=(fixture.root/"recordings"/
@@ -70,7 +71,7 @@ ServerSnapshot metadata(const app::AppConfig& original,std::uint64_t id) {
     CameraInfo camera;
     camera.width=original.camera.width;camera.height=original.camera.height;camera.stride=camera.width*3;
     camera.pixel_format=PixelFormat::rgb8;
-    camera.camera_hz=original.camera.fps;camera.imu_hz=original.imu.sample_rate_hz;
+    camera.camera_hz=original.camera.fps;camera.imu_hz=200;
     const auto& k=original.guidance.camera_intrinsics;
     camera.fx=k.fx;camera.fy=k.fy;camera.cx=k.cx;camera.cy=k.cy;
     camera.R_S_from_C={1,0,0,0,1,0,0,0,1};
