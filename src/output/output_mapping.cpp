@@ -41,6 +41,9 @@ VisionOverlayData make_legacy_overlay(
     result.attitude_valid = state.attitude.valid;
     result.attitude_pitch_rad = state.attitude.pitch_rad.value;
     result.attitude_roll_rad = state.attitude.roll_rad.value;
+    result.output_attitude_valid = overlay.output_attitude_valid;
+    result.output_attitude_pitch_rad = overlay.output_attitude_pitch.value;
+    result.output_attitude_roll_rad = overlay.output_attitude_roll.value;
     result.launched = state.launch.phase == domain::LaunchPhase::launched;
     result.processing_fps = overlay.processing_fps;
     return result;

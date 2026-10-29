@@ -58,6 +58,7 @@ add_library(mosas_guidance STATIC
     src/guidance/default_algorithm_adapters.cpp
     src/guidance/inertial_vector_los_filter.cpp
     src/guidance/ballistic_png_math.cpp
+    src/guidance/command_output_mapper.cpp
     src/guidance/ballistic_png_guidance.cpp
 )
 configure_mosas_target(mosas_guidance)
@@ -68,6 +69,7 @@ add_library(mosas_runtime STATIC
     src/runtime/attitude_history.cpp
     src/runtime/imu_angular_velocity_history.cpp
     src/runtime/async_info_logger.cpp
+    src/runtime/command_output.cpp
     src/runtime/frame_pipeline.cpp
     src/runtime/runtime_supervisor.cpp
     src/runtime/imu_pipeline.cpp
@@ -142,7 +144,7 @@ if(MOSAS_BUILD_SIMULATION_APPLICATION)
         src/adapters/simulation_session.cpp
         src/adapters/simulation_sources.cpp
         src/adapters/simulation_command_sink.cpp
-        src/adapters/simulation_pre_acquisition.cpp
+        src/adapters/simulation_vision_audit.cpp
         src/adapters/simulation_audit.cpp
         src/app/simulation_runner.cpp
         src/app/simulation_contract.cpp)
@@ -320,7 +322,7 @@ if(BUILD_TESTING)
         endif()
     endif()
     if(TARGET mosas_simulation)
-        foreach(test simulation_sources_test simulation_command_sink_test simulation_sync_test simulation_runner_test simulation_contract_test simulation_recording_test simulation_pre_acquisition_test simulation_audit_test)
+        foreach(test simulation_sources_test simulation_command_sink_test simulation_sync_test simulation_runner_test simulation_contract_test simulation_recording_test simulation_audit_test)
             add_executable(${test} tests/${test}.cpp)
             configure_mosas_target(${test})
             target_compile_definitions(${test} PRIVATE MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
@@ -381,10 +383,12 @@ if(BUILD_TESTING)
     add_test(NAME raw_imu_receive_buffer_test COMMAND raw_imu_receive_buffer_test)
     set_tests_properties(raw_imu_receive_buffer_test PROPERTIES TIMEOUT 10)
 
-    add_executable(ballistic_png_math_test tests/ballistic_png_math_test.cpp)
-    configure_mosas_target(ballistic_png_math_test)
-    target_link_libraries(ballistic_png_math_test PRIVATE mosas_guidance)
-    add_test(NAME ballistic_png_math_test COMMAND ballistic_png_math_test)
+    foreach(test ballistic_png_math_test command_output_mapper_test)
+        add_executable(${test} tests/${test}.cpp)
+        configure_mosas_target(${test})
+        target_link_libraries(${test} PRIVATE mosas_guidance)
+        add_test(NAME ${test} COMMAND ${test})
+    endforeach()
 
     add_executable(inertial_vector_los_filter_test tests/inertial_vector_los_filter_test.cpp)
     configure_mosas_target(inertial_vector_los_filter_test)
@@ -427,6 +431,19 @@ if(BUILD_TESTING)
     configure_mosas_target(launch_detection_test)
     target_link_libraries(launch_detection_test PRIVATE mosas_runtime)
     add_test(NAME launch_detection_test COMMAND launch_detection_test)
+
+    add_executable(command_output_test tests/command_output_test.cpp)
+    configure_mosas_target(command_output_test)
+    target_link_libraries(command_output_test PRIVATE mosas_runtime mosas_guidance)
+    add_test(NAME command_output_test COMMAND command_output_test)
+
+    add_executable(guidance_mailbox_policy_test
+        tests/guidance_mailbox_policy_test.cpp
+        tests/fakes/fake_camera_source.cpp
+        tests/fakes/fake_imu_source.cpp)
+    configure_mosas_target(guidance_mailbox_policy_test)
+    target_link_libraries(guidance_mailbox_policy_test PRIVATE mosas_runtime mosas_guidance)
+    add_test(NAME guidance_mailbox_policy_test COMMAND guidance_mailbox_policy_test)
 
     add_executable(body_vector_runtime_test
         tests/body_vector_runtime_test.cpp
@@ -552,6 +569,12 @@ if(BUILD_TESTING)
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
 
+        add_executable(roll_timing_test tests/roll_timing_test.cpp)
+        configure_mosas_target(roll_timing_test)
+        target_link_libraries(roll_timing_test PRIVATE mosas_app)
+        add_test(NAME roll_timing_test COMMAND roll_timing_test)
+        set_tests_properties(roll_timing_test PROPERTIES TIMEOUT 10)
+
         add_executable(serial_command_sink_test tests/serial_command_sink_test.cpp)
         configure_mosas_target(serial_command_sink_test)
         target_link_libraries(serial_command_sink_test PRIVATE mosas_app)
@@ -576,4 +599,7 @@ if(BUILD_TESTING)
         add_test(NAME default_guidance_algorithms_test
             COMMAND default_guidance_algorithms_test)
     endif()
+    foreach(test runtime_supervisor_test runtime_supervisor_lifecycle_test runtime_output_isolation_test simulation_time_test)
+        target_link_libraries(${test} PRIVATE mosas_guidance)
+    endforeach()
 endif()

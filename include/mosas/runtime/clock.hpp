@@ -23,6 +23,8 @@ std::optional<TimestampNs> realtime_to_monotonic(
 class SystemMonotonicClock final : public ports::IMonotonicClock {
 public:
     TimestampNs now_ns() const noexcept override;
+    /** @return 主机单调时间轴。 */
+    domain::ClockDomain clock_domain() const noexcept override { return domain::ClockDomain::monotonic; }
 };
 
 }  // namespace mosas::runtime

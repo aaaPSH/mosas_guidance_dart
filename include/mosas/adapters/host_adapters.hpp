@@ -48,10 +48,14 @@ public:
 
     bool start() override;
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
+    /** @param generation 新代际；同步本地日志映射边界，不重新发布旧请求。 */
+    void set_active_generation(std::uint64_t generation) noexcept override;
     void stop() noexcept override;
     Diagnostics diagnostics() const noexcept override;
 
 private:
+    std::mutex emission_mutex_;
+    std::uint64_t active_generation_ = 0;
     runtime::AsyncInfoLogger logger_;
     std::atomic<std::uint64_t> submitted_count_{0};
 };
@@ -104,7 +108,7 @@ private:
 
     /**
      * @brief 按单调时钟周期采样最新指令，检查代际、发射门槛和提交超时。
-     * @note 无新指令时重复最近值；超时清零过载和识别位，但保留发射标志。
+     * @note 无新指令时以最新姿态重新映射最近弹道请求；超时清零过载和识别位，但保留发射标志。
      *       调度或写入超时后跳过错过的周期，不突发补发积压指令。
      */
     void worker_loop() noexcept;
@@ -113,7 +117,7 @@ private:
      * @param command 已通过代际、发射门槛及有效期检查的待发送指令。
      * @note 仅由发送线程在持有 send_mutex_ 时调用。
      */
-    void send_command(const runtime::GuidanceCommand& command) noexcept;
+    bool send_command(const domain::MappedGuidanceCommand& command) noexcept;
     bool fail(const std::string& message);
 
     std::shared_ptr<serial_package::SerialPort> port_;

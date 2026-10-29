@@ -1,7 +1,7 @@
 #ifndef MOSAS_ADAPTERS_COMMAND_ADAPTER_HPP
 #define MOSAS_ADAPTERS_COMMAND_ADAPTER_HPP
 
-#include <mosas/runtime/runtime_types.hpp>
+#include <mosas/domain/command_output.hpp>
 #include <serial_package/serial_protocol.hpp>
 
 namespace mosas::app::detail {
@@ -13,7 +13,7 @@ namespace mosas::app::detail {
  * @note 过载分量单位为 g；字段顺序和符号映射属于下位机协议契约。
  */
 serial_package::ControlFrameValues make_control_frame_values(
-    const runtime::GuidanceCommand& command) noexcept;
+    const domain::MappedGuidanceCommand& command) noexcept;
 
 }  // namespace mosas::app::detail
 

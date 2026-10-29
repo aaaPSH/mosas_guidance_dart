@@ -126,13 +126,6 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
         CHECK(files_in(recordings,".avi").size()==static_cast<std::size_t>(shot));
         runner.stop(); // Less than 4 seconds: joins workers, encodes partial window, flushes CSVs.
         CHECK(!runner.running() && runner.last_error().empty());
-        if (original.algorithms.algorithm == app::GuidanceAlgorithm::png) {
-            CHECK(std::count_if(log.begin(),log.end(),[](const auto& line) {
-                return line.find("pre_acquisition preset_submitted=2 ")==0;
-            })==shot+1);
-        } else {
-            CHECK(!contains(log,"pre_acquisition preset_submitted="));
-        }
         const auto videos=files_in(recordings,".avi");
         CHECK(videos.size()==static_cast<std::size_t>(shot+1));
         const auto selected=std::find_if(videos.begin(),videos.end(),[&](const auto& p){return p.parent_path()!=previous_directory;});
@@ -193,11 +186,6 @@ int prelaunch_and_debug_follow_original_policy(const app::AppConfig& original) {
         CHECK(advance(runner,[&]{return runner.timing().output.samples>=2;}));
         runner.stop();CHECK(runner.last_error().empty());
         CHECK(!contains(log,"MOSAS launch_detected_ns="));
-        if (app.algorithms.algorithm == app::GuidanceAlgorithm::png) {
-            CHECK(contains(log,"pre_acquisition preset_submitted=0 first_preset_ns=-1"));
-        } else {
-            CHECK(!contains(log,"pre_acquisition preset_submitted="));
-        }
         const auto videos=files_in(fixture.root/"recordings",".avi");
         CHECK(videos.size()==static_cast<std::size_t>(debug));
         std::size_t imu_files=0;
@@ -246,15 +234,11 @@ int main() {
     const auto path=std::filesystem::path(MOSAS_SOURCE_DIR)/"config/mosas_guidance.conf";
     const auto before=read_bytes(path);
     CHECK(app::AppConfigLoader::load(path,&original,&error));
-    for (const auto algorithm : {app::GuidanceAlgorithm::body_vector_pn,
-                                 app::GuidanceAlgorithm::png}) {
-        for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
-                                runtime::LaunchDetectionMode::two_stage}) {
-            auto selected = original;
-            selected.algorithms.algorithm = algorithm;
-            selected.algorithms.attitude.launch_detection_mode = mode;
-            CHECK(match_partial_windows_survive_two_sessions(selected) == 0);
-        }
+    for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
+                            runtime::LaunchDetectionMode::two_stage}) {
+        auto selected = original;
+        selected.algorithms.attitude.launch_detection_mode = mode;
+        CHECK(match_partial_windows_survive_two_sessions(selected) == 0);
     }
     CHECK(prelaunch_and_debug_follow_original_policy(original)==0);
     CHECK(recording_errors_are_visible(original)==0);

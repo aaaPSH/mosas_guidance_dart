@@ -53,10 +53,10 @@ int verify_frame_metadata() {
     auto los=std::make_unique<test::FakeLosEstimator>(); domain::LineOfSight line; line.valid=true; los->set_result(line);
     auto rate=std::make_unique<test::FakeLosRateFilter>(); domain::LosRateEstimate r; r.valid=true; r.angular_velocity.valid=true; rate->set_result(r);
     auto guidance=std::make_unique<test::FakeGuidanceLaw>(); domain::GuidanceOutput g; g.valid=true; g.command.overload_g={0,2,3}; guidance->set_result(g);
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     dependencies.vision_detector=std::move(vision); dependencies.flight_state_estimator=std::move(estimator);
     dependencies.los_estimator=std::move(los); dependencies.los_rate_filter=std::move(rate); dependencies.guidance_law=std::move(guidance);
-    dependencies.monotonic_clock=std::make_unique<test::FakeClock>(20'000'000);
+    dependencies.monotonic_clock=std::make_unique<test::FakeClock>(20'000'000, domain::ClockDomain::simulation);
     runtime::RuntimeSupervisorConfig config; config.capture_queue_capacity=2; config.output_queue_capacity=4;
     runtime::RuntimeSupervisor supervisor(std::move(imu),std::move(camera),std::move(sink),config,std::move(dependencies),std::move(ports));
     CHECK(supervisor.start());

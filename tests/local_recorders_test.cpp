@@ -100,6 +100,22 @@ std::vector<std::string> read_lines(const std::filesystem::path& path) {
     return lines;
 }
 
+/** @return CSV 行按逗号拆分出的字段数组。 */
+std::vector<std::string> split_csv(const std::string& line) {
+    std::vector<std::string> tokens;
+    std::string::size_type start = 0;
+    while (true) {
+        const auto end = line.find(',', start);
+        if (end == std::string::npos) {
+            tokens.push_back(line.substr(start));
+            break;
+        }
+        tokens.push_back(line.substr(start, end - start));
+        start = end + 1;
+    }
+    return tokens;
+}
+
 std::size_t count_video_frames(const std::filesystem::path& path) {
     cv::VideoCapture video(path.string());
     if (!video.isOpened()) {
@@ -145,11 +161,19 @@ int main() {
         const auto lines = read_lines(csv_files[0]);
         CHECK(lines.size() == 3);
         CHECK(lines[0].find("frame_index,frame_timestamp_ns,") == 0);
-        CHECK(lines[0].find("command_phase_rad,source_frame_id") !=
+        CHECK(lines[0].find("command_phase_rad,source_frame_id,output_present") !=
               std::string::npos);
-        CHECK(lines[0].substr(lines[0].rfind(',') + 1) == "source_frame_id");
-        CHECK(lines[1].substr(lines[1].rfind(',') + 1) == "101");
-        CHECK(lines[2].substr(lines[2].rfind(',') + 1) == "102");
+        CHECK(lines[0].substr(lines[0].rfind(',') + 1) == "output_mapping_timestamp_ns");
+        const auto cols1 = split_csv(lines[1]);
+        const auto cols2 = split_csv(lines[2]);
+        CHECK(cols1.size() == 43);
+        CHECK(cols2.size() == 43);
+        CHECK(cols1[36] == "101");
+        CHECK(cols2[36] == "102");
+        CHECK(cols1[37] == "0");
+        CHECK(cols2[37] == "0");
+        // 尚未输出时 body 控制量列必须保留为空
+        CHECK(cols1[31].empty() && cols1[32].empty() && cols1[33].empty());
     }
 
     {
@@ -190,8 +214,12 @@ int main() {
         CHECK(count_video_frames(videos[0]) == 2);
         const auto lines = read_lines(csv_files[0]);
         CHECK(lines.size() == 3);
-        CHECK(lines[1].substr(lines[1].rfind(',') + 1) == "201");
-        CHECK(lines[2].substr(lines[2].rfind(',') + 1) == "202");
+        const auto cols1 = split_csv(lines[1]);
+        const auto cols2 = split_csv(lines[2]);
+        CHECK(cols1.size() == 43);
+        CHECK(cols2.size() == 43);
+        CHECK(cols1[36] == "201");
+        CHECK(cols2[36] == "202");
     }
 
     {
@@ -273,6 +301,50 @@ int main() {
         video.stop();
         CHECK(telemetry.last_error().empty());
         CHECK(find_extension(temporary_directory.path(), ".csv").size() == 1);
+    }
+
+    {
+        TemporaryDirectory temporary_directory;
+        const auto config = make_config(temporary_directory.path() / "emission.avi",
+                                        output::LocalRecordingMode::continuous);
+        auto session = std::make_shared<output::LocalRecordingSession>(config);
+        output::TelemetryCsvRecorder telemetry(session);
+        CHECK(telemetry.start());
+
+        auto frame = make_frame(501, 5'000'000);
+        domain::CommandEmissionSnapshot emission;
+        emission.attempt_id = 7;
+        emission.disposition = domain::CommandEmissionDisposition::serial_written;
+        emission.mapping.command.valid = true;
+        emission.mapping.command.source_frame_id = 501;
+        emission.mapping.trace.valid = true;
+        emission.mapping.trace.body_overload = {0.0, 0.25, -0.35};
+        emission.mapping.trace.command_overload.value = 0.43;
+        emission.mapping.trace.command_phase.value = -0.95;
+        emission.mapping.trace.attitude.time.monotonic_ns = 5'000'000;
+        emission.mapping.trace.emit_time_ns = 5'000'200;
+        frame.command_emission = emission;
+
+        CHECK(telemetry.record(frame));
+        telemetry.stop();
+        CHECK(telemetry.last_error().empty());
+
+        const auto csv_files = find_extension(temporary_directory.path(), ".csv");
+        CHECK(csv_files.size() == 1);
+        const auto lines = read_lines(csv_files[0]);
+        CHECK(lines.size() == 2);
+        const auto cols = split_csv(lines[1]);
+        CHECK(cols.size() == 43);
+        CHECK(cols[31] == "0");
+        CHECK(cols[32] == "0.25");
+        CHECK(cols[33] == "-0.35");
+        CHECK(cols[36] == "501");
+        CHECK(cols[37] == "1");
+        CHECK(cols[38] == "1");
+        CHECK(cols[39] == "7");
+        CHECK(cols[40] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
+        CHECK(cols[41] == "5000000");
+        CHECK(cols[42] == "5000200");
     }
 
 

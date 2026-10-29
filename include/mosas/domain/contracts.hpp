@@ -79,7 +79,8 @@ struct GuidanceCommand {
     bool valid = false;
     GuidanceInvalidReason invalid_reason =
         GuidanceInvalidReason::launch_not_confirmed;
-    DartOverloadG overload_g{};
+    /** @brief 未选轴、未限幅的弹道请求；必须经输出映射后才能编码。 */
+    BallisticOverloadG overload_g{};
     /** @brief 当前周期是否已按所选发射判据触发，独立于制导有效性。 */
     bool launched = false;
     /** @brief 当前帧是否识别到目标；未执行识别或故障时为 false。 */

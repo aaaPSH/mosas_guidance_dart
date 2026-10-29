@@ -1,6 +1,7 @@
 #include <mosas/runtime/runtime_supervisor.hpp>
 
 #include "test_support.hpp"
+#include "command_output_test_support.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -566,6 +567,7 @@ public:
 class ProbeClock final : public mosas::ports::IMonotonicClock {
 public:
     std::int64_t now_ns() const noexcept override { return 123; }
+    mosas::domain::ClockDomain clock_domain() const noexcept override { return mosas::domain::ClockDomain::monotonic; }
 };
 
 std::vector<mosas::runtime::ImuAngularVelocitySample> valid_samples() {
@@ -588,7 +590,7 @@ struct RuntimeFixture {
         auto vision_detector = std::make_unique<ProbeVisionDetector>();
         vision = vision_detector.get();
 
-        mosas::runtime::RuntimeSupervisorDependencies dependencies;
+        auto dependencies = mosas::test::mapped_dependencies();
         dependencies.vision_detector = std::move(vision_detector);
         auto flight_state_estimator =
             std::make_unique<ProbeFlightStateEstimator>();
@@ -781,7 +783,7 @@ int test_algorithm_fault() {
     return 0;
 }
 
-int test_missing_target_preserves_launch_flag() {
+int test_missing_target_does_not_refresh_command() {
     RuntimeFixture fixture(valid_samples());
     fixture.flight_state->set_launched();
     CHECK(fixture.runtime->start());
@@ -791,13 +793,8 @@ int test_missing_target_preserves_launch_flag() {
     CHECK(fixture.sink->wait_for_publish(1s));
     fixture.runtime->stop();
     CHECK(!fixture.runtime->faulted());
-    const auto commands = fixture.command->commands();
-    CHECK(commands.size() == 1);
-    CHECK(!commands.front().valid);
-    CHECK(commands.front().launched);
-    CHECK(!commands.front().target_found);
-    CHECK(commands.front().overload_g.y == 0.0);
-    CHECK(commands.front().overload_g.z == 0.0);
+    CHECK(fixture.command->commands().empty());
+    CHECK(fixture.runtime->latest_state()->launch.phase == mosas::domain::LaunchPhase::launched);
     return 0;
 }
 
@@ -889,7 +886,7 @@ int main() {
     if (test_algorithm_fault() != 0) {
         return 1;
     }
-    if (test_missing_target_preserves_launch_flag() != 0) {
+    if (test_missing_target_does_not_refresh_command() != 0) {
         return 1;
     }
     if (test_frame_sink_fault_preserves_first_error() != 0) {

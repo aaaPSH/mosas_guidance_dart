@@ -35,7 +35,6 @@ void validate_simulation_metadata(const AppConfig& app,
     check(metadata.session.world_gravity_mps2[1],0,"world gravity y");
     check(metadata.session.world_gravity_mps2[2],-g,"world gravity z");
     check(app.algorithms.attitude.gravity_mps2,g,"attitude gravity");
-    check(app.algorithms.png_guidance.gravity,g,"PNG gravity");
-    check(app.algorithms.body_vector_pn.gravity,g,"vector PN gravity");
+    // 导引与输出映射由工厂统一注入上述重力，不再核验废弃算法副本。
 }
 }  // namespace mosas::app

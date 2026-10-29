@@ -73,6 +73,7 @@ struct RuntimeSupervisorDependencies {
     std::unique_ptr<ports::ILosEstimator> los_estimator;
     std::unique_ptr<ports::ILosRateFilter> los_rate_filter;
     std::unique_ptr<ports::IGuidanceLaw> guidance_law;
+    std::unique_ptr<ports::ICommandOutputMapper> command_mapper;
     std::unique_ptr<ports::IMonotonicClock> monotonic_clock;
 };
 

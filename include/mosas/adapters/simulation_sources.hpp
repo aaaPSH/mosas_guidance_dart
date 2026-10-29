@@ -9,6 +9,7 @@ class SimulationClock final:public ports::IMonotonicClock {
 public:
     explicit SimulationClock(std::shared_ptr<SimulationSession> session):session_(std::move(session)){}
     std::int64_t now_ns()const noexcept override{return session_->now_ns();}
+    domain::ClockDomain clock_domain() const noexcept override { return domain::ClockDomain::simulation; }
 private:std::shared_ptr<SimulationSession> session_;
 };
 /** @brief Cancelable FIFO of coordinate-converted, paired IMU samples. */

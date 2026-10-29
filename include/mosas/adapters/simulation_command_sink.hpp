@@ -10,7 +10,7 @@ public:
     explicit SimulationCommandSink(std::shared_ptr<SimulationSession> session,
         std::shared_ptr<SimulationAudit> audit={}):session_(std::move(session)),audit_(std::move(audit)){}
     bool start()override;
-    /** @brief Validate active MOSAS generation and acquisition time, then enqueue body-axis overload. */
+    /** @brief 校验弹道请求代际/来源，使用最新姿态映射后排队；不代表物理执行确认。 */
     bool try_submit(const runtime::GuidanceCommand& command)noexcept override;
     /** @brief Discard unsent old-generation commands; socket session IDs are unrelated to generation. */
     void set_active_generation(std::uint64_t generation)noexcept override;

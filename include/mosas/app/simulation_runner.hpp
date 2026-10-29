@@ -1,7 +1,6 @@
 #pragma once
 #include <mosas/app/simulation_config.hpp>
 #include <mosas/adapters/simulation_sources.hpp>
-#include <mosas/adapters/simulation_pre_acquisition.hpp>
 #include <mosas/adapters/simulation_audit.hpp>
 #include <mutex>
 #include <set>
@@ -49,7 +48,6 @@ private:
     // 仅同步监督器所有权与跨线程耗时查询，不将整个生命周期流程锁在临界区内。
     mutable std::mutex supervisor_mutex_;
     std::unique_ptr<runtime::RuntimeSupervisor> supervisor_;
-    std::unique_ptr<adapters::SimulationPreAcquisitionPolicy> pre_acquisition_;
     adapters::SimulationCameraSource* camera_=nullptr;
     std::set<std::uint64_t> used_;
     std::chrono::steady_clock::time_point retry_{};

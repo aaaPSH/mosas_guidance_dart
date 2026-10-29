@@ -46,11 +46,11 @@ struct LineOfSightAngularVelocity {
     Quantity<RadiansPerSecond> q_z{};
 };
 
-/** @brief 惯性 LOS 状态，以镖体系表达；方向单位长度，惯性导数与方向正交。 */
+/** @brief 导航系惯性 LOS 状态；方向单位长度，导数与方向正交。 */
 struct VectorLosEstimate {
     bool valid = false;
-    DirectionDartUnit direction{};
-    DirectionRateDartPerSec inertial_direction_rate{};
+    DirectionNavigationUnit direction{};
+    DirectionRateNavigationPerSec inertial_direction_rate{};
 };
 
 /** @brief 同步到同一相机帧的滤波输入；首帧仅建立基准，不传播 dt。 */
@@ -77,22 +77,14 @@ struct LineOfSightRateSample {
 struct GuidanceInput {
     std::uint64_t source_frame_id = 0;
     SensorTime time{};
-    LineOfSight line_of_sight{};
-    LineOfSightAngularVelocity angular_velocity{};
     /** @brief 插值到相机曝光时刻的动态纵向速度，单位 m/s。 */
     Quantity<MetersPerSecond> speed_mps{};
-    AttitudeState attitude{};
     VectorLosEstimate vector_los{};
 };
 
+/** @brief 计算阶段只记录原始弹道请求；最终输出诊断由发送端提供。 */
 struct GuidanceDiagnostics {
-    // 历史字段名：实际保存弹道系指令比力，而非净运动学导航加速度。
-    AccelerationBallisticMps2 navigation_acceleration{};
-    // 限幅后的镖体系指令比力（m/s²）；仅矢量 PN 在输出端另加横向重力补偿。
-    AccelerationDartMps2 body_acceleration{};
-    DartOverloadG body_overload{};
-    Quantity<GravityG> command_overload{};
-    Quantity<Radian> command_phase{};
+    BallisticOverloadG requested_overload{};
 };
 
 struct GuidanceOutput {
@@ -115,6 +107,9 @@ struct GuidanceOverlay {
     bool attitude_valid = false;
     Quantity<Radian> attitude_pitch{};
     Quantity<Radian> attitude_roll{};
+    bool output_attitude_valid = false;
+    Quantity<Radian> output_attitude_pitch{};
+    Quantity<Radian> output_attitude_roll{};
     LaunchPhase launch_phase = LaunchPhase::unknown;
     double processing_fps = 0.0;
 };

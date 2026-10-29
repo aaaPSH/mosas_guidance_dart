@@ -25,11 +25,11 @@ struct SimulationAuditMetadata {
     std::uint32_t width=0,height=0;
     std::array<double,4> intrinsics{};
     double camera_hz=0,imu_hz=0,launch_speed_mps=0,cap_g=0;
-    // Original parsed Ny, Nz, sigma_a_pitch, sigma_a_yaw, sigma_q (not fallback estimates).
-    std::array<double,5> parameters{};
+    // schema v2: Ny, Nz, sigma_a, sigma_l, initial_rate_covariance, maximum_gap_seconds.
+    std::array<double,6> parameters{};
+    double maximum_command_acceleration=100;
 };
 enum class AuditLifecycle {ready,fault,stopped};
-enum class AuditStrategy {neutral,preset,png};
 enum class AuditRejection : std::uint32_t {wrong_generation=1,invalid_time=2};
 struct SimulationAuditDiagnostics {
     bool healthy=false;
@@ -69,18 +69,17 @@ public:
      * @param input Original source identifiers/time. @param trace Original calculation snapshot.
      * @return Whether retained; the raw port has no generation and records it as null.
      */
-    bool record_png(const domain::GuidanceInput& input,const PngCalculationTrace& trace)noexcept;
-    /** @brief Record policy selection, not physical application.
-     * @param command Selected original or preset copy. @param strategy Selection branch.
-     * @return Whether retained; repeated rejected attempts may be recorded independently.
+    bool record_png(const domain::GuidanceInput& input,const guidance::PngCalculationTrace& trace)noexcept;
+    /** @brief 记录实际被提交的弹道请求，不制造未检出帧的控制事件。
+     * @param command 原始弹道请求及来源。 @return 事件进入有界审计队列时为 true。
      */
-    bool record_selected(const runtime::GuidanceCommand& command,AuditStrategy strategy)noexcept;
+    bool record_request(const runtime::GuidanceCommand& command)noexcept;
     /** @brief Observe the original transport enqueue result; sequence is not known yet.
-     * @param command Original source. @param wire Exact offered DSIM payload.
+     * @param emission 本次真实输出映射与来源。 @param wire Exact offered DSIM payload.
      * @param accepted Enqueue return value, never a physical acknowledgement.
      * @return Whether retained; duplicate successful valid frame sources fail the audit.
      */
-    bool record_submit(const runtime::GuidanceCommand& command,const dart_sim_transport::Overload& wire,bool accepted)noexcept;
+    bool record_submit(const domain::CommandEmissionSnapshot& emission,const dart_sim_transport::Overload& wire,bool accepted)noexcept;
     /** @brief Record a client-side rejected attempt, never a transmitted wire message.
      * @param command Attempted source command. @param reason Client guard disposition.
      * @return Whether retained; this cannot be interpreted as a physical acknowledgement.

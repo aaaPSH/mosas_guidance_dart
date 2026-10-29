@@ -172,7 +172,7 @@ int main() {
     auto guidance = std::make_unique<test::FakeGuidanceLaw>();
     auto* guidance_control = guidance.get();
 
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     dependencies.vision_detector = std::move(vision);
     dependencies.flight_state_estimator = std::move(flight_state);
     dependencies.los_estimator = std::move(los);
@@ -226,7 +226,7 @@ int main() {
     vision_control->push(detection);
 
     los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {}});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {true,{1,0,0},{0,0.3,-0.4}}});
     domain::GuidanceOutput guidance_result{};
     guidance_result.valid = true;
     guidance_result.invalid_reason = domain::GuidanceInvalidReason::none;
@@ -234,7 +234,7 @@ int main() {
     guidance_result.command.invalid_reason =
         domain::GuidanceInvalidReason::none;
     guidance_result.command.overload_g = {0.0, 0.0, 0.0};
-    guidance_result.diagnostics.body_overload = {0.0, 0.0, 0.0};
+    guidance_result.diagnostics.requested_overload = {0.0, 0.0, 0.0};
     guidance_control->set_result(guidance_result);
 
     imu_source_control->release();
@@ -279,7 +279,7 @@ int main() {
                 CHECK_NEAR(command.overload_g.y, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.z, 0.0, 1e-12);
             } else if (command.invalid_reason ==
-                       domain::GuidanceInvalidReason::stale_input) {
+                       domain::GuidanceInvalidReason::invalid_rate) {
                 invalid_zero_command_seen = true;
                 CHECK(command.generation == 0);
                 CHECK(command.source_time.monotonic_ns == kFrameFirstNs);
@@ -320,7 +320,7 @@ int main() {
     CHECK(guidance_control->call_count() == 1);
     CHECK_NEAR(valid_frame->state.speed_mps.value, 12.5, 1e-12);
     CHECK_NEAR(guidance_control->last_input().speed_mps.value, 12.5, 1e-12);
-    CHECK_NEAR(guidance_control->last_input().line_of_sight.q_y.value, 0.1,
+    CHECK_NEAR(rate_filter_control->last_input().line_of_sight.q_y.value, 0.1,
                1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.x, 0.0, 1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.y, 0.0, 1e-12);
@@ -342,9 +342,9 @@ int main() {
     CHECK_NEAR(los_control->last_camera_to_dart().matrix()[0], 1.0, 1e-12);
     CHECK(guidance_control->last_input().source_frame_id == 1);
     CHECK(guidance_control->last_input().time.monotonic_ns == kFrameSecondNs);
-    CHECK_NEAR(guidance_control->last_input().angular_velocity.q_y.value, 0.3,
+    CHECK_NEAR(guidance_control->last_input().vector_los.inertial_direction_rate.y, 0.3,
                1e-12);
-    CHECK(guidance_control->last_input().attitude.valid);
+    CHECK(guidance_control->last_input().vector_los.valid);
     CHECK(vision_control->last_image_width() == 2);
     CHECK(vision_control->last_image_height() == 2);
     CHECK(vision_control->last_first_pixel() == 0x22);
@@ -395,7 +395,7 @@ int main() {
     vision_control->push(detection);
     vision_control->push(detection);
     los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {}});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {true,{1,0,0},{0,0.3,-0.4}}});
     guidance_control->set_result(guidance_result);
     imu_source_control->release();
 

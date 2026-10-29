@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -459,51 +458,28 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "capture_queue_capacity") return set_size(&config->guidance.capture_queue_capacity) || invalid();
         if (key == "output_queue_capacity") return set_size(&config->guidance.output_queue_capacity) || invalid();
         auto& algorithms = config->algorithms;
-        if (key == "guidance_algorithm") {
-            if (value == "png") algorithms.algorithm = GuidanceAlgorithm::png;
-            else if (value == "body_vector_pn") algorithms.algorithm = GuidanceAlgorithm::body_vector_pn;
-            else return invalid();
-            return true;
-        }
         if (key == "control_channel") {
             guidance::ControlChannel channel;
             if (value == "both") channel = guidance::ControlChannel::both;
             else if (value == "pitch") channel = guidance::ControlChannel::pitch;
             else if (value == "yaw") channel = guidance::ControlChannel::yaw;
             else return invalid();
-            algorithms.png_guidance.control_channel = channel;
-            algorithms.ballistic_png.control_channel = channel;
+            algorithms.command_mapping.control_channel = channel;
             return true;
         }
-        if (key == "ballistic_png_navigation_constant" || key == "body_vector_navigation_constant") {
-            if (!parse_double(value, &decimal)) return invalid();
-            algorithms.ballistic_png.navigation_constant_y = decimal;
-            algorithms.ballistic_png.navigation_constant_z = decimal;
-            return true;
-        }
-        if (key == "inertial_los_sigma_a" || key == "body_vector_los_sigma_a") {
+        if (key == "inertial_los_sigma_a") {
             return set_double(&algorithms.inertial_filter.sigma_a) || invalid();
         }
-        if (key == "inertial_los_sigma_l" || key == "body_vector_los_sigma_l") {
+        if (key == "inertial_los_sigma_l") {
             return set_double(&algorithms.inertial_filter.sigma_l) || invalid();
         }
-        if (key == "inertial_los_initial_rate_covariance" || key == "body_vector_los_initial_rate_covariance") {
+        if (key == "inertial_los_initial_rate_covariance") {
             return set_double(&algorithms.inertial_filter.initial_rate_covariance) || invalid();
         }
-        if (key == "inertial_los_maximum_gap_ms" || key == "body_vector_los_maximum_gap_ms") {
+        if (key == "inertial_los_maximum_gap_ms") {
             if (!parse_double(value, &decimal)) return invalid();
             algorithms.inertial_filter.maximum_gap_seconds = decimal * 0.001;
             return true;
-        }
-        if (key == "ballistic_png_maximum_command_overload" || key == "body_vector_maximum_command_overload") {
-            return set_double(&algorithms.ballistic_png.maximum_command_overload) || invalid();
-        }
-        if (key == "ballistic_png_maximum_command_acceleration" || key == "body_vector_maximum_command_acceleration") {
-            if (value == "inf") {
-                algorithms.ballistic_png.maximum_command_acceleration = std::numeric_limits<double>::infinity();
-                return true;
-            }
-            return set_double(&algorithms.ballistic_png.maximum_command_acceleration) || invalid();
         }
         if (key == "initial_roi_x") return set_int(&algorithms.vision_config.initial_roi.x) || invalid();
         if (key == "initial_roi_y") return set_int(&algorithms.vision_config.initial_roi.y) || invalid();
@@ -524,18 +500,6 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "camera_fy") return set_double(&config->guidance.camera_intrinsics.fy) || invalid();
         if (key == "camera_cx") return set_double(&config->guidance.camera_intrinsics.cx) || invalid();
         if (key == "camera_cy") return set_double(&config->guidance.camera_intrinsics.cy) || invalid();
-        if (key == "los_kalman_sigma_a" || key == "los_process_noise") {
-            return set_double(&algorithms.los_rate_filter.sigma_a) || invalid();
-        }
-        if (key == "los_kalman_sigma_q" || key == "los_measurement_noise") {
-            return set_double(&algorithms.los_rate_filter.sigma_q) || invalid();
-        }
-        if (key == "los_kalman_sigma_a_pitch") return set_double(&algorithms.los_rate_filter.sigma_a_pitch) || invalid();
-        if (key == "los_kalman_sigma_a_yaw") return set_double(&algorithms.los_rate_filter.sigma_a_yaw) || invalid();
-        if (key == "los_initial_covariance") {
-            return set_double(&algorithms.los_rate_filter.initial_covariance) || invalid();
-        }
-        if (key == "los_enable_filter") return parse_bool(value, &algorithms.los_rate_filter.enable_filter) || invalid();
         if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
         if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
         if (key == "attitude_gyro_bias_filter_alpha") return set_double(&algorithms.attitude.gyro_bias_filter_alpha) || invalid();
@@ -557,25 +521,16 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "launch_release_timeout_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_release_timeout_ns) || invalid();
         if (key == "attitude_maximum_gap_ms") return parse_timestamp_ms(value, &algorithms.attitude.maximum_sample_gap_ns) || invalid();
         if (key == "accelerometer_specific_force") return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
-        if (key == "png_navigation_constant_y") {
-            return set_double(&algorithms.png_guidance.navigation_constant_y) || invalid();
-        }
-        if (key == "png_navigation_constant_z") {
-            return set_double(&algorithms.png_guidance.navigation_constant_z) || invalid();
-        }
-        if (key == "png_gravity") {
-            if (!set_double(&algorithms.png_guidance.gravity)) {
-                return invalid();
-            }
-            algorithms.attitude.gravity_mps2 = algorithms.png_guidance.gravity;
-            algorithms.ballistic_png.gravity = algorithms.png_guidance.gravity;
-            return true;
-        }
-        if (key == "png_maximum_command_overload") {
-            return set_double(&algorithms.png_guidance.maximum_command_overload) || invalid();
-        }
+        if (key == "png_navigation_constant_y") return set_double(&algorithms.ballistic_png.navigation_constant_y) || invalid();
+        if (key == "png_navigation_constant_z") return set_double(&algorithms.ballistic_png.navigation_constant_z) || invalid();
+        if (key == "png_gravity") return set_double(&algorithms.attitude.gravity_mps2) || invalid();
+        if (key == "png_maximum_command_overload") return set_double(&algorithms.command_mapping.maximum_command_overload) || invalid();
         if (key == "png_maximum_command_acceleration") {
-            return set_double(&algorithms.png_guidance.maximum_command_acceleration) || invalid();
+            if (value == "inf") {
+                algorithms.command_mapping.maximum_command_acceleration = std::numeric_limits<double>::infinity();
+                return true;
+            }
+            return set_double(&algorithms.command_mapping.maximum_command_acceleration) || invalid();
         }
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
             const int row = key[16] - '0';
@@ -709,16 +664,17 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
 bool validate_guidance(const std::filesystem::path& path, const AppConfig& config,
                        std::string* error) {
     const auto& vision = config.algorithms.vision_config;
-    const auto& los_filter = config.algorithms.los_rate_filter;
     const auto& attitude = config.algorithms.attitude;
-    const auto& png = config.algorithms.png_guidance;
-    if (!guidance::valid_control_channel(png.control_channel)) {
+    auto mapping = config.algorithms.command_mapping;
+    mapping.gravity = attitude.gravity_mps2;
+    if (!guidance::valid_control_channel(mapping.control_channel)) {
         return fail_global(path, "控制通道无效（guidance.control_channel）", error);
     }
     auto ballistic_pn = config.algorithms.ballistic_png;
     ballistic_pn.gravity = attitude.gravity_mps2;
     if (!guidance::InertialVectorLosFilter::valid_config(config.algorithms.inertial_filter) ||
-        !guidance::BallisticPngGuidance::valid_config(ballistic_pn)) {
+        !guidance::BallisticPngGuidance::valid_config(ballistic_pn) ||
+        !guidance::CommandOutputMapper::valid_config(mapping)) {
         return fail_global(path, "惯性系矢量滤波或弹道系比例导引参数无效", error);
     }
     if (!runtime::AttitudeEstimator::valid_config(attitude)) {
@@ -739,15 +695,7 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
         !std::isfinite(intrinsics.fy) || !std::isfinite(intrinsics.cx) ||
         !std::isfinite(intrinsics.cy) || intrinsics.fx <= 0.0 ||
         intrinsics.fy <= 0.0 ||
-        !valid_dart_from_camera(config.guidance.dart_from_camera) ||
-        los_filter.sigma_a <= 0.0 || los_filter.sigma_q <= 0.0 ||
-        los_filter.sigma_a_pitch < 0.0 || los_filter.sigma_a_yaw < 0.0 ||
-        los_filter.initial_covariance < 0.0 ||
-        png.navigation_constant_y <= 0.0 ||
-        png.navigation_constant_z <= 0.0 || png.gravity <= 0.0 ||
-        png.maximum_command_overload < 0.0 ||
-        std::isnan(png.maximum_command_acceleration) ||
-        png.maximum_command_acceleration < 0.0) {
+        !valid_dart_from_camera(config.guidance.dart_from_camera)) {
         return fail_global(path, "制导参数无效", error);
     }
     return true;

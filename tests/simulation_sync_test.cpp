@@ -51,7 +51,7 @@ int main(){
         auto estimator=std::make_unique<BlockingEstimator>();auto* blocker=estimator.get();
         auto video=std::make_unique<Recorder>();auto* recording=video.get();runtime::RuntimeOutputPorts outputs;outputs.video=std::move(video);
         auto commands=std::make_unique<test::FakeCommandSink>();auto* command_control=commands.get();
-        runtime::RuntimeSupervisorDependencies deps;deps.flight_state_estimator=std::move(estimator);
+        auto deps = test::mapped_dependencies();deps.flight_state_estimator=std::move(estimator);
         deps.vision_detector=std::make_unique<test::FakeVisionDetector>();deps.los_estimator=std::make_unique<test::FakeLosEstimator>();
         deps.los_rate_filter=std::make_unique<test::FakeLosRateFilter>();deps.guidance_law=std::make_unique<test::FakeGuidanceLaw>();deps.monotonic_clock=std::make_unique<adapters::SimulationClock>(next);
         runtime::RuntimeSupervisor supervisor(std::make_unique<adapters::SimulationImuSource>(next),std::make_unique<adapters::SimulationCameraSource>(next),std::move(commands),runtime::RuntimeSupervisorConfig{},std::move(deps),std::move(outputs));

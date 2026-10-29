@@ -1,12 +1,15 @@
 #include "command_adapter.hpp"
 
 #include "test_support.hpp"
+#include "command_output_test_support.hpp"
+#include <mosas/adapters/host_adapters.hpp>
+#include <sstream>
 
 #include <array>
 #include <cstdint>
 
 int main() {
-    mosas::runtime::GuidanceCommand command{};
+    mosas::domain::MappedGuidanceCommand command{};
     command.valid = true;
     command.launched = true;
     command.target_found = true;
@@ -52,5 +55,21 @@ int main() {
         expected_reset_frame{0xAA, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00,
                              0x00, 0x00, 0x00, 0x3E, 0x31, 0x0D, 0x0A};
     CHECK(frame == expected_reset_frame);
+
+    // 日志边界也必须映射弹道请求，不能直接记录为 body 值。
+    std::ostringstream log;
+    mosas::app::LoggingCommandSink sink(log);
+    CHECK(mosas::test::bind_test_output(sink,[]{return std::optional<mosas::domain::FlightStateSnapshot>(
+        mosas::test::command_test_state(200,0,std::acos(-1.0)/2));},[]{return 201;}));
+    CHECK(sink.start());
+    mosas::domain::GuidanceCommand request;
+    request.source_frame_id=91;request.source_time=mosas::test::command_test_time(100);
+    request.valid=request.launched=request.target_found=true;request.overload_g={0,0.5,0};
+    CHECK(sink.try_submit(request));sink.stop();
+    const auto emitted=sink.latest_emission();
+    CHECK(emitted && emitted->mapping.command.source_frame_id==91);
+    CHECK_NEAR(emitted->mapping.command.overload_g.z,-0.5,1e-12);
+    CHECK(emitted->disposition==mosas::domain::CommandEmissionDisposition::log_accepted);
+    CHECK(log.str().find("-0.5")!=std::string::npos);
     return 0;
 }

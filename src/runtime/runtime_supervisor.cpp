@@ -79,6 +79,7 @@ private:
     std::unique_ptr<ImuPipeline> imu_pipeline_;
     std::unique_ptr<FramePipeline> frame_pipeline_;
     RuntimeSupervisorConfig config_;
+    bool output_bound_ = false;
     std::unique_ptr<IAsyncLogger> logger_;
     std::atomic<bool> logger_running_{false};
 
@@ -161,6 +162,17 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
         config_.history_capacity, *generation_coordinator_,
         std::move(imu_callbacks));
 
+    if (command_sink_ && monotonic_clock_ && dependencies.command_mapper) {
+        CommandOutputBinding binding;
+        binding.mapper = std::move(dependencies.command_mapper);
+        binding.latest_state = [this] { return imu_pipeline_->latest_state(); };
+        binding.now_ns = [this] { return monotonic_clock_->now_ns(); };
+        binding.output_enabled = [this] { return !stop_requested_.load() && !faulted_.load(); };
+        binding.clock_domain = monotonic_clock_->clock_domain();
+        binding.maximum_attitude_age_ns = config_.max_imu_age_ns;
+        output_bound_ = command_sink_->bind_output(std::move(binding));
+    }
+
     FramePipelineCallbacks frame_callbacks;
     frame_callbacks.stop_requested = [this] { return stop_requested_.load(); };
     frame_callbacks.faulted = [this] { return faulted_.load(); };
@@ -180,7 +192,7 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
 bool RuntimeSupervisor::Impl::validate_dependencies() const {
     return imu_pipeline_ != nullptr && imu_pipeline_->valid() &&
            frame_pipeline_ != nullptr && frame_pipeline_->valid() &&
-           command_sink_ != nullptr && monotonic_clock_ != nullptr;
+           command_sink_ != nullptr && monotonic_clock_ != nullptr && output_bound_;
 }
 
 bool RuntimeSupervisor::Impl::start() {

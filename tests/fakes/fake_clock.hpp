@@ -10,8 +10,10 @@ namespace mosas::test {
 
 class FakeClock final : public ports::IMonotonicClock {
 public:
-    explicit FakeClock(std::int64_t initial_ns = 0) noexcept
-        : now_ns_(initial_ns) {}
+    explicit FakeClock(std::int64_t initial_ns = 0, domain::ClockDomain domain = domain::ClockDomain::monotonic) noexcept
+        : now_ns_(initial_ns), domain_(domain) {}
+
+    domain::ClockDomain clock_domain() const noexcept override { return domain_; }
 
     std::int64_t now_ns() const noexcept override {
         return now_ns_.load(std::memory_order_relaxed);
@@ -27,6 +29,7 @@ public:
 
 private:
     std::atomic<std::int64_t> now_ns_;
+    domain::ClockDomain domain_;
 };
 
 }  // namespace mosas::test

@@ -6,8 +6,118 @@
 #include <cmath>
 #include <limits>
 
+namespace {
+using Matrix2 = std::array<std::array<double, 2>, 2>;
+
+/** @brief 用通用矩阵乘法计算 Joseph 参考值，独立于生产标量更新。 */
+Matrix2 joseph_reference(const Matrix2& prior, double k0, double k1, double r) {
+    const Matrix2 a{{{{1.0 - k0, 0.0}}, {{-k1, 1.0}}}};
+    const std::array<double, 2> k{k0, k1};
+    Matrix2 result{};
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j) {
+            for (int p = 0; p < 2; ++p)
+                for (int q = 0; q < 2; ++q)
+                    result[i][j] += a[i][p] * prior[p][q] * a[j][q];
+            result[i][j] += k[i] * r * k[j];
+        }
+    return result;
+}
+
+/** @brief 用单位化 Jacobian 计算参考切向导数。 */
+void reference_project(std::array<double, 3>& l, std::array<double, 3>& u) {
+    const double n = std::hypot(std::hypot(l[0], l[1]), l[2]);
+    const double dot = l[0] * u[0] + l[1] * u[1] + l[2] * u[2];
+    for (int i = 0; i < 3; ++i) {
+        u[i] = u[i] / n - l[i] * dot / (n * n * n);
+        l[i] /= n;
+    }
+}
+
+/** @return 正确协方差、两次投影及拒绝路径均符合参考时返回 0。 */
+int verify_numerical_regressions() {
+    using namespace mosas;
+    guidance::InertialVectorLosFilter filter;
+    domain::LosRateFilterInput input;
+    input.attitude = test::vector_test_attitude();
+    input.line_of_sight = {true, {0.0}, {0.0}};
+    input.dt_seconds = 0.01;
+    CHECK(!filter.update(input).valid);
+    CHECK(filter.update(input).valid);
+    CHECK_NEAR(filter.covariance().p01, 9.84671349724e-4, 1e-14);
+    CHECK_NEAR(filter.covariance().p11, 0.197681886603, 1e-12);
+
+    filter.reset();
+    CHECK(!filter.update(input).valid);
+    const double r = 0.0035 * 0.0035;
+    Matrix2 covariance{{{{r, 0.0}}, {{0.0, 1.0}}}};
+    std::array<double, 3> l{1.0, 0.0, 0.0}, u{};
+    constexpr std::array<double, 4> intervals{0.001, 0.008, 0.02, 0.05};
+    for (int step = 0; step < 80; ++step) {
+        const double dt = intervals[step % intervals.size()];
+        input.dt_seconds = dt;
+        input.line_of_sight = {true, {0.3 * std::sin(step * 0.2)}, {0.1 * std::cos(step * 0.1)}};
+        const double elevation = input.line_of_sight.q_y.value;
+        const double azimuth = input.line_of_sight.q_z.value;
+        const std::array<double, 3> z{std::cos(elevation) * std::cos(azimuth),
+                                     std::sin(elevation), std::cos(elevation) * std::sin(azimuth)};
+        for (int i = 0; i < 3; ++i) l[i] += dt * u[i];
+        reference_project(l, u);
+        const Matrix2 f{{{{1.0, dt}}, {{0.0, 1.0}}}};
+        const std::array<double, 2> b{dt * dt / 2.0, dt};
+        Matrix2 prior{};
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) {
+                for (int p = 0; p < 2; ++p)
+                    for (int q = 0; q < 2; ++q)
+                        prior[i][j] += f[i][p] * covariance[p][q] * f[j][q];
+                prior[i][j] += 25.0 * b[i] * b[j];
+            }
+        const double k0 = prior[0][0] / (prior[0][0] + r);
+        const double k1 = prior[1][0] / (prior[0][0] + r);
+        for (int i = 0; i < 3; ++i) {
+            const double innovation = z[i] - l[i];
+            l[i] += k0 * innovation;
+            u[i] += k1 * innovation;
+        }
+        reference_project(l, u);
+        covariance = joseph_reference(prior, k0, k1, r);
+        const auto estimate = filter.update(input);
+        CHECK(estimate.valid);
+        CHECK_NEAR(filter.covariance().p00, covariance[0][0], 1e-13);
+        CHECK_NEAR(filter.covariance().p01, covariance[0][1], 1e-13);
+        CHECK_NEAR(filter.covariance().p11, covariance[1][1], 1e-12);
+        CHECK(filter.covariance().p00 * filter.covariance().p11 >
+              filter.covariance().p01 * filter.covariance().p01);
+        CHECK_NEAR(estimate.vector.direction.x, l[0], 1e-11);
+        CHECK_NEAR(estimate.vector.direction.y, l[1], 1e-11);
+        CHECK_NEAR(estimate.vector.direction.z, l[2], 1e-11);
+        CHECK_NEAR(estimate.vector.inertial_direction_rate.x, u[0], 1e-10);
+        CHECK_NEAR(estimate.vector.inertial_direction_rate.y, u[1], 1e-10);
+        CHECK_NEAR(estimate.vector.inertial_direction_rate.z, u[2], 1e-10);
+    }
+    input.dt_seconds = 0.0;
+    CHECK(!filter.update(input).valid);
+    input.dt_seconds = 0.01;
+    input.attitude.navigation_from_dart = domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>(
+        {1, 0, 0, 1, 0, 0, 0, 0, 1});
+    CHECK(!filter.update(input).valid);
+    input.attitude.navigation_from_dart = domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>(
+        {-1, 0, 0, 0, 1, 0, 0, 0, 1});
+    CHECK(!filter.update(input).valid);
+    guidance::InertialVectorLosFilterConfig invalid;
+    invalid.initial_rate_covariance = 0.0;
+    CHECK(!guidance::InertialVectorLosFilter::valid_config(invalid));
+    invalid.initial_rate_covariance = 1.0;
+    invalid.sigma_l = std::numeric_limits<double>::min();
+    CHECK(!guidance::InertialVectorLosFilter::valid_config(invalid));
+    return 0;
+}
+}  // namespace
+
 int main() {
     using namespace mosas;
+    CHECK(verify_numerical_regressions() == 0);
 
     // 1. 首帧初始化：输入有效视线与姿态，验证建立基准、首帧不输出有效速率
     {

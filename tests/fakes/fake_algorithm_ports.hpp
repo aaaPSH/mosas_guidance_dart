@@ -1,6 +1,7 @@
 #ifndef MOSAS_TEST_FAKES_FAKE_ALGORITHM_PORTS_HPP
 #define MOSAS_TEST_FAKES_FAKE_ALGORITHM_PORTS_HPP
 
+#include "../command_output_test_support.hpp"
 #include <mosas/ports/attitude_estimator.hpp>
 #include <mosas/ports/flight_state_estimator.hpp>
 #include <mosas/ports/guidance_law.hpp>

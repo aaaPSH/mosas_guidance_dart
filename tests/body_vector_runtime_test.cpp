@@ -1,5 +1,4 @@
 #include <mosas/guidance/ballistic_png_guidance.hpp>
-#include <mosas/guidance/default_algorithm_adapters.hpp>
 #include <mosas/guidance/inertial_vector_los_filter.hpp>
 #include <mosas/runtime/legacy_flight_state_adapter.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
@@ -35,13 +34,11 @@ mosas::runtime::CameraFrame make_frame(std::int64_t timestamp) {
 }
 
 /**
- * @brief 验证实际速度积分、曝光时刻插值和两种 PN 的过载计算链路。
- * @param vector_guidance 为 true 时验证矢量 PN，否则验证标量 PNG。
+ * @brief 验证唯一弹道 PNG 的实际速度积分与曝光时刻插值。
  * @param mode 发射触发判据；验证输出时机和后续速度插值随模式选择。
  * @return 全部断言通过时为 0。
  */
-int verify_dynamic_speed(bool vector_guidance,
-                         mosas::runtime::LaunchDetectionMode mode) {
+int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
     using namespace mosas;
     const bool two_stage = mode == runtime::LaunchDetectionMode::two_stage;
     const std::vector<runtime::TimestampNs> command_times = two_stage
@@ -80,7 +77,7 @@ int verify_dynamic_speed(bool vector_guidance,
     auto* los_control = los.get();
     auto rate = std::make_unique<test::FakeLosRateFilter>();
     auto* rate_control = rate.get();
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     runtime::AttitudeEstimatorConfig estimator_config;
     estimator_config.launch_detection_mode = mode;
     estimator_config.launch_speed_mps = 16.0;
@@ -89,19 +86,7 @@ int verify_dynamic_speed(bool vector_guidance,
     dependencies.vision_detector = std::move(vision);
     dependencies.los_estimator = std::move(los);
     dependencies.los_rate_filter = std::move(rate);
-    if (vector_guidance) {
-        guidance::BallisticPngConfig pn;
-        pn.maximum_command_overload = 10.0;
-        pn.maximum_command_acceleration = std::numeric_limits<double>::infinity();
-        dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>(pn);
-    } else {
-        PngGuidanceConfig pn;
-        pn.navigation_constant_y = 3.0;
-        pn.maximum_command_overload = 10.0;
-        pn.maximum_command_acceleration = std::numeric_limits<double>::infinity();
-        dependencies.guidance_law =
-            std::make_unique<guidance::ExistingPngGuidanceLawAdapter>(pn);
-    }
+    dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
     dependencies.monotonic_clock = std::make_unique<test::FakeClock>(100'000'000);
     runtime::RuntimeSupervisorConfig config;
     config.capture_queue_capacity = 6;
@@ -188,7 +173,7 @@ int main() {
     auto *vision_control = vision.get();
     auto los = std::make_unique<test::FakeLosEstimator>();
     auto *los_control = los.get();
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     dependencies.flight_state_estimator = std::move(flight);
     dependencies.vision_detector = std::move(vision);
     dependencies.los_estimator = std::move(los);
@@ -224,20 +209,22 @@ int main() {
     CHECK(runtime.latest_state().has_value());
     CHECK(runtime.latest_state()->time.monotonic_ns == 1'100'000'000);
     camera_control->release();
-    while (std::chrono::steady_clock::now() < deadline && command_control->commands().size() < 8) {
+    while (std::chrono::steady_clock::now() < deadline && command_control->commands().size() < 7) {
         CHECK(!runtime.faulted());
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     runtime.stop();
     CHECK(!runtime.faulted());
     const auto output = command_control->commands();
-    CHECK(output.size() == 8);
+    CHECK(output.size() == 7);
+    const std::array<std::size_t, 7> submitted_frames{0,1,3,4,5,6,7};
     for (std::size_t i = 0; i < output.size(); ++i) {
-        CHECK(output[i].source_time.monotonic_ns == timestamps[i]);
-        const bool should_be_valid = i == 1 || i == 4 || i == 7;
+        const auto frame_index = submitted_frames[i];
+        CHECK(output[i].source_time.monotonic_ns == timestamps[frame_index]);
+        const bool should_be_valid = frame_index == 1 || frame_index == 4 || frame_index == 7;
         CHECK(output[i].valid == should_be_valid);
         if (should_be_valid) {
-            CHECK(output[i].source_frame_id == i);
+            CHECK(output[i].source_frame_id == frame_index);
             CHECK_NEAR(output[i].overload_g.y, 1.5, 1e-12);
         } else {
             CHECK_NEAR(output[i].overload_g.y, 0.0, 1e-12);
@@ -247,8 +234,7 @@ int main() {
     }
     for (const auto mode : {runtime::LaunchDetectionMode::acceleration,
                             runtime::LaunchDetectionMode::two_stage}) {
-        CHECK(verify_dynamic_speed(false, mode) == 0);
-        CHECK(verify_dynamic_speed(true, mode) == 0);
+        CHECK(verify_dynamic_speed(mode) == 0);
     }
     return 0;
 }

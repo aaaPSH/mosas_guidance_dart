@@ -1,7 +1,9 @@
 #include <mosas/guidance/inertial_vector_los_filter.hpp>
 
-#include <algorithm>
+#include "vector_los_math.hpp"
+
 #include <cmath>
+#include <stdexcept>
 
 namespace mosas::guidance {
 namespace {
@@ -11,33 +13,22 @@ constexpr double kPoleThreshold = 1e-6;
 
 bool finite(double v) noexcept { return std::isfinite(v); }
 
-bool valid_rotation_matrix(const std::array<double, 9>& m) noexcept {
-    for (double v : m) {
-        if (!finite(v)) return false;
-    }
-    // 检查第 0, 1, 2 行的模长接近 1
-    const double r0 = std::hypot(std::hypot(m[0], m[1]), m[2]);
-    const double r1 = std::hypot(std::hypot(m[3], m[4]), m[5]);
-    const double r2 = std::hypot(std::hypot(m[6], m[7]), m[8]);
-    if (std::abs(r0 - 1.0) > 1e-4 || std::abs(r1 - 1.0) > 1e-4 || std::abs(r2 - 1.0) > 1e-4) {
-        return false;
-    }
-    return true;
-}
-
 }  // namespace
 
 InertialVectorLosFilter::InertialVectorLosFilter(
     const InertialVectorLosFilterConfig& config)
-    : config_(valid_config(config) ? config : InertialVectorLosFilterConfig{}) {
+    : config_(config) {
+    if (!valid_config(config)) throw std::invalid_argument("惯性 LOS 滤波配置无效");
     reset();
 }
 
 bool InertialVectorLosFilter::valid_config(
     const InertialVectorLosFilterConfig& config) noexcept {
-    return finite(config.sigma_a) && config.sigma_a > 0.0 &&
-           finite(config.sigma_l) && config.sigma_l > 0.0 &&
-           finite(config.initial_rate_covariance) && config.initial_rate_covariance >= 0.0 &&
+    return finite(config.sigma_a * config.sigma_a) && config.sigma_a > 0.0 &&
+           config.sigma_a * config.sigma_a > 0.0 &&
+           finite(config.sigma_l * config.sigma_l) && config.sigma_l > 0.0 &&
+           config.sigma_l * config.sigma_l > 0.0 &&
+           finite(config.initial_rate_covariance) && config.initial_rate_covariance > 0.0 &&
            finite(config.maximum_gap_seconds) && config.maximum_gap_seconds > 0.0;
 }
 
@@ -56,24 +47,8 @@ domain::LineOfSightRateSample InertialVectorLosFilter::sample() const {
     return sample_;
 }
 
-void InertialVectorLosFilter::project_to_manifold() noexcept {
-    const double n = std::hypot(std::hypot(direction_[0], direction_[1]), direction_[2]);
-    if (!finite(n) || n < kEpsilon) {
-        direction_ = {1.0, 0.0, 0.0};
-        rate_ = {0.0, 0.0, 0.0};
-        return;
-    }
-    const double inv_n = 1.0 / n;
-    direction_[0] *= inv_n;
-    direction_[1] *= inv_n;
-    direction_[2] *= inv_n;
-
-    const double radial_rate = direction_[0] * rate_[0] +
-                               direction_[1] * rate_[1] +
-                               direction_[2] * rate_[2];
-    rate_[0] = (rate_[0] - radial_rate * direction_[0]) * inv_n;
-    rate_[1] = (rate_[1] - radial_rate * direction_[1]) * inv_n;
-    rate_[2] = (rate_[2] - radial_rate * direction_[2]) * inv_n;
+bool InertialVectorLosFilter::project_to_manifold() noexcept {
+    return detail::project_to_sphere(direction_, rate_);
 }
 
 domain::LosRateEstimate InertialVectorLosFilter::update(
@@ -81,13 +56,14 @@ domain::LosRateEstimate InertialVectorLosFilter::update(
     if (!input.line_of_sight.valid || !input.attitude.valid ||
         !finite(input.line_of_sight.q_y.value) ||
         !finite(input.line_of_sight.q_z.value) ||
-        !finite(input.dt_seconds) || input.dt_seconds < 0.0) {
+        !finite(input.dt_seconds) || input.dt_seconds < 0.0 ||
+        (initialized_ && input.dt_seconds == 0.0)) {
         reset();
         return {};
     }
 
     const auto& m = input.attitude.navigation_from_dart.matrix();
-    if (!valid_rotation_matrix(m)) {
+    if (!detail::valid_rotation(m)) {
         reset();
         return {};
     }
@@ -136,6 +112,10 @@ domain::LosRateEstimate InertialVectorLosFilter::update(
     direction_[0] += dt * rate_[0];
     direction_[1] += dt * rate_[1];
     direction_[2] += dt * rate_[2];
+    if (!project_to_manifold()) {
+        reset();
+        return {};
+    }
 
     // 协方差先验传播
     const double p00_pred = p00_ + 2.0 * dt * p01_ + dt2 * p11_ + q_scale * (dt4 / 4.0);
@@ -145,7 +125,8 @@ domain::LosRateEstimate InertialVectorLosFilter::update(
     // 测量更新
     const double r = config_.sigma_l * config_.sigma_l;
     const double s = p00_pred + r;
-    if (!finite(s) || s < kEpsilon) {
+    if (!finite(s) || s <= 0.0 ||
+        !detail::positive_covariance(p00_pred, p01_pred, p11_pred)) {
         reset();
         return {};
     }
@@ -165,12 +146,15 @@ domain::LosRateEstimate InertialVectorLosFilter::update(
     rate_[2] += k1 * dy2;
 
     // 协方差 Joseph 形式更新
-    p00_ = (1.0 - k0) * (1.0 - k0) * p00_pred + k0 * k0 * r;
-    p01_ = (1.0 - k0) * p01_pred - k0 * k1 * r;
-    p11_ = p11_pred - k1 * p01_pred + k1 * k1 * r;
+    const double a = 1.0 - k0;
+    p00_ = a * a * p00_pred + k0 * k0 * r;
+    p01_ = a * (p01_pred - k1 * p00_pred) + k0 * k1 * r;
+    p11_ = p11_pred - 2.0 * k1 * p01_pred + k1 * k1 * (p00_pred + r);
 
-    // 流形单位化与正交截断
-    project_to_manifold();
+    if (!project_to_manifold() || !detail::positive_covariance(p00_, p01_, p11_)) {
+        reset();
+        return {};
+    }
 
     // 5. 解析求取惯性视线角速度
     const double rho_xz = std::hypot(direction_[0], direction_[2]);
@@ -184,24 +168,15 @@ domain::LosRateEstimate InertialVectorLosFilter::update(
         dot_q_z = (direction_[0] * rate_[2] - direction_[2] * rate_[0]) / rho_xz;
     }
 
-    // 6. 构造镖体系矢量状态输出 (R_{D<-N} = R_{N<-D}^T)
-    const std::array<double, 3> dart_direction{
-        m[0] * direction_[0] + m[3] * direction_[1] + m[6] * direction_[2],
-        m[1] * direction_[0] + m[4] * direction_[1] + m[7] * direction_[2],
-        m[2] * direction_[0] + m[5] * direction_[1] + m[8] * direction_[2]};
-    const std::array<double, 3> dart_rate{
-        m[0] * rate_[0] + m[3] * rate_[1] + m[6] * rate_[2],
-        m[1] * rate_[0] + m[4] * rate_[1] + m[7] * rate_[2],
-        m[2] * rate_[0] + m[5] * rate_[1] + m[8] * rate_[2]};
-
+    // 保持导航系状态，不借用任何输出时刻的姿态重解释历史观测。
     domain::LosRateEstimate estimate{};
     estimate.valid = true;
     estimate.angular_velocity.valid = rate_valid;
     estimate.angular_velocity.q_y.value = dot_q_y;
     estimate.angular_velocity.q_z.value = dot_q_z;
     estimate.vector.valid = true;
-    estimate.vector.direction = {dart_direction[0], dart_direction[1], dart_direction[2]};
-    estimate.vector.inertial_direction_rate = {dart_rate[0], dart_rate[1], dart_rate[2]};
+    estimate.vector.direction = {direction_[0], direction_[1], direction_[2]};
+    estimate.vector.inertial_direction_rate = {rate_[0], rate_[1], rate_[2]};
 
     sample_.line_of_sight = input.line_of_sight;
     sample_.filtered_angular_velocity = estimate.angular_velocity;

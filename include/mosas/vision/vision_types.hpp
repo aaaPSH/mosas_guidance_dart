@@ -63,6 +63,9 @@ struct VisionOverlayData {
     bool attitude_valid = false;
     double attitude_pitch_rad = 0.0;
     double attitude_roll_rad = 0.0;
+    bool output_attitude_valid = false;
+    double output_attitude_pitch_rad = 0.0;
+    double output_attitude_roll_rad = 0.0;
     bool launched = false;
     double processing_fps = 0.0;
 };

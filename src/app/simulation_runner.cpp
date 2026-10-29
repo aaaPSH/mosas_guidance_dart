@@ -3,6 +3,7 @@
 #include <mosas/app/output_factory.hpp>
 #include <mosas/app/simulation_contract.hpp>
 #include <mosas/adapters/simulation_command_sink.hpp>
+#include <mosas/adapters/simulation_vision_audit.hpp>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -57,15 +58,6 @@ void SimulationRunner::finish(std::string error) {
             if(!sink.second->healthy)text<<" error="<<sink.second->last_error;
             report(text.str());
         }
-        if(pre_acquisition_) {
-            const auto policy=pre_acquisition_->diagnostics();
-            std::ostringstream text;
-            text<<"pre_acquisition preset_submitted="<<policy.preset_submitted
-                <<" first_preset_ns="<<policy.first_preset_ns<<" last_preset_ns="<<policy.last_preset_ns
-                <<" first_detection_ns="<<policy.first_detection_ns
-                <<" positive_y_limit_g="<<config_.app.algorithms.png_guidance.maximum_command_overload;
-            report(text.str());
-        }
         const auto counters=session_->counters();
         const auto performance=supervisor_->statistics();
         std::ostringstream summary;
@@ -84,7 +76,6 @@ void SimulationRunner::finish(std::string error) {
         }
     }
     camera_=nullptr;
-    pre_acquisition_.reset();
     if(audit_) {
         audit_->record_lifecycle(error.empty()?adapters::AuditLifecycle::stopped:adapters::AuditLifecycle::fault,
                                 session_?session_->now_ns():0);
@@ -136,20 +127,20 @@ void SimulationRunner::step() {
             output_config.guidance=runtime_config;
             auto outputs=make_runtime_output_ports(output_config,std::cout);
             if(audit_options_) {
-                if(config_.app.algorithms.algorithm!=GuidanceAlgorithm::png)
-                    throw std::runtime_error("version-one training audit requires PNG");
                 adapters::SimulationAuditMetadata observed;
                 observed.source_config=config_.app_config_path.string();
                 observed.width=c.width;observed.height=c.height;observed.intrinsics={c.fx,c.fy,c.cx,c.cy};
                 observed.camera_hz=c.camera_hz;observed.imu_hz=c.imu_hz;
                 observed.launch_speed_mps=config_.app.algorithms.attitude.launch_speed_mps;
-                const auto& png=config_.app.algorithms.png_guidance;const auto& los=config_.app.algorithms.los_rate_filter;
-                observed.cap_g=png.maximum_command_overload;
-                observed.parameters={png.navigation_constant_y,png.navigation_constant_z,los.sigma_a_pitch,los.sigma_a_yaw,los.sigma_q};
+                const auto& png=config_.app.algorithms.ballistic_png;const auto& los=config_.app.algorithms.inertial_filter;
+                observed.cap_g=config_.app.algorithms.command_mapping.maximum_command_overload;
+                observed.maximum_command_acceleration=config_.app.algorithms.command_mapping.maximum_command_acceleration;
+                observed.parameters={png.navigation_constant_y,png.navigation_constant_z,los.sigma_a,los.sigma_l,
+                                     los.initial_rate_covariance,los.maximum_gap_seconds};
                 audit_=std::make_shared<adapters::SimulationAudit>(*audit_options_,meta.session_id,observed);
             }
             guidance::PngTraceObserver observer;
-            if(audit_)observer=[audit=audit_](const domain::GuidanceInput& input,const PngCalculationTrace& trace){
+            if(audit_)observer=[audit=audit_](const domain::GuidanceInput& input,const guidance::PngCalculationTrace& trace){
                 if(!audit->record_png(input,trace))throw std::runtime_error("simulation PNG audit failed");
             };
             auto algorithms=make_default_guidance_algorithms(config_.app.algorithms,std::move(observer));
@@ -158,14 +149,8 @@ void SimulationRunner::step() {
             camera_=camera.get();
             std::unique_ptr<runtime::CommandSink> command_sink=
                 std::make_unique<adapters::SimulationCommandSink>(session_,audit_);
-            if(config_.app.algorithms.algorithm==GuidanceAlgorithm::png) {
-                pre_acquisition_=std::make_unique<adapters::SimulationPreAcquisitionPolicy>(
-                    config_.app.algorithms.png_guidance.maximum_command_overload,
-                    [session=session_]{return session->processed_state();},audit_);
-                auto ports=pre_acquisition_->wrap(std::move(algorithms.vision_detector),std::move(command_sink));
-                algorithms.vision_detector=std::move(ports.vision_detector);
-                command_sink=std::move(ports.command_sink);
-            }
+            if(audit_) algorithms.vision_detector=std::make_unique<adapters::SimulationVisionAudit>(
+                std::move(algorithms.vision_detector),audit_,[session=session_]{return session->processed_state();});
             {
                 std::lock_guard<std::mutex> lock(supervisor_mutex_);
                 supervisor_=std::make_unique<runtime::RuntimeSupervisor>(
@@ -183,8 +168,7 @@ void SimulationRunner::step() {
             std::ostringstream ready;
             ready<<"MOSAS simulation ready session="<<meta.session_id<<" source="<<config_.app_config_path
                  <<" camera="<<c.width<<'x'<<c.height<<'@'<<c.camera_hz
-                 <<" algorithm="<<(config_.app.algorithms.algorithm==GuidanceAlgorithm::png?"png":"body_vector_pn")
-                 <<" pre_acquisition_y_limit_g="<<(pre_acquisition_?config_.app.algorithms.png_guidance.maximum_command_overload:0);
+                 <<" algorithm=inertial_vector_ballistic_png";
             report(ready.str());
         }
         if(audit_&&!audit_->healthy())throw std::runtime_error("simulation audit failed: "+audit_->diagnostics().error);

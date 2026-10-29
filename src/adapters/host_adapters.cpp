@@ -88,21 +88,35 @@ LoggingCommandSink::LoggingCommandSink() : logger_(std::cout) {}
 LoggingCommandSink::LoggingCommandSink(std::ostream& output)
     : logger_(output) {}
 
-bool LoggingCommandSink::start() { return logger_.start(); }
+bool LoggingCommandSink::start() {
+    if (!command_output_.configured()) return false;
+    command_output_.reset();
+    return logger_.start();
+}
+
+void LoggingCommandSink::set_active_generation(std::uint64_t generation) noexcept {
+    std::lock_guard<std::mutex> lock(emission_mutex_);
+    active_generation_ = generation;
+    command_output_.invalidate();
+}
 
 bool LoggingCommandSink::try_submit(
     const runtime::GuidanceCommand& command) noexcept {
+    std::lock_guard<std::mutex> lock(emission_mutex_);
+    if (command.generation != active_generation_) return false;
+    auto attempt = command_output_.prepare(command, active_generation_, false);
     runtime::RuntimeLogEvent event{};
     event.kind = runtime::RuntimeLogEventKind::guidance_command;
-    event.timestamp_ns = command.source_time.monotonic_ns;
-    event.value0 = command.valid ? command.overload_g.x : 0.0;
-    event.value1 = command.valid ? command.overload_g.y : 0.0;
-    event.value2 = command.valid ? command.overload_g.z : 0.0;
-    if (!logger_.try_submit(event)) {
-        return false;
-    }
-    submitted_count_.fetch_add(1, std::memory_order_relaxed);
-    return true;
+    event.timestamp_ns = attempt.mapping.trace.emit_time_ns;
+    const auto& mapped = attempt.mapping.command;
+    event.value0 = mapped.overload_g.x;
+    event.value1 = mapped.overload_g.y;
+    event.value2 = mapped.overload_g.z;
+    const bool accepted = logger_.try_submit(event);
+    command_output_.complete(std::move(attempt), accepted ? domain::CommandEmissionDisposition::log_accepted
+                                                        : domain::CommandEmissionDisposition::io_rejected);
+    if (accepted) submitted_count_.fetch_add(1, std::memory_order_relaxed);
+    return accepted;
 }
 
 void LoggingCommandSink::stop() noexcept { logger_.stop_and_flush(); }
@@ -120,6 +134,7 @@ SerialCommandSink::SerialCommandSink(
 SerialCommandSink::~SerialCommandSink() { stop(); }
 
 bool SerialCommandSink::start() {
+    if (!command_output_.configured()) return fail("输出映射依赖未绑定");
     if (port_ == nullptr) {
         return fail("串口对象为空");
     }
@@ -136,6 +151,7 @@ bool SerialCommandSink::start() {
     }
     last_error_.clear();
     mailbox_.reset();
+    command_output_.reset();
     stop_requested_.store(false, std::memory_order_release);
     cancel_requested_.store(false, std::memory_order_release);
     running_.store(true, std::memory_order_release);
@@ -169,6 +185,7 @@ void SerialCommandSink::set_active_generation(
     // 与串口写入共用屏障，返回后旧周期的在途写入也已结束。
     std::lock_guard<std::mutex> lock(send_mutex_);
     active_generation_.store(generation, std::memory_order_release);
+    command_output_.invalidate();
 }
 
 void SerialCommandSink::cancel() noexcept {
@@ -233,17 +250,13 @@ void SerialCommandSink::worker_loop() noexcept {
                 latest = pending;
             }
 
-            auto command = latest.command;
             const bool expired = latest.submitted_at == Clock::time_point{} ||
                                  Clock::now() - latest.submitted_at >= timeout;
-            if (expired) {
-                command.valid = false;
-                command.target_found = false;
-            }
-            if (!command.launched) {
-                command.valid = false;
-            }
-            send_command(command);
+            auto attempt = command_output_.prepare(latest.command, generation, expired);
+            if (cancelled()) return;
+            const bool written = send_command(attempt.mapping.command);
+            command_output_.complete(std::move(attempt), written ? domain::CommandEmissionDisposition::serial_written
+                                                               : domain::CommandEmissionDisposition::io_rejected);
         }
 
         next_send_at += period;
@@ -255,8 +268,8 @@ void SerialCommandSink::worker_loop() noexcept {
     }
 }
 
-void SerialCommandSink::send_command(
-    const runtime::GuidanceCommand& command) noexcept {
+bool SerialCommandSink::send_command(
+    const domain::MappedGuidanceCommand& command) noexcept {
     std::array<std::uint8_t, serial_package::kControlFrameSize> frame{};
     std::string error;
     const auto values = detail::make_control_frame_values(command);
@@ -266,10 +279,11 @@ void SerialCommandSink::send_command(
         const std::string port_error = port_->last_error();
         fail(error.empty() ? (port_error.empty() ? "控制帧发送失败" : port_error)
                            : error);
-        return;
+        return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     last_error_.clear();
+    return true;
 }
 
 bool SerialCommandSink::fail(const std::string& message) {

@@ -2,7 +2,8 @@
 #define MOSAS_APP_CONFIG_HPP
 
 #include <mosas/guidance/ballistic_png_guidance.hpp>
-#include <mosas/guidance/guidance_estimator.hpp>
+#include <mosas/guidance/command_output_mapper.hpp>
+#include <mosas/vision/vision_types.hpp>
 #include <mosas/guidance/inertial_vector_los_filter.hpp>
 #include <mosas/runtime/attitude_estimator.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
@@ -83,21 +84,15 @@ struct CommandAppConfig {
     int command_timeout_ms = 100;
 };
 
-/** @brief 可选算法；滤波器和制导律必须由工厂成对选择。 */
-enum class GuidanceAlgorithm { png, body_vector_pn };
-
+/** @brief 唯一惯性矢量制导及发送端输出配置。 */
 struct GuidanceAlgorithmConfig {
-    GuidanceAlgorithm algorithm = GuidanceAlgorithm::png;
     VisionConfig vision_config{
         {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
         0.35};
     guidance::InertialVectorLosFilterConfig inertial_filter{};
     guidance::BallisticPngConfig ballistic_png{};
+    guidance::CommandMappingConfig command_mapping{};
     runtime::AttitudeEstimatorConfig attitude{};
-
-    // 过渡兼容字段
-    LineOfSightRateFilterConfig los_rate_filter{};
-    PngGuidanceConfig png_guidance{};
 };
 
 /**

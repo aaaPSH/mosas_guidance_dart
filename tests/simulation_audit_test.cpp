@@ -1,89 +1,94 @@
 #include <mosas/adapters/simulation_audit.hpp>
-#include <mosas/adapters/simulation_command_sink.hpp>
-#include <chrono>
-#include <mosas/domain/time.hpp>
+#include <mosas/guidance/command_output_mapper.hpp>
+#include "command_output_test_support.hpp"
 #include "test_support.hpp"
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
+#include <limits>
 #include <unistd.h>
 
-struct AuditFixture {
-    std::filesystem::path path;
-    AuditFixture(){char name[]="/tmp/mosas-audit-XXXXXX";auto p=mkdtemp(name);if(!p)throw std::runtime_error("mkdtemp");path=p;}
-    ~AuditFixture(){std::filesystem::remove_all(path);}
+namespace {
+struct Fixture {
+    std::filesystem::path root = std::filesystem::temp_directory_path() /
+        ("mosas-audit-v2-" + std::to_string(::getpid()));
+    ~Fixture() { std::filesystem::remove_all(root); }
 };
-int main(){
-    using namespace mosas::adapters;
-    CHECK(!parse_simulation_audit_options({}));
-    auto options=parse_simulation_audit_options({"--audit-directory","/tmp/audit","--trial-id","trial-1"});
-    CHECK(options&&options->trial_id=="trial-1");
-    for(const auto& args:std::vector<std::vector<std::string>>{{"--trial-id","a"},
-        {"--audit-directory","relative","--trial-id","a"},
-        {"--audit-directory","/tmp/a","--trial-id","../bad"},
-        {"--unknown","a"}}){
-        bool rejected=false;try{parse_simulation_audit_options(args);}catch(const std::invalid_argument&){rejected=true;}
-        CHECK(rejected);
-    }
-    AuditFixture fixture;options->directory=fixture.path;
-    SimulationAuditMetadata metadata;metadata.source_config="/tmp/original.conf";
-    metadata.width=640;metadata.height=480;metadata.intrinsics={486.2,486.5,308.8,244.6};
-    metadata.camera_hz=120;metadata.imu_hz=200;metadata.launch_speed_mps=16;metadata.cap_g=.3;
-    metadata.parameters={3,3,10,3.5,.0035};
-    SimulationAudit audit(*options,5,metadata);
-    CHECK(audit.record_lifecycle(AuditLifecycle::ready,0));
-    const auto time=mosas::domain::make_simulation_time(1000000000);
-    CHECK(audit.record_vision(71,time,2,true,0));
-    mosas::domain::GuidanceInput input;input.source_frame_id=71;input.time=time;
-    PngCalculationTrace trace;trace.valid=true;trace.raw_navigation_overload={0,.819,-0.0};
-    CHECK(audit.record_png(input,trace));
-    mosas::runtime::GuidanceCommand command;command.generation=2;command.source_frame_id=71;
-    command.source_time=time;command.valid=true;command.overload_g={0,.3,0};
-    CHECK(audit.record_selected(command,AuditStrategy::preset));
-    dart_sim_transport::Overload wire;wire.valid=1;wire.source_frame_id=71;wire.up_g=.3;
-    CHECK(audit.record_submit(command,wire,true));
-    audit.stop();auto diagnostics=audit.diagnostics();
-    CHECK(diagnostics.healthy&&diagnostics.accepted==5&&diagnostics.written==5);
-    CHECK(!audit.record_selected(command,AuditStrategy::png));
-    std::ifstream events(fixture.path/"session-5/events.jsonl");std::stringstream text;text<<events.rdbuf();
-    CHECK(text.str().find(",-0.0]")!=std::string::npos);
-    CHECK(text.str().find("\"generation_source\":\"processed_watermark\"")!=std::string::npos);
-    CHECK(text.str().find("\"generation\":null")!=std::string::npos);
-    CHECK(text.str().find("\"kind\":\"selected\"")!=std::string::npos);
-    CHECK(text.str().find("\"strategy\":\"preset\"")!=std::string::npos);
-    CHECK(text.str().find("command_sequence")==std::string::npos); // submit cannot know wire sequence
-    bool duplicate=false;try{SimulationAudit other(*options,5,metadata);}catch(const std::exception&){duplicate=true;}
-    CHECK(duplicate);
-    SimulationAudit next(*options,6,metadata);next.stop();CHECK(next.diagnostics().healthy);
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    return {std::istreambuf_iterator<char>(file), {}};
+}
+}
+int main() {
+    using namespace mosas;
+    CHECK(!adapters::parse_simulation_audit_options({}));
+    Fixture fixture;
+    const adapters::SimulationAuditOptions options{fixture.root, "trial-1"};
+    adapters::SimulationAuditMetadata meta;
+    meta.source_config = "/config/actual.conf";
+    meta.width=640; meta.height=480; meta.camera_hz=120; meta.imu_hz=1000;
+    meta.launch_speed_mps=16; meta.cap_g=0;
+    meta.parameters={3,4,4,0.0005,1,0.2};
+    meta.maximum_command_acceleration=std::numeric_limits<double>::infinity();
     {
-        SimulationAudit actual_wire(*options,8,metadata);
-        auto offered=wire;offered.source_frame_id=99;
-        CHECK(actual_wire.record_submit(command,offered,true));actual_wire.stop();
-        std::ifstream log(fixture.path/"session-8/events.jsonl");std::stringstream rows;rows<<log.rdbuf();
-        CHECK(rows.str().find("\"source_frame_id\":99")!=std::string::npos);
-        CHECK(rows.str().find("\"source_time_ns\":1000000000")!=std::string::npos);
+        adapters::SimulationAudit audit(options, 42, meta, 64);
+        CHECK(audit.healthy()); // cap=0 合法，不得被旧训练审计限制拒绝。
+        CHECK(audit.record_lifecycle(adapters::AuditLifecycle::ready, 0));
+        CHECK(audit.record_vision(1,domain::make_simulation_time(100),5,true,0));
+        domain::GuidanceInput input;
+        input.source_frame_id=1; input.time=domain::make_simulation_time(100);
+        input.vector_los={true,{1,0,0},{0,0,0}}; input.speed_mps.value=50;
+        const auto trace=guidance::evaluate_ballistic_png({1,0,0},{0,0,0},50,3,4,9.80665);
+        CHECK(audit.record_png(input,trace));
+        domain::GuidanceCommand command;
+        command.source_frame_id=1; command.source_time=input.time; command.generation=5;
+        command.valid=command.launched=command.target_found=true; command.invalid_reason=domain::GuidanceInvalidReason::none;
+        command.overload_g=trace.requested_overload;
+        CHECK(audit.record_request(command));
+        domain::CommandOutputContext context;
+        context.source_frame_id=1; context.generation=context.active_generation=5;
+        context.source_time=input.time; context.request_valid=context.launched=context.target_found=context.output_enabled=true;
+        context.clock_domain=domain::ClockDomain::simulation; context.maximum_attitude_age_ns=1000;
+        context.emit_time_ns=200; context.latest_state=test::command_test_state(190,5,0.3,domain::ClockDomain::simulation);
+        guidance::CommandMappingConfig config; config.maximum_command_overload=0;
+        config.maximum_command_acceleration=meta.maximum_command_acceleration;
+        domain::CommandEmissionSnapshot emission;
+        emission.attempt_id=1; emission.mapping=guidance::CommandOutputMapper(config).map(command.overload_g,context);
+        dart_sim_transport::Overload wire;
+        wire.source_frame_id=1; wire.valid=1; wire.left_g=0; wire.up_g=0;
+        CHECK(audit.record_submit(emission,wire,true));
+        emission.attempt_id=2;
+        CHECK(audit.record_submit(emission,wire,true)); // 同一帧的新输出尝试不是重复帧错误。
+        command.valid=false;command.source_frame_id=2;command.overload_g={};
+        command.invalid_reason=domain::GuidanceInvalidReason::invalid_rate;
+        CHECK(audit.record_request(command));
+        CHECK(audit.record_lifecycle(adapters::AuditLifecycle::stopped,300));
+        audit.stop();
+        CHECK(audit.healthy());
+        CHECK(audit.diagnostics().accepted==audit.diagnostics().written);
+        CHECK(audit.diagnostics().dropped==0);
     }
-    SimulationAudit repeated(*options,7,metadata);
-    CHECK(repeated.record_submit(command,wire,true));
-    CHECK(!repeated.record_submit(command,wire,true));repeated.stop();
-    CHECK(!repeated.diagnostics().healthy&&repeated.diagnostics().dropped==1);
-    {
-        using namespace std::chrono_literals;
-        const auto socket=(fixture.path/"socket-model").string();
-        dart_sim_transport::Endpoint server(socket,{907,0,dart_sim_transport::Session{},dart_sim_transport::CameraInfo{}});
-        auto session=std::make_shared<SimulationSession>(socket);CHECK(session->wait_ready(1s));
-        auto recorded=std::make_shared<SimulationAudit>(*options,907,metadata);
-        SimulationCommandSink sink(session,recorded);sink.set_active_generation(2);CHECK(sink.start());
-        command.source_time=mosas::domain::make_simulation_time(0);command.generation=3;
-        CHECK(!sink.try_submit(command));command.generation=2;CHECK(sink.try_submit(command));
-        dart_sim_transport::Message received;CHECK(server.receive(dart_sim_transport::Channel::control,received,1s));
-        CHECK(received.header.type==dart_sim_transport::Type::overload);
-        CHECK(std::get<dart_sim_transport::Overload>(received.payload).source_frame_id==71);
-        CHECK_NEAR(std::get<dart_sim_transport::Overload>(received.payload).up_g,.3,0);
-        sink.stop();recorded->stop();CHECK(recorded->diagnostics().healthy);
-        std::ifstream log(fixture.path/"session-907/events.jsonl");std::stringstream rows;rows<<log.rdbuf();
-        CHECK(rows.str().find("\"kind\":\"rejected\"")!=std::string::npos);
-        CHECK(rows.str().find("\"submit_accepted\":true")!=std::string::npos);
+    const auto metadata=read_text(fixture.root/"session-42"/"metadata.json");
+    const auto events=read_text(fixture.root/"session-42"/"events.jsonl");
+    CHECK(metadata.find("\"schema_version\":2")!=std::string::npos);
+    CHECK(metadata.find("\"maximum_command_acceleration_mps2\":null")!=std::string::npos);
+    CHECK(events.find("\"kind\":\"request\"")!=std::string::npos);
+    CHECK(events.find("\"target_found\":true")!=std::string::npos);
+    CHECK(events.find("\"ballistic_request_g\":[0,0,0]")!=std::string::npos);
+    CHECK(events.find("\"output_attempt_id\":2")!=std::string::npos);
+    CHECK(events.find("\"attitude_time_ns\":190")!=std::string::npos);
+    CHECK(events.find("\"emit_time_ns\":200")!=std::string::npos);
+    CHECK(events.find("\"ballistic_acceleration_mps2\"")!=std::string::npos);
+    CHECK(events.find("preset")==std::string::npos);
+    CHECK(events.find("\"healthy\":true")!=std::string::npos);
+    bool refused=false;
+    try { adapters::SimulationAudit duplicate(options,42,meta); } catch (const std::exception&) { refused=true; }
+    CHECK(refused);
+    for (const auto& args : std::vector<std::vector<std::string>>{{"--trial-id","x"},{"--unknown","x"},
+            {"--audit-directory","relative","--trial-id","x"}}) {
+        refused=false;
+        try { adapters::parse_simulation_audit_options(args); } catch (const std::exception&) { refused=true; }
+        CHECK(refused);
     }
     return 0;
 }

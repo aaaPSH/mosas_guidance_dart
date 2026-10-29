@@ -407,12 +407,12 @@ void FramePipeline::processing_worker() noexcept {
                             !callbacks_.stop_requested() &&
                             !callbacks_.faulted()) {
                             // 此路径仅在所选判据已触发后提交；零过载不清除状态标志。
-                            sent = command_sink_.try_submit(
-                                detail::make_neutral_command(
-                                    detail::resolve_sensor_time(
-                                        timestamp_ns, result.frame.sensor_time),
-                                    *launch_generation, true,
-                                    result.vision_detection.observation.valid));
+                            auto neutral = detail::make_neutral_command(
+                                detail::resolve_sensor_time(timestamp_ns, result.frame.sensor_time),
+                                *launch_generation, true, result.vision_detection.observation.valid);
+                            neutral.source_frame_id = result.frame.source_frame_id;
+                            neutral.invalid_reason = result.guidance.invalid_reason;
+                            sent = command_sink_.try_submit(neutral);
                         }
                     });
                 if (generation_is_current && !sent) {
@@ -466,6 +466,17 @@ void FramePipeline::processing_worker() noexcept {
             }
             const auto enqueue_processed_frame =
                 [this, &result, &enqueue_result, processing_started] {
+                    const auto emitted = command_sink_.latest_emission();
+                    if (emitted && emitted->mapping.command.source_frame_id == result.frame.source_frame_id &&
+                        emitted->mapping.command.generation == result.flight_state.launch.generation &&
+                        emitted->mapping.command.source_time.monotonic_ns == result.frame.timestamp_ns) {
+                        result.command_emission = emitted;
+                        result.overlay.body_overload_valid = emitted->mapping.command.valid;
+                        result.overlay.body_overload = emitted->mapping.command.overload_g;
+                        result.overlay.output_attitude_valid = emitted->mapping.trace.attitude.valid;
+                        result.overlay.output_attitude_pitch = emitted->mapping.trace.attitude.pitch_rad;
+                        result.overlay.output_attitude_roll = emitted->mapping.trace.attitude.roll_rad;
+                    }
                     processing_fps_meter_.record();
                     record_timing(TimingStage::processing_total,
                                   std::chrono::steady_clock::now() -
@@ -685,13 +696,13 @@ void FramePipeline::processing_worker() noexcept {
             record_timing(TimingStage::vision,
                           std::chrono::steady_clock::now() - vision_started);
             if (!result.vision_detection.observation.valid) {
-                mark_guidance_invalid(domain::GuidanceInvalidReason::no_target);
+                const bool missing = result.vision_detection.observation.reason == domain::ObservationReason::not_found;
+                mark_guidance_invalid(missing ? domain::GuidanceInvalidReason::no_target
+                                              : domain::GuidanceInvalidReason::stale_input);
                 reset_rate_segment();
-                if (attitude_lookup->launched &&
-                    !submit_neutral_command(
-                        timestamp_ns, attitude_lookup->launch_generation)) {
-                    return;
-                }
+                // 健康未检出不刷新邮箱；图像/观测异常仍必须覆盖旧控制量。
+                if (!missing && attitude_lookup->launched &&
+                    !submit_neutral_command(timestamp_ns, attitude_lookup->launch_generation)) return;
                 if (!enqueue_processed_frame()) {
                     return;
                 }
@@ -822,11 +833,8 @@ void FramePipeline::processing_worker() noexcept {
             domain::GuidanceInput guidance_input{};
             guidance_input.source_frame_id = result.frame.source_frame_id;
             guidance_input.time = frame_time;
-            guidance_input.line_of_sight = line_of_sight;
-            guidance_input.angular_velocity = rate.angular_velocity;
             guidance_input.vector_los = rate.vector;
             guidance_input.speed_mps = result.flight_state.speed_mps;
-            guidance_input.attitude = result.flight_state.attitude;
             const auto guidance_started = std::chrono::steady_clock::now();
             result.guidance = guidance_law_->calculate(guidance_input);
             result.guidance.command.generation =
@@ -868,9 +876,6 @@ void FramePipeline::processing_worker() noexcept {
             }
             if (result.guidance.valid &&
                 !callbacks_.faulted() && !callbacks_.stop_requested()) {
-                result.overlay.body_overload_valid = true;
-                result.overlay.body_overload =
-                    result.guidance.command.overload_g;
                 const auto command_started = std::chrono::steady_clock::now();
                 bool generation_is_current = false;
                 bool sent = true;

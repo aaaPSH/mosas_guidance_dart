@@ -72,7 +72,7 @@ int main() {
     audited_config.socket_directory=(root/"audited-model").string();
     audited_config.app_config_path=root/"controlled-fixture.conf";
     audited_config.app.output.recording_path=(root/"audited-records/flight.avi").string();
-    audited_config.app.algorithms.png_guidance.maximum_command_overload=.3;
+    audited_config.app.algorithms.command_mapping.maximum_command_overload=.3;
     Endpoint audited_server(audited_config.socket_directory,{701,0,Session{0,Phase::ready,3},CameraInfo{}});
     adapters::SimulationAuditOptions options{root/"audit","runner-fixture"};
     app::SimulationRunner audited(audited_config,[](const std::string&){},options);

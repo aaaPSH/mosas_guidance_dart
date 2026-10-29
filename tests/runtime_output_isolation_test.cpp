@@ -288,7 +288,7 @@ int test_imu_recording_failure_faults_runtime() {
     auto los = std::make_unique<test::FakeLosEstimator>();
     auto rate_filter = std::make_unique<test::FakeLosRateFilter>();
     auto guidance = std::make_unique<test::FakeGuidanceLaw>();
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     dependencies.vision_detector = std::move(vision);
     dependencies.flight_state_estimator = std::move(flight_state);
     dependencies.los_estimator = std::move(los);
@@ -391,7 +391,7 @@ int main() {
     auto guidance = std::make_unique<test::FakeGuidanceLaw>();
     auto* guidance_control = guidance.get();
 
-    runtime::RuntimeSupervisorDependencies dependencies;
+    auto dependencies = test::mapped_dependencies();
     dependencies.vision_detector = std::move(vision);
     dependencies.flight_state_estimator = std::move(flight_state);
     dependencies.los_estimator = std::move(los);

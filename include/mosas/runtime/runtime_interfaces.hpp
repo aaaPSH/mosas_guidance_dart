@@ -5,6 +5,7 @@
 #include <mosas/domain/contracts.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/runtime/imu_angular_velocity.hpp>
+#include <mosas/runtime/command_output.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -164,6 +165,17 @@ class CommandSink {
 public:
     virtual ~CommandSink() = default;
 
+    /** @param binding 启动前绑定的映射、状态和时钟依赖。 @return 依赖完整时为 true。
+     * @note 基类执行真实共享绑定，不提供旧 body 命令回退或空操作实现。
+     */
+    virtual bool bind_output(CommandOutputBinding binding) {
+        return command_output_.bind(std::move(binding));
+    }
+    /** @return 最近实际输出尝试；无输出时为空，不重算或伪造预览。 */
+    virtual std::optional<domain::CommandEmissionSnapshot> latest_emission() const noexcept {
+        return command_output_.latest_emission();
+    }
+
     /**
      * @brief 启动命令输出资源。
      * @return 成功启动时为 true。
@@ -208,6 +220,9 @@ public:
      * @return 可用时包含提交、丢弃和发送失败计数。
      */
     virtual Diagnostics diagnostics() const noexcept { return {}; }
+
+protected:
+    CommandOutputProcessor command_output_;
 };
 
 }  // namespace mosas::runtime

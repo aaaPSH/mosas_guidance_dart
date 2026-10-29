@@ -22,7 +22,8 @@ constexpr char kFlightDataHeader[] =
     "los_q_y_rad,los_q_z_rad,los_rate_valid,los_rate_q_y_rad_s,"
     "los_rate_q_z_rad_s,guidance_valid,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
-    "command_overload_g,command_phase_rad,source_frame_id\n";
+    "command_overload_g,command_phase_rad,source_frame_id,"
+    "output_present,output_valid,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns\n";
 
 }  // namespace
 
@@ -144,7 +145,7 @@ std::string TelemetryCsvRecorder::make_csv_row(
     const auto& sample = flight_state.imu_sample;
     const auto& attitude = flight_state.attitude;
     const auto& launch = flight_state.launch;
-    const auto& line_of_sight_rate = guidance.diagnostics;
+    const auto* emitted = frame.command_emission ? &*frame.command_emission : nullptr;
     std::ostringstream row;
     row << frame_index << ',' << frame.frame.timestamp_ns << ','
         << frame.frame.received_timestamp_ns << ','
@@ -168,13 +169,18 @@ std::string TelemetryCsvRecorder::make_csv_row(
         << (overlay.line_of_sight_rate_valid ? 1 : 0) << ','
         << overlay.line_of_sight_rate_q_y.value << ','
         << overlay.line_of_sight_rate_q_z.value << ','
-        << (guidance.valid ? 1 : 0) << ','
-        << line_of_sight_rate.body_overload.x << ','
-        << line_of_sight_rate.body_overload.y << ','
-        << line_of_sight_rate.body_overload.z << ','
-        << line_of_sight_rate.command_overload.value << ','
-        << line_of_sight_rate.command_phase.value << ','
-        << frame.frame.source_frame_id << '\n';
+        << (guidance.valid ? 1 : 0) << ',';
+    if (emitted) {
+        const auto& trace = emitted->mapping.trace;
+        row << trace.body_overload.x << ',' << trace.body_overload.y << ',' << trace.body_overload.z << ','
+            << trace.command_overload.value << ',' << trace.command_phase.value << ',';
+    } else row << ",,,,,"; // 尚未输出不是零控制，必须保留为空。
+    row << frame.frame.source_frame_id << ',' << (emitted ? 1 : 0) << ',';
+    if (emitted) row << (emitted->mapping.command.valid ? 1 : 0) << ',' << emitted->attempt_id << ','
+        << static_cast<int>(emitted->disposition) << ',' << emitted->mapping.trace.attitude.time.monotonic_ns << ','
+        << emitted->mapping.trace.emit_time_ns;
+    else row << ",,,,";
+    row << '\n';
     return row.str();
 }
 
