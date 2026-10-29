@@ -57,6 +57,7 @@ add_library(mosas_guidance STATIC
     src/guidance/guidance_estimator.cpp
     src/guidance/default_algorithm_adapters.cpp
     src/guidance/inertial_vector_los_filter.cpp
+    src/guidance/ballistic_png_math.cpp
     src/guidance/ballistic_png_guidance.cpp
 )
 configure_mosas_target(mosas_guidance)
@@ -379,6 +380,11 @@ if(BUILD_TESTING)
     target_link_libraries(raw_imu_receive_buffer_test PRIVATE Threads::Threads)
     add_test(NAME raw_imu_receive_buffer_test COMMAND raw_imu_receive_buffer_test)
     set_tests_properties(raw_imu_receive_buffer_test PROPERTIES TIMEOUT 10)
+
+    add_executable(ballistic_png_math_test tests/ballistic_png_math_test.cpp)
+    configure_mosas_target(ballistic_png_math_test)
+    target_link_libraries(ballistic_png_math_test PRIVATE mosas_guidance)
+    add_test(NAME ballistic_png_math_test COMMAND ballistic_png_math_test)
 
     add_executable(inertial_vector_los_filter_test tests/inertial_vector_los_filter_test.cpp)
     configure_mosas_target(inertial_vector_los_filter_test)

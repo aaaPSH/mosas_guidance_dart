@@ -67,6 +67,9 @@ using AccelerationBallisticMps2 =
 using AngularVelocityDartRadPerSec =
     Vector3<DartFrameTag, RadiansPerSecond>;
 using DartOverloadG = Vector3<DartFrameTag, GravityG>;
+using DirectionNavigationUnit = Vector3<NavigationFrameTag, Dimensionless>;
+using DirectionRateNavigationPerSec = Vector3<NavigationFrameTag, PerSecond>;
+using BallisticOverloadG = Vector3<BallisticFrameTag, GravityG>;
 using DirectionDartUnit = Vector3<DartFrameTag, Dimensionless>;
 using DirectionRateDartPerSec = Vector3<DartFrameTag, PerSecond>;
 
