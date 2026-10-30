@@ -11,6 +11,7 @@ enum class TimestampSource {
     camera_sdk_capture,
     host_callback_receive,
     imu_uart_receive_estimate,
+    sequence_fixed_period,
     hardware_sync,
     simulation,
 };

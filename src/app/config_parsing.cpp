@@ -310,6 +310,14 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         return invalid();
     }
 
+    if (section == "camera" || section == "imu") {
+        auto& timing = section == "camera" ? config->camera.timing : config->imu.timing;
+        if (key == "sample_rate_hz") return parse_double(value, &timing.frequency_hz) || invalid();
+        if (key == "timestamp_warmup_ms") return parse_timestamp_ms(value, &timing.warmup_ns) || invalid();
+        if (key == "timestamp_stable_window_ms") return parse_timestamp_ms(value, &timing.stable_window_ns) || invalid();
+        if (key == "timestamp_tolerance_ms") return parse_timestamp_ms(value, &timing.tolerance_ns) || invalid();
+        if (key == "frequency_observation_window_ms") return parse_timestamp_ms(value, &timing.frequency_window_ns) || invalid();
+    }
     if (section == "camera") {
         if (key == "device") {
             config->camera.device = value;
@@ -374,8 +382,7 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             config->imu.mode = ImuMode::simulated;
         } else if (key == "mode" && value == "serial") {
             config->imu.mode = ImuMode::serial;
-        } else if (key == "sample_rate_hz" && parse_double(value, &decimal)) {
-            config->imu.sample_rate_hz = decimal;
+
         } else if (key == "measurement_latency_ns") {
             return parse_timestamp_ns(value,
                                       &config->imu.measurement_latency_ns) ||
@@ -610,8 +617,10 @@ bool validate(const std::filesystem::path& path, const AppConfig& config,
         matrix.m00 <= 0.0 || matrix.m11 <= 0.0 || matrix.m22 == 0.0) {
         return fail_global(path, "摄像头参数无效", error);
     }
-    if (!std::isfinite(config.imu.sample_rate_hz) ||
-        config.imu.sample_rate_hz <= 0.0 ||
+    if (!domain::SequenceTime::valid_config(config.camera.timing) ||
+        !domain::SequenceTime::valid_config(config.imu.timing) ||
+        config.camera.timing.warmup_ns <= 0 || config.camera.timing.stable_window_ns <= 0 ||
+        config.imu.timing.warmup_ns <= 0 || config.imu.timing.stable_window_ns <= 0 ||
         config.imu.measurement_latency_ns < 0 ||
         config.imu.receive_thread.read_chunk_size == 0 ||
         config.imu.receive_thread.realtime_priority < 0 ||

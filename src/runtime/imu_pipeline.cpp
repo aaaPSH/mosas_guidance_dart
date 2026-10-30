@@ -62,6 +62,7 @@ SourceResult ImuPipeline::start_source() {
 }
 
 void ImuPipeline::reset() noexcept {
+    const auto epoch = acquisition_state().epoch;
     angular_velocity_history_.reset();
     attitude_history_.reset();
     if (estimator_ != nullptr) {
@@ -69,6 +70,7 @@ void ImuPipeline::reset() noexcept {
     }
     std::lock_guard<std::mutex> lock(state_mutex_);
     latest_state_.reset();
+    acquisition_epoch_.store(epoch);
 }
 
 void ImuPipeline::start_worker() {
@@ -98,17 +100,27 @@ void ImuPipeline::stop_source() noexcept {
 
 std::optional<ImuStateSnapshot> ImuPipeline::latest_state() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto sync = acquisition_state();
+    if (!sync.ready || sync.epoch != acquisition_epoch_.load()) return std::nullopt;
     return latest_state_;
 }
 
 std::optional<ImuAngularVelocityLookup> ImuPipeline::angular_velocity_at(
     TimestampNs timestamp_ns) const noexcept {
-    return angular_velocity_history_.find_interpolated(timestamp_ns);
+    const auto sync = acquisition_state();
+    if (!sync.ready || sync.epoch != acquisition_epoch_.load()) return std::nullopt;
+    const auto result = angular_velocity_history_.find_interpolated(timestamp_ns);
+    const auto after = acquisition_state();
+    return after.ready && after.epoch == sync.epoch ? result : std::nullopt;
 }
 
 std::optional<AttitudeLookup> ImuPipeline::attitude_at(
     TimestampNs timestamp_ns) const noexcept {
-    return attitude_history_.find_interpolated(timestamp_ns);
+    const auto sync = acquisition_state();
+    if (!sync.ready || sync.epoch != acquisition_epoch_.load()) return std::nullopt;
+    const auto result = attitude_history_.find_interpolated(timestamp_ns);
+    const auto after = acquisition_state();
+    return after.ready && after.epoch == sync.epoch ? result : std::nullopt;
 }
 
 std::size_t ImuPipeline::angular_velocity_history_size() const noexcept {
@@ -117,6 +129,11 @@ std::size_t ImuPipeline::angular_velocity_history_size() const noexcept {
 
 ImuSourceDiagnostics ImuPipeline::diagnostics() const noexcept {
     return source_ == nullptr ? ImuSourceDiagnostics{} : source_->diagnostics();
+}
+
+domain::AcquisitionSync::State ImuPipeline::acquisition_state() const noexcept {
+    return callbacks_.acquisition_sync ? callbacks_.acquisition_sync->state()
+                                       : domain::AcquisitionSync::State{0, true, false};
 }
 
 void ImuPipeline::report_fault(std::string message) noexcept {
@@ -135,6 +152,12 @@ void ImuPipeline::worker_loop() noexcept {
             generation_coordinator_.current();
         while (!callbacks_.stop_requested ||
                !callbacks_.stop_requested()) {
+            const auto before = acquisition_state();
+            if (before.epoch != acquisition_epoch_.load()) {
+                if (callbacks_.acquisition_reset) callbacks_.acquisition_reset();
+                reset();
+                estimator_generation = generation_coordinator_.current();
+            }
             ImuAngularVelocitySample sample{};
             if (!source_->try_pop(&sample)) {
                 if (!source_->wait_for_data()) {
@@ -147,6 +170,9 @@ void ImuPipeline::worker_loop() noexcept {
                 }
                 continue;
             }
+            const auto sync = acquisition_state();
+            if (!sync.ready || sync.epoch != acquisition_epoch_.load() ||
+                (source_->uses_sequence_time() && sample.acquisition_epoch != sync.epoch)) continue;
             if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
                 !is_finite(sample.angular_velocity) ||
                 !std::isfinite(sample.servo_control_p_normalized) ||
@@ -176,6 +202,8 @@ void ImuPipeline::worker_loop() noexcept {
                         estimator_generation = active_generation;
                     }
                     snapshot = estimator_->update(domain_sample);
+                    if (snapshot.launch.phase == domain::LaunchPhase::launched && callbacks_.acquisition_sync &&
+                        !callbacks_.acquisition_sync->latch_launch(sync.epoch)) return;
                     snapshot.time = domain_sample.time;
                     snapshot.imu_sample.time = domain_sample.time;
                     snapshot.attitude.time = domain_sample.time;
@@ -215,6 +243,8 @@ void ImuPipeline::worker_loop() noexcept {
                             "imu attitude/speed state is invalid or timestamp is not increasing";
                     }
                 });
+            const auto after = acquisition_state();
+            if (!after.ready || after.epoch != sync.epoch) continue;
             if (history_error != nullptr) {
                 report_fault(history_error);
                 return;

@@ -75,6 +75,7 @@ private:
     std::unique_ptr<CommandSink> command_sink_;
     std::unique_ptr<ports::IMonotonicClock> monotonic_clock_;
     std::unique_ptr<LaunchGenerationCoordinator> generation_coordinator_;
+    std::shared_ptr<domain::AcquisitionSync> acquisition_sync_;
     std::unique_ptr<OutputDispatcher> output_dispatcher_;
     std::unique_ptr<ImuPipeline> imu_pipeline_;
     std::unique_ptr<FramePipeline> frame_pipeline_;
@@ -112,6 +113,11 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
       config_(config),
       logger_(std::move(output_ports.logger)) {
     generation_coordinator_ = std::make_unique<LaunchGenerationCoordinator>();
+    const unsigned acquisition_mask = (camera_source && camera_source->uses_sequence_time() ? 1u : 0u) |
+                                      (imu_source && imu_source->uses_sequence_time() ? 2u : 0u);
+    acquisition_sync_ = std::make_shared<domain::AcquisitionSync>(acquisition_mask);
+    if (camera_source) camera_source->bind_acquisition_sync(acquisition_sync_);
+    if (imu_source) imu_source->bind_acquisition_sync(acquisition_sync_);
     OutputDispatcherCallbacks callbacks;
     callbacks.stop_requested = [this] { return stop_requested_.load(); };
     callbacks.active_generation = [this] {
@@ -149,6 +155,8 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
         std::move(callbacks));
 
     ImuPipelineCallbacks imu_callbacks;
+    imu_callbacks.acquisition_sync = acquisition_sync_;
+    imu_callbacks.acquisition_reset = [this] { generation_coordinator_->advance(*command_sink_); };
     imu_callbacks.stop_requested = [this] { return stop_requested_.load(); };
     imu_callbacks.try_record_sample =
         [this](const domain::ImuKinematicSample& sample) {
@@ -232,6 +240,8 @@ bool RuntimeSupervisor::Impl::start() {
         return false;
     }
 
+    // Camera configure can start SDK callbacks and publish readiness before it returns.
+    acquisition_sync_->restart();
     const SourceResult configure_result = frame_pipeline_->configure_source();
     if (configure_result.status != SourceStatus::ok) {
         set_fault(detail::format_source_error("camera source", "configure",

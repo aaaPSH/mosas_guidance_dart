@@ -14,6 +14,10 @@ public:
     RecordingCamera(std::unique_ptr<runtime::CameraSource> source,
                     std::shared_ptr<CameraImuSyncSession> session)
         : source_(std::move(source)), session_(std::move(session)) {}
+    bool uses_sequence_time() const noexcept override { return source_->uses_sequence_time(); }
+    void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync> sync) override {
+        source_->bind_acquisition_sync(std::move(sync));
+    }
     runtime::SourceResult configure(const runtime::CameraCaptureConfig& config) override {
         return source_->configure(config);
     }
@@ -38,6 +42,10 @@ public:
     RecordingImu(std::unique_ptr<runtime::ImuSource> source,
                  std::shared_ptr<CameraImuSyncSession> session)
         : source_(std::move(source)), session_(std::move(session)) {}
+    bool uses_sequence_time() const noexcept override { return source_->uses_sequence_time(); }
+    void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync> sync) override {
+        source_->bind_acquisition_sync(std::move(sync));
+    }
     runtime::SourceResult start() override { return source_->start(); }
     bool try_pop(runtime::ImuAngularVelocitySample* sample) noexcept override {
         const bool available = source_->try_pop(sample);

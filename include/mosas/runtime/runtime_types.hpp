@@ -20,6 +20,9 @@ struct CameraFrame {
     domain::ImageFrame image;
     // Optional metadata preserves non-host time sources without changing hardware defaults.
     std::optional<domain::SensorTime> sensor_time = std::nullopt;
+    /** @brief Acquisition synchronization segment; prevents processing pre-resync queued frames. */
+    std::uint64_t acquisition_epoch = 0;
+    std::uint64_t acquisition_sequence = 0;
 };
 
 using ImuStateSnapshot = domain::FlightStateSnapshot;

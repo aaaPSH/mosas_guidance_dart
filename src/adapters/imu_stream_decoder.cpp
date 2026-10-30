@@ -29,25 +29,27 @@ runtime::TimestampNs saturating_add(runtime::TimestampNs left,
 
 ImuStreamDecoder::ImuStreamDecoder(
     runtime::TimestampNs wire_byte_period_ns,
-    runtime::TimestampNs measurement_latency_ns, std::size_t output_capacity)
+    runtime::TimestampNs measurement_latency_ns, std::size_t output_capacity,
+    domain::SequenceTimeConfig timing)
     : wire_byte_period_ns_(wire_byte_period_ns),
       measurement_latency_ns_(measurement_latency_ns),
-      output_queue_(output_capacity) {}
+      output_queue_(output_capacity), timeline_(timing) {}
 
-void ImuStreamDecoder::reset() noexcept {
+void ImuStreamDecoder::reset(runtime::TimestampNs now_ns) noexcept {
     clear_buffer();
     output_queue_.reset();
     has_sequence_ = false;
     expected_sequence_ = 0;
-    has_timestamp_ = false;
-    last_timestamp_ns_ = -1;
+    sample_sequence_ = pending_bad_frames_ = 0;
+    boundary_trusted_ = seeking_ = false;
+    timeline_.start(now_ns - measurement_latency_ns_);
     parse_error_count_.store(0, std::memory_order_relaxed);
     sequence_gap_count_.store(0, std::memory_order_relaxed);
-    timestamp_rollback_count_.store(0, std::memory_order_relaxed);
+    crc_error_count_.store(0, std::memory_order_relaxed);
     dropped_sample_count_.store(0, std::memory_order_relaxed);
 }
 
-void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
+void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk, runtime::TimestampNs now_ns) noexcept {
     if (chunk.size == 0 || chunk.size > chunk.bytes.size() ||
         chunk.first_byte_timestamp_ns < 0) {
         parse_error_count_.fetch_add(1, std::memory_order_relaxed);
@@ -58,12 +60,14 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
         has_sequence_ = true;
     } else if (chunk.sequence != expected_sequence_) {
         sequence_gap_count_.fetch_add(1, std::memory_order_relaxed);
+        lose_alignment();
         clear_buffer();
     }
     expected_sequence_ = chunk.sequence + 1;
 
     if (!append(chunk)) {
         parse_error_count_.fetch_add(1, std::memory_order_relaxed);
+        lose_alignment();
         clear_buffer();
         return;
     }
@@ -79,27 +83,36 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
                 buffer_.data(), serial_package::kImuFrameSize, &values,
                 nullptr)) {
             parse_error_count_.fetch_add(1, std::memory_order_relaxed);
-            discard_prefix(1);
+            const bool intact_boundary = buffer_[18] == 0x0D && buffer_[19] == 0x0A;
+            if (intact_boundary) crc_error_count_.fetch_add(1, std::memory_order_relaxed);
+            if (boundary_trusted_ && intact_boundary) {
+                // Keep only a count until a subsequent valid frame confirms the fixed-size boundary.
+                ++pending_bad_frames_;
+                discard_prefix(serial_package::kImuFrameSize);
+            } else {
+                lose_alignment();
+                discard_prefix(1);
+            }
             continue;
         }
-
-        const runtime::TimestampNs timestamp =
-            mosas::domain::estimate_imu_sample_time(
-                buffer_first_timestamp_ns_, measurement_latency_ns_)
-                .monotonic_ns;
-        if (timestamp < 0) {
-            parse_error_count_.fetch_add(1, std::memory_order_relaxed);
+        if (pending_bad_frames_) {
+            timeline_.missing(pending_bad_frames_);
+            sample_sequence_ += pending_bad_frames_;
+            pending_bad_frames_ = 0;
+        }
+        boundary_trusted_ = true;
+        seeking_ = false;
+        const auto receive = domain::estimate_imu_sample_time(
+            buffer_first_timestamp_ns_, measurement_latency_ns_);
+        const auto stamp = timeline_.observe(sample_sequence_++, receive.monotonic_ns,
+            receive.monotonic_ns, now_ns - measurement_latency_ns_);
+        if (!stamp) {
+            if (receive.monotonic_ns < 0) parse_error_count_.fetch_add(1, std::memory_order_relaxed);
             discard_prefix(serial_package::kImuFrameSize);
             continue;
         }
-        if (has_timestamp_ && timestamp <= last_timestamp_ns_) {
-            timestamp_rollback_count_.fetch_add(1, std::memory_order_relaxed);
-            discard_prefix(serial_package::kImuFrameSize);
-            continue;
-        }
-
-        const runtime::ImuAngularVelocitySample sample{
-            timestamp,
+        runtime::ImuAngularVelocitySample sample{
+            stamp->timestamp_ns,
             {values.acceleration_x_mps2, values.acceleration_y_mps2,
              values.acceleration_z_mps2},
             {values.angular_velocity_x_rad_s,
@@ -107,11 +120,15 @@ void ImuStreamDecoder::consume(const runtime::RawSerialChunk& chunk) noexcept {
              values.angular_velocity_z_rad_s},
             values.servo_control_p_normalized,
             values.servo_control_y_normalized};
+        sample.sensor_time = receive;
+        sample.sensor_time->source = domain::TimestampSource::sequence_fixed_period;
+        sample.sensor_time->source_time_ns = receive.monotonic_ns;
+        sample.sensor_time->monotonic_ns = stamp->timestamp_ns;
+        sample.acquisition_epoch = stamp->epoch;
+        sample.sample_sequence = sample_sequence_ - 1;
         if (!publish(sample)) {
             dropped_sample_count_.fetch_add(1, std::memory_order_relaxed);
         }
-        last_timestamp_ns_ = timestamp;
-        has_timestamp_ = true;
         discard_prefix(serial_package::kImuFrameSize);
     }
 }
@@ -169,14 +186,23 @@ void ImuStreamDecoder::align_buffer() noexcept {
         return;
     }
     if (header_offset < buffered_size_) {
+        lose_alignment();
         discard_prefix(header_offset);
         return;
     }
 
     const std::size_t keep = buffer_[buffered_size_ - 1] == 0x55 ? 1 : 0;
     if (buffered_size_ > keep) {
+        lose_alignment();
         discard_prefix(buffered_size_ - keep);
     }
+}
+
+void ImuStreamDecoder::lose_alignment() noexcept {
+    if (!seeking_) timeline_.discontinuity();
+    seeking_ = true;
+    boundary_trusted_ = false;
+    pending_bad_frames_ = 0;
 }
 
 bool ImuStreamDecoder::append(const runtime::RawSerialChunk& chunk) noexcept {

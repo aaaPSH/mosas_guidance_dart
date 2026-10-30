@@ -56,7 +56,7 @@ format_imu_source_diagnostics(const ImuSourceDiagnostics& diagnostics) {
             << ", received_chunks=" << diagnostics.received_chunk_count
             << ", dropped_chunks=" << diagnostics.dropped_chunk_count
             << ", sequence_gaps=" << diagnostics.sequence_gap_count
-            << ", timestamp_rollbacks=" << diagnostics.timestamp_rollback_count
+            << ", crc_errors=" << diagnostics.crc_error_count
             << ", dropped_samples=" << diagnostics.dropped_sample_count
             << ", queued_chunks=" << diagnostics.queued_chunk_count << '/'
             << diagnostics.chunk_queue_capacity << ", realtime_priority="
@@ -437,6 +437,13 @@ void FramePipeline::processing_worker() noexcept {
             queued_frame = QueuedCameraFrame{};
             if (callbacks_.stop_requested()) {
                 break;
+            }
+            const auto acquisition = imu_pipeline_.acquisition_state();
+            if (!acquisition.ready || (camera_source_->uses_sequence_time() &&
+                result.frame.acquisition_epoch != acquisition.epoch)) {
+                reset_rate_segment();
+                result = ProcessedFrame{};
+                continue;
             }
             const auto processing_started = std::chrono::steady_clock::now();
             const auto prepare_started = std::chrono::steady_clock::now();

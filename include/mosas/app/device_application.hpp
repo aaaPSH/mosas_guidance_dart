@@ -18,6 +18,11 @@ namespace mosas::app {
  *       命令输出端由各入口显式选择，公共设备支持不决定是否允许控制输出。
  */
 struct DeviceApplicationComponents {
+    /** @brief Stop producers and report timing even on early return or exception unwinding. */
+    ~DeviceApplicationComponents() noexcept;
+    /** @brief Synchronously emit final timing diagnostics once; call only after stopping producers. */
+    void report_acquisition_time() noexcept;
+    bool acquisition_time_reported = false;
     std::shared_ptr<serial_package::SerialPort> serial_port;
     SerialImuSource* serial_imu_source = nullptr;
     NoriSdkCameraSource* camera_source_status = nullptr;

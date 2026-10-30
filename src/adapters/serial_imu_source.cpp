@@ -36,16 +36,20 @@ SerialImuSource::SerialImuSource(
     std::shared_ptr<serial_package::SerialPort> port,
     bool enable_interval_statistics,
     runtime::TimestampNs measurement_latency_ns,
-    const serial_package::ReceiveThreadConfig& receive_config)
+    const serial_package::ReceiveThreadConfig& receive_config, domain::SequenceTimeConfig timing)
     : port_(std::move(port)),
       measurement_latency_ns_(measurement_latency_ns),
       interval_statistics_enabled_(enable_interval_statistics),
       raw_receive_buffer_(kRawQueueCapacity),
       decoder_(source_wire_byte_period(port_), measurement_latency_ns,
-               kDecodedQueueCapacity),
+               kDecodedQueueCapacity, timing),
       receive_config_(receive_config) {
     if (port_ == nullptr) {
         configuration_error_ = "串口对象为空";
+        return;
+    }
+    if (!domain::SequenceTime::valid_config(timing)) {
+        configuration_error_ = "IMU 固定序号时间配置无效";
         return;
     }
     if (measurement_latency_ns_ < 0) {
@@ -74,7 +78,8 @@ runtime::SourceResult SerialImuSource::start() {
 
     cancelled_.store(false, std::memory_order_release);
     raw_receive_buffer_.reset();
-    decoder_.reset();
+    if (!port_->flush_input()) return fatal_result("清空串口启动积压失败");
+    decoder_.reset(runtime::monotonic_timestamp_ns());
     interval_statistics_ = {};
     has_interval_timestamp_ = false;
     last_interval_timestamp_ns_ = -1;
@@ -102,7 +107,7 @@ bool SerialImuSource::try_pop(
 
     runtime::RawSerialChunk chunk{};
     while (raw_receive_buffer_.try_pop(&chunk)) {
-        decoder_.consume(chunk);
+        decoder_.consume(chunk, runtime::monotonic_timestamp_ns());
         if (decoder_.try_pop(sample)) {
             return deliver_sample(sample);
         }
@@ -153,7 +158,9 @@ runtime::ImuSourceDiagnostics SerialImuSource::diagnostics() const noexcept {
         raw_receive_buffer_.received_chunk_count();
     diagnostics.dropped_chunk_count = raw_receive_buffer_.dropped_chunk_count();
     diagnostics.sequence_gap_count = decoder_.sequence_gap_count();
-    diagnostics.timestamp_rollback_count = decoder_.timestamp_rollback_count();
+    diagnostics.crc_error_count = decoder_.crc_error_count();
+    diagnostics.timing = decoder_.time_diagnostics();
+    diagnostics.timing.baseline_compensation_ns = -measurement_latency_ns_;
     diagnostics.dropped_sample_count = decoder_.dropped_sample_count();
     diagnostics.queued_chunk_count = raw_receive_buffer_.queued_chunk_count();
     diagnostics.chunk_queue_capacity = raw_receive_buffer_.queue_capacity();

@@ -117,7 +117,7 @@ def capture_fixture(root, rendered=False):
         "physical_mount_rotation_deg": 180, "prepare_rotation_deg": 180,
         "raw_width": 320, "raw_height": 240, "prepared_width": 320, "prepared_height": 240,
         "camera_timestamp_bias_ns": -2_000_000, "measurement_latency_ns": 3_000_000,
-        "camera_clock_domain": "monotonic", "imu_timestamp_source": "imu_uart_receive_estimate",
+        "camera_clock_domain": "monotonic", "imu_timestamp_source": "sequence_fixed_period",
         "imu_timestamp_quality": "estimated", "control_output_disabled": True,
         "recording": {"camera_seen": len(rows), "camera_selected": len(rows), "camera_written": len(rows),
                       "camera_dropped": 0, "imu_accepted": len(imu_ns), "imu_written": len(imu_ns),
@@ -125,7 +125,7 @@ def capture_fixture(root, rendered=False):
                       "data_bytes": sum((root / name).stat().st_size
                                         for name in ("frames.gray8", "frames.csv", "imu.csv"))},
         "imu_source": {"available": True, **{name: 0 for name in (
-            "parse_error_count", "dropped_chunk_count", "sequence_gap_count", "timestamp_rollback_count",
+            "parse_error_count", "dropped_chunk_count", "sequence_gap_count", "crc_error_count",
             "dropped_sample_count")}}, "camera": {"queue_dropped": 0, "timestamp_dropped": 0},
         "runtime_timing": {"vision": {"samples": len(rows)}, "guidance": {"samples": 0}},
     }

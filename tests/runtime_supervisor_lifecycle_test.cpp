@@ -54,7 +54,17 @@ make_frame(mosas::runtime::TimestampNs timestamp_ns) {
 
 class ProbeCameraSource final : public mosas::runtime::CameraSource {
 public:
-    explicit ProbeCameraSource(EventLog& events) : events_(events) {}
+    explicit ProbeCameraSource(EventLog& events, bool sequence_time = false)
+        : events_(events), sequence_time_(sequence_time) {}
+
+    bool uses_sequence_time() const noexcept override { return sequence_time_; }
+    void bind_acquisition_sync(std::shared_ptr<mosas::domain::AcquisitionSync> sync) override {
+        acquisition_sync_ = std::move(sync);
+    }
+    /** @return Whether configure-time readiness survived runtime startup. */
+    bool acquisition_ready() const noexcept { return acquisition_sync_->state().ready; }
+    /** @return Whether a previous session's launch was still latched when configure began. */
+    bool launched_when_configured() const noexcept { return launched_when_configured_; }
 
     void set_configure_result(mosas::runtime::SourceResult result) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -69,6 +79,12 @@ public:
         failure_requested_ = false;
         frame_ready_ = false;
         events_.push("camera.configure");
+        if (sequence_time_) {
+            const auto state = acquisition_sync_->state();
+            launched_when_configured_ = state.launched;
+            // Model an SDK source finishing synchronization before configure returns.
+            acquisition_sync_->ready(1, state.epoch);
+        }
         return configure_result_;
     }
 
@@ -155,6 +171,9 @@ public:
 
 private:
     EventLog& events_;
+    const bool sequence_time_;
+    std::shared_ptr<mosas::domain::AcquisitionSync> acquisition_sync_;
+    bool launched_when_configured_ = false;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     mosas::runtime::SourceResult configure_result_{
@@ -577,8 +596,9 @@ std::vector<mosas::runtime::ImuAngularVelocitySample> valid_samples() {
 
 struct RuntimeFixture {
     explicit RuntimeFixture(
-        std::vector<mosas::runtime::ImuAngularVelocitySample> samples = {}) {
-        auto camera_source = std::make_unique<ProbeCameraSource>(events);
+        std::vector<mosas::runtime::ImuAngularVelocitySample> samples = {},
+        bool sequence_camera = false) {
+        auto camera_source = std::make_unique<ProbeCameraSource>(events, sequence_camera);
         camera = camera_source.get();
         auto imu_source =
             std::make_unique<ProbeImuSource>(events, std::move(samples));
@@ -645,6 +665,23 @@ struct RuntimeFixture {
     ProbeFlightStateEstimator* flight_state = nullptr;
     std::unique_ptr<mosas::runtime::RuntimeSupervisor> runtime;
 };
+
+/** @return Zero if startup and restart reset the barrier before callbacks can publish readiness. */
+int test_configure_time_acquisition_readiness_survives_start() {
+    RuntimeFixture fixture(valid_samples(), true);
+    fixture.flight_state->set_launched();
+    for (int session = 0; session < 2; ++session) {
+        CHECK(fixture.runtime->start());
+        CHECK(!fixture.camera->launched_when_configured());
+        CHECK(fixture.camera->acquisition_ready());
+        fixture.imu->release_samples(2);
+        CHECK(fixture.wait_for_latest_state(1'020'000'000));
+        CHECK(fixture.runtime->latest_state()->launch.phase == mosas::domain::LaunchPhase::launched);
+        fixture.runtime->stop();
+        CHECK(!fixture.runtime->faulted());
+    }
+    return 0;
+}
 
 int test_partial_start_rollback_and_idempotent_stop() {
     RuntimeFixture fixture;
@@ -871,6 +908,9 @@ int test_cancel_unblocks_sink_and_stop_joins_workers() {
 }  // namespace
 
 int main() {
+    if (test_configure_time_acquisition_readiness_survives_start() != 0) {
+        return 1;
+    }
     if (test_partial_start_rollback_and_idempotent_stop() != 0) {
         return 1;
     }

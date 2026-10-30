@@ -17,6 +17,9 @@ struct ImuAngularVelocitySample {
     double servo_control_p_normalized = 0.0;
     double servo_control_y_normalized = 0.0;
     std::optional<domain::SensorTime> sensor_time = std::nullopt;
+    /** @brief Acquisition segment and logical sample slot, assigned before queue publication. */
+    std::uint64_t acquisition_epoch = 0;
+    std::uint64_t sample_sequence = 0;
 };
 
 }  // namespace mosas::runtime

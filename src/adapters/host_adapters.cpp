@@ -89,9 +89,10 @@ LoggingCommandSink::LoggingCommandSink(std::ostream& output)
     : logger_(output) {}
 
 bool LoggingCommandSink::start() {
-    if (!command_output_.configured()) return false;
+    std::lock_guard<std::mutex> lock(emission_mutex_);
+    if (!command_output_.configured() || !logger_.start()) return false;
     command_output_.reset();
-    return logger_.start();
+    return true;
 }
 
 void LoggingCommandSink::set_active_generation(std::uint64_t generation) noexcept {
@@ -119,7 +120,10 @@ bool LoggingCommandSink::try_submit(
     return accepted;
 }
 
-void LoggingCommandSink::stop() noexcept { logger_.stop_and_flush(); }
+void LoggingCommandSink::stop() noexcept {
+    std::lock_guard<std::mutex> lock(emission_mutex_);
+    logger_.stop_and_flush();
+}
 
 runtime::CommandSink::Diagnostics LoggingCommandSink::diagnostics() const noexcept {
     return {true, submitted_count_.load(std::memory_order_relaxed),

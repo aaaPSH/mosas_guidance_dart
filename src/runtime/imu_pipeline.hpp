@@ -22,6 +22,8 @@ struct ImuPipelineCallbacks {
     std::function<bool()> stop_requested;
     std::function<bool(const domain::ImuKinematicSample&)> try_record_sample;
     std::function<void(std::string)> report_fault;
+    std::shared_ptr<domain::AcquisitionSync> acquisition_sync;
+    std::function<void()> acquisition_reset;
 };
 
 /// IMU 数据流水线：独占样本消费、飞行状态更新和时间历史写入。
@@ -84,6 +86,8 @@ public:
     std::size_t angular_velocity_history_size() const noexcept;
     /** @brief 返回底层 IMU 源的诊断快照。 @return 接收和解码诊断。 */
     ImuSourceDiagnostics diagnostics() const noexcept;
+    /** @return Shared acquisition readiness and latched launch state; simulation is always ready. */
+    domain::AcquisitionSync::State acquisition_state() const noexcept;
 
 private:
     /**
@@ -101,6 +105,7 @@ private:
     AttitudeHistory attitude_history_;
     mutable std::mutex state_mutex_;
     std::optional<ImuStateSnapshot> latest_state_;
+    std::atomic<std::uint64_t> acquisition_epoch_{0};
     std::thread worker_;
 };
 

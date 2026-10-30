@@ -132,14 +132,14 @@ void validate_camera_imu_sync_options(const CameraImuSyncOptions& options, const
         (config.camera.frame_timestamp_domain != runtime::CameraTimestampDomain::monotonic &&
          config.camera.frame_timestamp_domain != runtime::CameraTimestampDomain::realtime) ||
         config.camera.width <= 0 || config.camera.height <= 0 ||
-        !std::isfinite(config.imu.sample_rate_hz) || config.imu.sample_rate_hz <= 0 ||
+        !std::isfinite(config.imu.timing.frequency_hz) || config.imu.timing.frequency_hz <= 0 ||
         config.imu.measurement_latency_ns < 0)
         throw std::invalid_argument("标定要求真实串口 IMU、free_run 相机、固定曝光及已知时钟域");
     // 保守计入 CSV 及文件头开销；采集时会再次校验 SDK 实际尺寸。
     const long double estimate =
         std::ceil(options.seconds * options.fps + 1) *
             (static_cast<long double>(config.camera.width) * config.camera.height + 512) +
-        std::ceil(options.seconds * config.imu.sample_rate_hz + 1) * 512 + 65536;
+        std::ceil(options.seconds * config.imu.timing.frequency_hz + 1) * 512 + 65536;
     if (estimate > options.max_bytes)
         throw std::invalid_argument("预计标定数据超过 sync_calibration.max_mib 预算，请缩短采集或提高预算");
 }
@@ -296,11 +296,12 @@ struct CameraImuSyncSession::Impl {
                << ",\n  \"camera_timestamp_bias_ns\": " << config.camera.camera_timestamp_bias_ns
                << ",\n  \"measurement_latency_ns\": " << config.imu.measurement_latency_ns
                << ",\n  \"camera_clock_domain\": \"" << domain_name(config.camera.frame_timestamp_domain)
-               << "\",\n  \"imu_timestamp_source\": \"imu_uart_receive_estimate\",\n"
+               << "\",\n  \"imu_timestamp_source\": \"sequence_fixed_period\",\n"
                << "  \"imu_timestamp_quality\": \"estimated\",\n"
                << "  \"requested_seconds\": " << options.seconds << ",\n  \"recording_fps\": " << options.fps
                << ",\n  \"configured_camera_fps\": " << config.camera.fps
-               << ",\n  \"configured_imu_rate_hz\": " << config.imu.sample_rate_hz
+               << ",\n  \"configured_camera_rate_hz\": " << config.camera.timing.frequency_hz
+               << ",\n  \"configured_imu_rate_hz\": " << config.imu.timing.frequency_hz
                << ",\n  \"serial_baud_rate\": " << config.serial.baud_rate
                << ",\n  \"requested_receive_realtime_priority\": " << config.imu.receive_thread.realtime_priority
                << ",\n  \"require_realtime_priority\": " << config.imu.receive_thread.require_realtime_priority
@@ -331,7 +332,10 @@ struct CameraImuSyncSession::Impl {
                << ",\"received_chunk_count\":" << imu_status.received_chunk_count
                << ",\"dropped_chunk_count\":" << imu_status.dropped_chunk_count
                << ",\"sequence_gap_count\":" << imu_status.sequence_gap_count
-               << ",\"timestamp_rollback_count\":" << imu_status.timestamp_rollback_count
+               << ",\"crc_error_count\":" << imu_status.crc_error_count
+               << ",\"unknown_discontinuities\":" << imu_status.timing.unknown_discontinuities
+               << ",\"estimated_hz\":" << imu_status.timing.estimated_hz
+               << ",\"frequency_windows\":" << imu_status.timing.frequency_windows
                << ",\"dropped_sample_count\":" << imu_status.dropped_sample_count
                << ",\"receive_realtime_priority_applied\":" << imu_status.receive_realtime_priority_applied
                << ",\"receive_priority_error\":" << imu_status.receive_priority_error << "},\n"
@@ -484,7 +488,7 @@ bool CameraImuSyncSession::finish(CameraImuSyncEnd end, const CameraImuSyncSumma
     while (state.imu.try_pop(&sample)) {}
     const auto& imu = summary.imu;
     if (imu.parse_error_count || imu.dropped_chunk_count || imu.sequence_gap_count ||
-        imu.timestamp_rollback_count || imu.dropped_sample_count) state.fail(CameraImuSyncError::invalid_imu);
+        imu.crc_error_count || imu.dropped_sample_count) state.fail(CameraImuSyncError::invalid_imu);
     if (summary.camera_timestamp_dropped) state.fail(CameraImuSyncError::invalid_camera);
     if (end == CameraImuSyncEnd::duration_elapsed) {
         if (state.image_written < 2 || state.imu_written < 2) state.fail(CameraImuSyncError::insufficient_data);

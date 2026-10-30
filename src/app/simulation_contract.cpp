@@ -22,7 +22,7 @@ void validate_simulation_metadata(const AppConfig& app,
     if(c.stride != c.width*3 || c.pixel_format != dart_sim_transport::PixelFormat::rgb8)
         throw std::runtime_error("simulation camera stride/format is not packed RGB8");
     check(c.camera_hz,app.camera.fps,"camera_hz");
-    check(c.imu_hz,app.imu.sample_rate_hz,"imu_hz");
+    check(c.imu_hz,app.imu.timing.frequency_hz,"imu_hz");
     const auto& k=app.guidance.camera_intrinsics;
     check(c.fx,k.fx,"fx");check(c.fy,k.fy,"fy");
     check(c.cx,k.cx,"cx");check(c.cy,k.cy,"cy");

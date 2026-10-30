@@ -37,6 +37,8 @@ struct CameraAppConfig {
     int width = 640;
     int height = 480;
     int fps = 30;
+    /** @brief Fixed acquisition period uses timing.frequency_hz, independently of SDK mode FPS. */
+    domain::SequenceTimeConfig timing{30.0};
     // 摄像头像素格式；支持 MJPEG（SDK 映射为 MJPG）、YUYV 和 auto。
     std::string pixel_format = "MJPEG";
     bool auto_exposure = true;
@@ -62,8 +64,8 @@ enum class ImuMode {
 
 struct ImuAppConfig {
     ImuMode mode = ImuMode::simulated;
-    // IMU 实际发送频率，仅用于兼容配置校验；帧时间戳来自串口接收时间轴。
-    double sample_rate_hz = 200.0;
+    /** @brief Calibrated physical sample frequency and startup synchronization criteria. */
+    domain::SequenceTimeConfig timing{200.0};
     // 下位机测量时刻相对串口帧时间的固定延迟，单位纳秒；需由硬件实测。
     runtime::TimestampNs measurement_latency_ns = 0;
     // 串口原始接收线程的调度策略；实时优先级申请失败时是否拒绝启动。

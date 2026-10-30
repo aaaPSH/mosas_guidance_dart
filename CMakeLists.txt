@@ -27,6 +27,7 @@ endfunction()
 
 add_library(mosas_contract_core STATIC
     src/domain/imu_time_model.cpp
+    src/domain/sequence_time.cpp
     src/runtime/clock.cpp
     src/runtime/frame_timing.cpp
     src/serial_package/serial_protocol.cpp
@@ -124,6 +125,7 @@ endif()
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     add_library(mosas_app_core STATIC
         src/app/app_config.cpp
+    src/app/acquisition_time_report.cpp
         src/app/camera_imu_sync_session.cpp
         src/app/camera_imu_sync_sources.cpp
         src/app/config_parsing.cpp
@@ -356,6 +358,18 @@ if(BUILD_TESTING)
     add_test(NAME algorithm_port_contracts_test
         COMMAND algorithm_port_contracts_test)
 
+    add_executable(acquisition_pipeline_test tests/acquisition_pipeline_test.cpp)
+    configure_mosas_target(acquisition_pipeline_test)
+    target_include_directories(acquisition_pipeline_test PRIVATE src/runtime)
+    target_link_libraries(acquisition_pipeline_test PRIVATE mosas_runtime)
+    add_test(NAME acquisition_pipeline_test COMMAND acquisition_pipeline_test)
+    set_tests_properties(acquisition_pipeline_test PROPERTIES TIMEOUT 10)
+
+    add_executable(sequence_time_test tests/sequence_time_test.cpp)
+    configure_mosas_target(sequence_time_test)
+    target_link_libraries(sequence_time_test PRIVATE mosas_contract_core)
+    add_test(NAME sequence_time_test COMMAND sequence_time_test)
+
     add_executable(camera_time_test tests/camera_time_test.cpp)
     configure_mosas_target(camera_time_test)
     target_link_libraries(camera_time_test PRIVATE mosas_contract_core)
@@ -569,6 +583,14 @@ if(BUILD_TESTING)
         target_link_libraries(command_adapter_test PRIVATE mosas_app)
         add_test(NAME command_adapter_test COMMAND command_adapter_test)
 
+        foreach(test nori_sequence_time_test serial_sequence_time_test device_time_report_test)
+            add_executable(${test} tests/${test}.cpp)
+            configure_mosas_target(${test})
+            target_link_libraries(${test} PRIVATE mosas_app)
+            add_test(NAME ${test} COMMAND ${test})
+            set_tests_properties(${test} PROPERTIES TIMEOUT 10)
+        endforeach()
+
         add_executable(roll_timing_test tests/roll_timing_test.cpp)
         configure_mosas_target(roll_timing_test)
         target_link_libraries(roll_timing_test PRIVATE mosas_app)
@@ -582,6 +604,11 @@ if(BUILD_TESTING)
     endif()
 
     if(TARGET mosas_app_core)
+        add_executable(acquisition_time_report_test tests/acquisition_time_report_test.cpp)
+        configure_mosas_target(acquisition_time_report_test)
+        target_link_libraries(acquisition_time_report_test PRIVATE mosas_app_core)
+        add_test(NAME acquisition_time_report_test COMMAND acquisition_time_report_test)
+
         add_executable(simulation_config_test tests/simulation_config_test.cpp)
         configure_mosas_target(simulation_config_test)
         target_compile_definitions(simulation_config_test PRIVATE MOSAS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

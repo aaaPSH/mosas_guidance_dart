@@ -68,7 +68,9 @@ enum class TimestampSource {
     camera_sdk_capture,
     host_callback_receive,
     imu_uart_receive_estimate,
+    sequence_fixed_period,
     hardware_sync,
+    simulation,
 };
 enum class TimestampQuality { unknown, estimated, calibrated, hardware_synchronized };
 
@@ -107,8 +109,10 @@ struct SyncDiagnostics {
 1. 运行时比较、历史查询、滤波 `dt` 和 deadline 全用 `monotonic_ns`。
 2. `CLOCK_REALTIME` 仅作为日志/会话时间；格式化事件可带 `wall_time_ns`，不得用于控制耗时。
 3. SDK `Frame_Time` 原值必须保留；时钟域映射由 `ITimeSyncProvider` 完成并报告质量。
-4. IMU 协议冻结且无 MCU 时间/样本号，IMU `monotonic_ns` 是接收时间减实测延迟后的估值，必须标为 `estimated`，不得伪装成 MCU 采样时间。
-5. 队列积压、串口字节丢失、时间回退、时钟域不明都会降低时间质量或令样本不可用；不得无限外推或使用陈旧样本。
+4. 相机与串口 IMU 在硬件源中采用固定序号时间轴（`sequence_fixed_period`），根据首帧同步基线及标定采样频率计算 `T(n) = T0 + round((n - n0) * 1e9 / f)`。SDK Frame_Time 与串口接收时间保留作为原始诊断证据，不逐帧替换采样时间。
+5. 启动时通过稳定观察窗口建立基线与同步屏障；发射前发生未知失步可重新同步并重置跨时间段状态；发射后时间轴基线与周期锁定，时间异常只记入诊断，不触发重锚或清零，既有陈旧输入与 I/O 保护仍由其自身机制判定。
+6. 队列积压、串口未知失步、时钟域不明都会降低时间质量或使样本不可用；不根据接收时间猜测补号。
+7. 相机固定序号时钟的候选基线、接收观察、当前及启动时间均使用同一个 bias 平移，禁止仅补偿基线或仅补偿接收时间。`sensor_time.source_time_ns` 保留未补偿的 SDK 单调转换值，帧的 `received_timestamp_ns` 保留原始主机接收时间。固定补偿不进入失步残差、不改变预热时长；原有未来／过旧保护仍使用原始接收时间。负时间和有符号溢出必须拒绝，不做饱和修补。
 
 ## 3. 坐标、向量与单位
 

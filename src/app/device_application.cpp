@@ -1,4 +1,6 @@
 #include <mosas/app/device_application.hpp>
+#include <mosas/app/acquisition_time_report.hpp>
+#include <cstdio>
 
 #include <mosas/adapters/host_adapters.hpp>
 #include <mosas/app/default_guidance_algorithms.hpp>
@@ -153,6 +155,45 @@ int load_default_device_configuration(const std::string& filename, AppConfig& co
     return load_device_configuration((fs::path("config") / name).string(), config);
 }
 
+DeviceApplicationComponents::~DeviceApplicationComponents() noexcept {
+    try {
+        if (runtime) runtime->stop();
+        if (imu_source) imu_source->stop();
+        if (camera_source) camera_source->stop();
+        report_acquisition_time();
+    } catch (...) {
+        std::fputs("[ACQUISITION_TIME] shutdown_failed; final timing report unavailable\n", stderr);
+    }
+}
+
+void DeviceApplicationComponents::report_acquisition_time() noexcept {
+    if (acquisition_time_reported) return;
+    acquisition_time_reported = true;
+    try {
+        std::ostringstream report;
+        // A failed ownership-transfer constructor may already have destroyed the sources.
+        if (camera_source_status && (runtime || camera_source)) {
+            write_acquisition_time_report(report, "camera", camera_source_status->time_diagnostics());
+            const auto camera = camera_source_status->camera_timing();
+            report << "[ACQUISITION_TIME] camera_queue_dropped=" << camera.callback_queue_dropped
+                   << " camera_timestamp_dropped=" << camera.timestamp_dropped << '\n';
+        } else report << "[ACQUISITION_TIME] source=camera unavailable=not_initialized_or_construction_failed\n";
+        if (serial_imu_source && (runtime || imu_source)) {
+            const auto imu = serial_imu_source->diagnostics();
+            write_acquisition_time_report(report, "imu", imu.timing);
+            report << "[ACQUISITION_TIME] imu_crc_errors=" << imu.crc_error_count
+                   << " parse_errors=" << imu.parse_error_count << " raw_chunk_gaps=" << imu.sequence_gap_count
+                   << " raw_queue_dropped=" << imu.dropped_chunk_count
+                   << " sample_queue_dropped=" << imu.dropped_sample_count << '\n';
+        } else report << "[ACQUISITION_TIME] source=imu unavailable=not_serial_or_not_initialized\n";
+        const auto text = report.str();
+        std::cerr << text << std::flush;
+        if (!std::cerr) std::fwrite(text.data(), 1, text.size(), stderr);
+    } catch (...) {
+        std::fputs("[ACQUISITION_TIME] report_failed; timing quality unknown\n", stderr);
+    }
+}
+
 void install_device_signal_handlers() {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
@@ -174,12 +215,12 @@ int initialize_device_sources(const AppConfig& config, DeviceApplicationComponen
     }
     if (config.imu.mode == ImuMode::simulated) {
         components.imu_source = std::make_unique<SimulatedImuSource>(
-            config.imu.sample_rate_hz, config.algorithms.attitude.gravity_mps2,
+            config.imu.timing.frequency_hz, config.algorithms.attitude.gravity_mps2,
             config.algorithms.attitude.accelerometer_specific_force);
     } else if (config.imu.mode == ImuMode::serial) {
         auto source = std::make_unique<SerialImuSource>(
             components.serial_port, config.enable_serial_interval_statistics,
-            config.imu.measurement_latency_ns, config.imu.receive_thread);
+            config.imu.measurement_latency_ns, config.imu.receive_thread, config.imu.timing);
         components.serial_imu_source = source.get();
         components.imu_source = std::move(source);
     } else {
@@ -220,6 +261,7 @@ int stop_and_report_device_runtime(DeviceApplicationComponents& components,
                                    const AppConfig& config) {
     auto& runtime = *components.runtime;
     runtime.stop();
+    components.report_acquisition_time();
     const bool faulted = runtime.faulted();
     if (faulted) {
         std::cerr << "制导程序发生故障: " << runtime.last_error() << '\n';

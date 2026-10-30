@@ -26,6 +26,7 @@ struct NoriCameraTiming {
     runtime::TimingDistributionSummary callback_queue_delay;
     runtime::TimingDistributionSummary decode_convert;
     std::uint64_t callback_queue_dropped = 0;
+    /** @brief Rejected timestamps; healthy warmup/synchronization waiting is counted separately. */
     std::uint64_t timestamp_dropped = 0;
 };
 
@@ -71,7 +72,8 @@ public:
      * @brief 从回调队列取帧、解码为拥有型 BGR8 图像并返回时间戳。
      * @param frame 非空输出指针；成功时图像所有权由返回帧持有。
      * @return 捕获状态；队列等待期间可能阻塞，取消通过 SourceStatus::cancelled 返回。
-     * @note SDK Frame_Time、主机回调接收时间及时间来源分别保存在帧中，不互相替代。
+     * @note 采样时间由首帧基线及采集序号推算；sensor_time.source_time_ns 保留未加 bias 的 SDK 单调转换值。
+     *       received_timestamp_ns 保留原始主机回调时间，不随序号时钟内部的补偿观察一起平移。
      */
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;
 
@@ -80,6 +82,20 @@ public:
      * @return 实测 FPS；采样不足或统计异常时为 0。
      */
     double capture_fps() const noexcept override;
+    bool uses_sequence_time() const noexcept override { return true; }
+    /** @param sync Shared prelaunch barrier; bind before configure. */
+    void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync> sync) override {
+        acquisition_sync_ = sync;
+        timeline_.bind(std::move(sync), 1);
+    }
+    /** @return Fixed-clock observations in the bias-shifted domain; preserved after stop.
+     * @note Receive residual = (raw host receive + bias) - fixed sample time; fixed bias cancels out.
+     */
+    domain::SequenceTimeDiagnostics time_diagnostics() const noexcept {
+        auto result = timeline_.diagnostics();
+        result.baseline_compensation_ns = config_.camera_timestamp_bias_ns;
+        return result;
+    }
 
     /**
      * @brief 对捕获帧执行尺寸调整及相机安装方向修正。
@@ -121,6 +137,9 @@ private:
         uint32_t width = 0;
         uint32_t height = 0;
         runtime::TimestampNs timestamp_ns = 0;
+        runtime::TimestampNs raw_timestamp_ns = -1; ///< Uncompensated SDK time mapped to monotonic ns.
+        std::uint64_t sequence = 0;
+        std::uint64_t acquisition_epoch = 0;
         runtime::TimestampNs received_timestamp_ns = 0;
         std::chrono::steady_clock::time_point enqueued_at{};
         runtime::CameraTimestampSource timestamp_source =
@@ -177,6 +196,13 @@ private:
     void stop_locked() noexcept;
 
     CameraAppConfig config_;
+    domain::SequenceTime timeline_;
+    std::shared_ptr<domain::AcquisitionSync> acquisition_sync_;
+    // Serializes concurrent SDK callbacks and their sequence-clock state.
+    std::mutex timestamp_mutex_;
+    domain::AcquisitionSequence acquisition_sequence_;
+    std::uint64_t sequence_epoch_ = 0;
+    std::uint64_t previous_sequence_ = 0;
     std::shared_ptr<NoriSdkApi> sdk_;
     NoriSdkSession session_;
     uint32_t device_id_ = 0;

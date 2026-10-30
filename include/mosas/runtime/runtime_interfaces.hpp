@@ -3,6 +3,7 @@
 
 #include <mosas/domain/algorithm_results.hpp>
 #include <mosas/domain/contracts.hpp>
+#include <mosas/domain/sequence_time.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/runtime/imu_angular_velocity.hpp>
 #include <mosas/runtime/command_output.hpp>
@@ -39,7 +40,8 @@ struct ImuSourceDiagnostics {
     std::uint64_t received_chunk_count = 0;
     std::uint64_t dropped_chunk_count = 0;
     std::uint64_t sequence_gap_count = 0;
-    std::uint64_t timestamp_rollback_count = 0;
+    std::uint64_t crc_error_count = 0;
+    domain::SequenceTimeDiagnostics timing{};
     std::uint64_t dropped_sample_count = 0;
     std::size_t queued_chunk_count = 0;
     std::size_t chunk_queue_capacity = 0;
@@ -65,6 +67,10 @@ inline const char* source_status_name(SourceStatus status) noexcept {
 class ImuSource {
 public:
     virtual ~ImuSource() = default;
+    /** @return Whether this source participates in host sequence-clock synchronization. */
+    virtual bool uses_sequence_time() const noexcept { return false; }
+    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
     /**
      * @brief 启动 IMU 数据源及其接收资源。
@@ -115,6 +121,10 @@ struct CameraCaptureConfig {
 class CameraSource {
 public:
     virtual ~CameraSource() = default;
+    /** @return Whether this source participates in host sequence-clock synchronization. */
+    virtual bool uses_sequence_time() const noexcept { return false; }
+    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
     /**
      * @brief 根据采集模式初始化相机源。

@@ -29,13 +29,21 @@ public:
      * @param enable_interval_statistics 是否累计成功交付样本的时间间隔。
      * @param measurement_latency_ns IMU 测量到串口接收时间的延迟补偿（ns），不得为负。
      * @param receive_config 原始接收线程的块大小和调度策略。
+     * @param timing 实际采样频率与同步窗口。
      * @note 协议帧解码发生在 IMU 消费线程；时间补偿不会使无设备时间戳的样本变为精确时间。
      */
     SerialImuSource(
         std::shared_ptr<serial_package::SerialPort> port,
         bool enable_interval_statistics,
         runtime::TimestampNs measurement_latency_ns,
-        const serial_package::ReceiveThreadConfig& receive_config);
+        const serial_package::ReceiveThreadConfig& receive_config,
+        domain::SequenceTimeConfig timing);
+
+    bool uses_sequence_time() const noexcept override { return true; }
+    /** @param sync 启动前绑定的同步屏障。 */
+    void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync> sync) override {
+        decoder_.bind_sync(std::move(sync));
+    }
 
     /**
      * @brief 启动串口异步接收线程并重置解析状态。

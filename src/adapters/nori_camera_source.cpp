@@ -66,6 +66,7 @@ NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config)
 NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config,
                                          std::shared_ptr<NoriSdkApi> sdk)
     : config_(std::move(config)),
+      timeline_(config_.timing),
       sdk_(std::move(sdk)),
       session_(sdk_),
       callback_context_(create_callback_context()) {
@@ -114,6 +115,7 @@ runtime::SourceResult NoriSdkCameraSource::configure(
     config_.capture_mode = capture_config.mode;
     if (config_.device.empty() || config_.width <= 0 || config_.height <= 0 ||
         config_.fps <= 0 || config_.callback_queue_capacity == 0 ||
+        !domain::SequenceTime::valid_config(config_.timing) ||
         (config_.pixel_format != "auto" &&
          requested_format(config_.pixel_format) == 0)) {
         set_error("视频配置无效，设备 " + config_.device);
@@ -127,7 +129,17 @@ runtime::SourceResult NoriSdkCameraSource::configure(
         set_error("无法建立相机 realtime 到 monotonic 的时钟映射");
         return fatal_result();
     }
+    const auto compensated_start = runtime::apply_camera_timestamp_bias(
+        monotonic_now, config_.camera_timestamp_bias_ns);
+    if (!compensated_start) {
+        set_error("相机时间补偿后的启动时间为负数或溢出");
+        return fatal_result();
+    }
     camera_clock_mapping_ = {realtime_now, monotonic_now};
+    timeline_.start(*compensated_start);
+    acquisition_sequence_.reset();
+    sequence_epoch_ = acquisition_sync_ ? acquisition_sync_->state().epoch : 0;
+    previous_sequence_ = 0;
 
     uint32_t device_count = 0;
     std::string session_error;
@@ -528,6 +540,11 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     frame->timestamp_ns = pending.timestamp_ns;
     frame->received_timestamp_ns = pending.received_timestamp_ns;
     frame->timestamp_source = pending.timestamp_source;
+    frame->acquisition_sequence = pending.sequence;
+    frame->acquisition_epoch = pending.acquisition_epoch;
+    frame->sensor_time = domain::SensorTime{pending.timestamp_ns, pending.raw_timestamp_ns, -1,
+        domain::ClockDomain::monotonic, domain::TimestampSource::sequence_fixed_period,
+        domain::TimestampQuality::estimated};
     if (!frame->image.is_valid()) {
         set_error("capture 输出图像无效，设备 " + config_.device);
         return fatal_result();
@@ -730,6 +747,8 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
         frame->buff_Length > buffer_length - frame->buff_Offset) {
         return NORI_OK;
     }
+    // Sequence state and queue insertion must have the same ordering even if the SDK uses concurrent callbacks.
+    std::lock_guard<std::mutex> timestamp_lock(timestamp_mutex_);
     callback_capture_fps_meter_.record();
 
     const auto* source = static_cast<const uint8_t*>(frame->pBufAddr);
@@ -740,21 +759,62 @@ uint32_t NoriSdkCameraSource::enqueue_frame(FRAME_BUFFER_DATA* frame) {
     pending.width = frame->PixFormat.u_Width;
     pending.height = frame->PixFormat.u_Height;
     pending.received_timestamp_ns = runtime::monotonic_timestamp_ns();
-    if (pending.received_timestamp_ns < 0) {
+    const auto compensated_receive = runtime::apply_camera_timestamp_bias(
+        pending.received_timestamp_ns, config_.camera_timestamp_bias_ns);
+    if (!compensated_receive) {
         dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
         return NORI_OK;
     }
-    // Frame_Time 与 V4L2 buffer.timestamp 是不同字段，按显式配置解释其时钟域。
-    const runtime::CameraTimestampDomain domain =
-        config_.frame_timestamp_domain;
-    const auto timestamp = runtime::convert_camera_timeval(
-        frame->Frame_Time.tv_sec, frame->Frame_Time.tv_usec, domain,
-        camera_clock_mapping_, config_.camera_timestamp_bias_ns);
-    if (!timestamp.has_value()) {
-        dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
+    // Preserve original SDK/host evidence; only the sequence-clock observations share the bias.
+    const runtime::CameraTimestampDomain domain = config_.frame_timestamp_domain;
+    const auto raw_timestamp = runtime::convert_camera_timeval(
+        frame->Frame_Time.tv_sec, frame->Frame_Time.tv_usec, domain, camera_clock_mapping_, 0);
+    const auto timestamp = raw_timestamp
+        ? runtime::apply_camera_timestamp_bias(*raw_timestamp, config_.camera_timestamp_bias_ns)
+        : std::nullopt;
+    const auto state = acquisition_sync_ ? acquisition_sync_->state() : domain::AcquisitionSync::State{0, true, false};
+    if (state.epoch != sequence_epoch_) {
+        acquisition_sequence_.reset();
+        previous_sequence_ = 0;
+        sequence_epoch_ = state.epoch;
+    }
+    const auto sequence = acquisition_sequence_.push(frame->buffer.sequence);
+    if (!sequence) {
+        timeline_.sequence_error();
+        if (!state.launched) {
+            timeline_.discontinuity();
+            if (!acquisition_sync_ || !acquisition_sync_->state().launched) {
+                acquisition_sequence_.reset();
+                previous_sequence_ = 0;
+            }
+        }
         return NORI_OK;
     }
-    pending.timestamp_ns = *timestamp;
+    if (*sequence > previous_sequence_ + 1) timeline_.missing(*sequence - previous_sequence_ - 1);
+    previous_sequence_ = *sequence;
+    // Reject stale SDK frames only while establishing synchronization. Once flying, raw SDK
+    // time anomalies are diagnostic evidence, never a reason to re-anchor the fixed clock.
+    const bool fresh_capture = timestamp && std::abs(static_cast<long double>(*timestamp) -
+        *compensated_receive) <= config_.timing.tolerance_ns;
+    const auto candidate = fresh_capture || state.launched ? timestamp.value_or(-1) : -1;
+    const auto warmup_before = timeline_.diagnostics().warmup_discarded;
+    // Shift start/receive/now together: fixed bias changes neither warmup nor clock residuals.
+    const auto fixed = timeline_.observe(*sequence, candidate, *compensated_receive,
+                                        *compensated_receive);
+    if (!fixed) {
+        // Healthy synchronization waiting is not a timestamp error. Invalid SDK time or
+        // a rejection outside warmup must still invalidate a calibration capture.
+        const bool warming_up = timeline_.diagnostics().warmup_discarded != warmup_before;
+        if (!warming_up || !fresh_capture) {
+            dropped_timestamp_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        return NORI_OK;
+    }
+    timeline_.observe_capture_time(timestamp.value_or(-1), fixed->timestamp_ns);
+    pending.timestamp_ns = fixed->timestamp_ns;
+    pending.raw_timestamp_ns = raw_timestamp.value_or(-1);
+    pending.sequence = *sequence;
+    pending.acquisition_epoch = fixed->epoch;
     pending.timestamp_source = timestamp_source(domain);
     pending.enqueued_at = std::chrono::steady_clock::now();
 

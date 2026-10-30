@@ -324,7 +324,7 @@ def load_dataset(directory, intrinsics_path, columns, rows, square_size_m):
             metadata.get("image_orientation") != "sdk_raw" or
             metadata.get("analysis_image_orientation") != "runtime_prepared_180" or
             metadata.get("prepare_rotation_deg") != 180 or
-            metadata.get("imu_timestamp_source") != "imu_uart_receive_estimate" or
+            metadata.get("imu_timestamp_source") != "sequence_fixed_period" or
             metadata.get("imu_timestamp_quality") != "estimated"):
         raise CalibrationError("采集未完成、格式/方向不支持或不是接收时间估计的只读标定模式")
     if metadata.get("camera_clock_domain") not in ("monotonic", "realtime"):
@@ -353,7 +353,7 @@ def load_dataset(directory, intrinsics_path, columns, rows, square_size_m):
     if (imu_source.get("available") is not True or
             any(_integer(imu_source[name], name) for name in (
                 "parse_error_count", "dropped_chunk_count", "sequence_gap_count",
-                "timestamp_rollback_count", "dropped_sample_count")) or
+                "crc_error_count", "dropped_sample_count")) or
             _integer(recording["camera_dropped"], "camera dropped") or
             _integer(recording["imu_dropped"], "IMU dropped") or
             _integer(metadata["camera"]["timestamp_dropped"], "camera timestamp dropped")):

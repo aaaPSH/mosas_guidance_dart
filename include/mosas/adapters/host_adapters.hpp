@@ -60,7 +60,7 @@ private:
     std::atomic<std::uint64_t> submitted_count_{0};
 };
 
-/** @brief 通过 latest-value mailbox 和专属线程周期发送指令；无新鲜指令时发送零过载。 */
+/** @brief 通过 latest-value mailbox 和专属线程周期发送指令；正常制导无新鲜请求时清零，定时调试可独立触发。 */
 class SerialCommandSink final : public runtime::CommandSink {
 public:
     /**
@@ -108,7 +108,8 @@ private:
 
     /**
      * @brief 按单调时钟周期采样最新指令，检查代际、发射门槛和提交超时。
-     * @note 无新指令时以最新姿态重新映射最近弹道请求；超时清零过载和识别位，但保留发射标志。
+     * @note 正常制导无新指令时以最新姿态重新映射最近弹道请求；超时清零过载和识别位，但保留发射标志。
+     *       launch_delay 调试模式独立使用当前发射状态，不依赖 mailbox 中存在视觉请求。
      *       调度或写入超时后跳过错过的周期，不突发补发积压指令。
      */
     void worker_loop() noexcept;

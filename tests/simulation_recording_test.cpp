@@ -60,7 +60,7 @@ bool contains(const std::vector<std::string>& log,const std::string& text) {
 
 app::SimulationConfig configuration(const Fixture& fixture,const app::AppConfig& original) {
     app::SimulationConfig config;config.app=original;
-    config.app.imu.sample_rate_hz=200;
+    config.app.imu.timing.frequency_hz=200;
     config.app_config_path=std::filesystem::path(MOSAS_SOURCE_DIR)/"config/mosas_guidance.conf";
     config.socket_directory=(fixture.root/"model").string();
     config.app.output.recording_path=(fixture.root/"recordings"/
