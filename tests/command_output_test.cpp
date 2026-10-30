@@ -3,6 +3,63 @@
 #include "body_vector_test_support.hpp"
 #include "test_support.hpp"
 #include <string>
+
+namespace {
+/** @return Zero if session reset and invalidation clear triggers without conflating attempt numbering. */
+int debug_session_lifecycle() {
+    using namespace mosas;
+    guidance::CommandMappingConfig config;
+    config.debug.mode = guidance::GuidanceDebugMode::target_detected;
+    config.debug.yaw_overload_g = 0.5;
+    config.debug.duration_ms = 100;
+    auto now = std::int64_t{1'000'000'000};
+    domain::FlightStateSnapshot state;
+    state.launch.phase = domain::LaunchPhase::launched;
+    runtime::CommandOutputBinding binding;
+    binding.mapper = std::make_unique<guidance::CommandOutputMapper>(config);
+    binding.latest_state = [&] { return std::optional<domain::FlightStateSnapshot>(state); };
+    binding.now_ns = [&] { return now; };
+    binding.output_enabled = [] { return true; };
+    binding.clock_domain = domain::ClockDomain::monotonic;
+    binding.maximum_attitude_age_ns = 50'000'000;
+    runtime::CommandOutputProcessor processor;
+    CHECK(processor.bind(std::move(binding)));
+    domain::GuidanceCommand request;
+    request.launched = request.target_found = true;
+    auto attempt = processor.prepare(request, 0, false);
+    CHECK(attempt.mapping.command.valid);
+    processor.complete(attempt, domain::CommandEmissionDisposition::serial_written);
+    request.target_found = false;
+    now += 20'000'000;
+    CHECK(processor.prepare(request, 0, false).mapping.command.valid);
+
+    processor.reset();
+    CHECK(!processor.latest_emission());
+    state.launch.phase = domain::LaunchPhase::pre_launch;
+    CHECK(!processor.prepare(request, 0, false).mapping.command.valid);
+    state.launch.phase = domain::LaunchPhase::launched;
+    attempt = processor.prepare(request, 0, false);
+    CHECK(!attempt.mapping.command.valid && !attempt.mapping.command.target_found);
+    CHECK(attempt.mapping.command.overload_g.z == 0);
+
+    now += 200'000'000;
+    request.target_found = true;
+    attempt = processor.prepare(request, 0, false);
+    CHECK(attempt.mapping.command.valid); // A new session starts a new duration, not the old expired one.
+    processor.complete(attempt, domain::CommandEmissionDisposition::serial_written);
+    request.target_found = false;
+    const auto previous_id = attempt.attempt_id;
+    processor.invalidate();
+    CHECK(!processor.latest_emission());
+    attempt = processor.prepare(request, 0, false);
+    CHECK(attempt.attempt_id > previous_id);
+    CHECK(!attempt.mapping.command.valid && !attempt.mapping.command.target_found);
+    processor.reset();
+    CHECK(processor.prepare(request, 0, false).attempt_id == 1);
+    return 0;
+}
+}
+
 int main() {
     using namespace mosas;
     runtime::CommandOutputProcessor processor;
@@ -40,5 +97,6 @@ int main() {
     CHECK(!processor.prepare(command,1,false).mapping.command.valid);
     processor.reset();
     CHECK(!processor.latest_emission());
+    CHECK(debug_session_lifecycle() == 0);
     return 0;
 }

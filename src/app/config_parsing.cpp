@@ -474,6 +474,25 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             algorithms.command_mapping.control_channel = channel;
             return true;
         }
+        if (key == "debug_mode") {
+            if (value == "disabled") {
+                algorithms.command_mapping.debug.mode = guidance::GuidanceDebugMode::disabled;
+                return true;
+            }
+            if (value == "launch_delay") {
+                algorithms.command_mapping.debug.mode = guidance::GuidanceDebugMode::launch_delay;
+                return true;
+            }
+            if (value == "target_detected") {
+                algorithms.command_mapping.debug.mode = guidance::GuidanceDebugMode::target_detected;
+                return true;
+            }
+            return invalid();
+        }
+        if (key == "debug_trigger_delay_ms") return set_int(&algorithms.command_mapping.debug.trigger_delay_ms) || invalid();
+        if (key == "debug_yaw_g") return set_double(&algorithms.command_mapping.debug.yaw_overload_g) || invalid();
+        if (key == "debug_pitch_g") return set_double(&algorithms.command_mapping.debug.pitch_overload_g) || invalid();
+        if (key == "debug_duration_ms") return set_int(&algorithms.command_mapping.debug.duration_ms) || invalid();
         if (key == "los_kalman_sigma_a") {
             return set_double(&algorithms.los_filter.sigma_a) || invalid();
         }
@@ -693,6 +712,9 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
     mapping.gravity = attitude.gravity_mps2;
     if (!guidance::valid_control_channel(mapping.control_channel)) {
         return fail_global(path, "控制通道无效（guidance.control_channel）", error);
+    }
+    if (!guidance::valid_debug_config(mapping.debug)) {
+        return fail_global(path, "调试模式参数无效（guidance.debug_*）", error);
     }
     auto ballistic_pn = config.algorithms.ballistic_png;
     ballistic_pn.gravity = attitude.gravity_mps2;

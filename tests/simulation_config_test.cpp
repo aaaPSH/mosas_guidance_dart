@@ -54,6 +54,11 @@ int main() {
     CHECK_NEAR(cfg.app.algorithms.los_filter.estimated_target_distance, 15.0, 1e-12);
     CHECK_NEAR(cfg.app.algorithms.command_mapping.maximum_command_overload, 0.3, 1e-12);
     CHECK_NEAR(cfg.app.algorithms.command_mapping.maximum_command_acceleration, 9.80665, 1e-12);
+    CHECK(cfg.app.algorithms.command_mapping.debug.mode == guidance::GuidanceDebugMode::disabled);
+    CHECK(cfg.app.algorithms.command_mapping.debug.trigger_delay_ms == 200);
+    CHECK(cfg.app.algorithms.command_mapping.debug.duration_ms == 0);
+    CHECK_NEAR(cfg.app.algorithms.command_mapping.debug.yaw_overload_g, 0.0, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.command_mapping.debug.pitch_overload_g, 0.0, 1e-12);
     auto algorithms = app::make_default_guidance_algorithms(cfg.app.algorithms);
     domain::GuidanceInput input;
     input.vector_los = {true, {1, 0, 0}, {0, 0, 0}};

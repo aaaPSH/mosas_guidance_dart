@@ -11,10 +11,11 @@ bool CommandOutputProcessor::bind(CommandOutputBinding binding) {
 }
 bool CommandOutputProcessor::configured() const noexcept { return binding_.mapper != nullptr; }
 void CommandOutputProcessor::reset() noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    latest_.reset(); next_attempt_.store(0, std::memory_order_relaxed);
+    invalidate();
+    next_attempt_.store(0, std::memory_order_relaxed);
 }
 void CommandOutputProcessor::invalidate() noexcept {
+    if (binding_.mapper) binding_.mapper->reset();
     std::lock_guard<std::mutex> lock(mutex_);
     latest_.reset();
 }

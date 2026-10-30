@@ -50,6 +50,108 @@ int sampling(){
     }
     CHECK(skipped&&previous>=33);CHECK(errors.str().empty());return 0;
 }
+/** @return Zero if the real periodic writer triggers launch-delay output with an empty mailbox. */
+int launch_delay_without_visual_commands() {
+    SerialFixture serial;
+    CHECK(serial.open());
+    std::ostringstream errors;
+    std::atomic<std::int64_t> now{1'000'000'000};
+    std::atomic<bool> launched{false}, enabled{true};
+    guidance::CommandMappingConfig config;
+    config.debug.mode = guidance::GuidanceDebugMode::launch_delay;
+    config.debug.trigger_delay_ms = 200;
+    config.debug.duration_ms = 100;
+    config.debug.yaw_overload_g = 0.4;
+    config.debug.pitch_overload_g = -0.2;
+    app::SerialCommandSink sink(serial.port, {}, errors);
+    runtime::CommandOutputBinding binding;
+    binding.mapper = std::make_unique<guidance::CommandOutputMapper>(config);
+    binding.latest_state = [&] {
+        auto state = command_test_state(now.load());
+        state.launch.phase = launched ? domain::LaunchPhase::launched : domain::LaunchPhase::pre_launch;
+        state.launch.transition_time = command_test_time(1'000'000'000);
+        return std::optional<domain::FlightStateSnapshot>(state);
+    };
+    binding.now_ns = [&] { return now.load(); };
+    binding.output_enabled = [&] { return enabled.load(); };
+    binding.clock_domain = domain::ClockDomain::monotonic;
+    binding.maximum_attitude_age_ns = 50'000'000;
+    CHECK(sink.bind_output(std::move(binding)));
+    CHECK(sink.start());
+    CHECK(serial.wait_for(encoded(false, false)));
+    now = 1'100'000'000;
+    launched = true;
+    CHECK(serial.wait_for(encoded(true, false)));
+    now = 1'200'000'000;
+    CHECK(serial.wait_for(encoded(true, true, 0.4, -0.2)));
+    enabled = false; // The runtime's stop/fault gate must still suppress fixed commands.
+    CHECK(serial.wait_for(encoded(true, false)));
+    enabled = true;
+    CHECK(serial.wait_for(encoded(true, true, 0.4, -0.2)));
+    now = 1'300'000'000;
+    CHECK(serial.wait_for(encoded(true, false)));
+    sink.stop();
+    CHECK(sink.diagnostics().submitted_count == 0);
+    CHECK(sink.diagnostics().send_failure_count == 0);
+    CHECK(errors.str().empty());
+    return 0;
+}
+
+/** @return Zero if both periodic and event-driven sinks clear triggers on a same-generation restart. */
+int target_trigger_restart() {
+    SerialFixture serial;
+    CHECK(serial.open());
+    LiveOutputState state;
+    std::ostringstream errors, logs;
+    guidance::CommandMappingConfig config;
+    config.debug.mode = guidance::GuidanceDebugMode::target_detected;
+    config.debug.yaw_overload_g = 0.4;
+    app::SerialCommandSink sink(serial.port, {}, errors);
+    CHECK(bind_live_output(sink, state, config));
+    CHECK(sink.start());
+    CHECK(sink.try_submit(fresh_command()));
+    CHECK(serial.wait_for(encoded(true, true, 0.4)));
+    auto missing = fresh_command();
+    missing.target_found = missing.valid = false;
+    CHECK(sink.try_submit(missing));
+    CHECK(sink.start()); // An already-running writer must not begin a new trigger session.
+    CHECK(serial.wait_for(encoded(true, true, 0.4)));
+    sink.stop();
+    serial.drain();
+    const auto serial_config = serial.port->config();
+    serial.port->close();
+    CHECK(!sink.start());
+    CHECK(serial.port->open(serial_config));
+    errors.str({});
+    CHECK(sink.start());
+    CHECK(sink.try_submit(missing));
+    serial.drain();
+    ControlFrame frame;
+    CHECK(serial.read_frame(frame));
+    CHECK(frame == encoded(true, false));
+    CHECK(sink.try_submit(fresh_command()));
+    CHECK(serial.wait_for(encoded(true, true, 0.4)));
+    sink.stop();
+    CHECK(errors.str().empty());
+
+    app::LoggingCommandSink logger(logs);
+    CHECK(bind_live_output(logger, state, config));
+    CHECK(logger.start());
+    CHECK(logger.try_submit(fresh_command()));
+    CHECK(logger.latest_emission()->mapping.command.valid);
+    CHECK(!logger.start()); // Failed duplicate startup must not reset a live trigger.
+    CHECK(logger.try_submit(missing));
+    CHECK(logger.latest_emission()->mapping.command.valid);
+    logger.stop();
+    CHECK(logger.start());
+    CHECK(!logger.latest_emission());
+    CHECK(logger.try_submit(missing));
+    CHECK(!logger.latest_emission()->mapping.command.valid);
+    CHECK(!logger.latest_emission()->mapping.command.target_found);
+    logger.stop();
+    return 0;
+}
+
 int cadence(){
     SerialFixture serial;CHECK(serial.open());LiveOutputState state;std::ostringstream errors;
     app::CommandAppConfig config;config.send_rate_hz=10;config.command_timeout_ms=1;
@@ -66,4 +168,4 @@ int cadence(){
     return 0;
 }
 }
-int main(){CHECK(lifecycle()==0);CHECK(sampling()==0);CHECK(cadence()==0);return 0;}
+int main(){CHECK(lifecycle()==0);CHECK(sampling()==0);CHECK(cadence()==0);CHECK(launch_delay_without_visual_commands()==0);CHECK(target_trigger_restart()==0);return 0;}

@@ -8,6 +8,10 @@ public:
     virtual ~ICommandOutputMapper() = default;
     /** @return 构造配置可用于安全输出时为 true。 */
     virtual bool valid() const noexcept = 0;
+    /** @brief Clear all per-run trigger state without changing configuration.
+     * @note Call at a session or generation boundary with output attempts excluded by the caller.
+     */
+    virtual void reset() noexcept = 0;
     /** @param request 未限幅弹道请求。 @param context 同次输出的完整上下文。
      * @return 无效输入或保护触发时为无效零命令，保留相应原因及来源。
      */

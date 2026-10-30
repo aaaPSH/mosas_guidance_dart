@@ -23,9 +23,13 @@ public:
     bool bind(CommandOutputBinding binding);
     /** @return 已绑定完整依赖时为 true。 */
     bool configured() const noexcept;
-    /** @brief 新运行开始时清空快照及输出尝试编号，保留绑定。 */
+    /** @brief 新运行开始时清空映射器触发状态、快照及输出尝试编号，保留绑定。
+     * @note 调用方须保证旧输出已结束且新输出尚未开始；允许重复使用同一个 generation。
+     */
     void reset() noexcept;
-    /** @brief 切代时仅清空快照；不重用同一次运行的尝试编号。 */
+    /** @brief 切代时清空映射器触发状态及快照；不重用同一次运行的尝试编号。
+     * @note 必须在输出端发送屏障内调用，排除 prepare()/complete() 在途尝试。
+     */
     void invalidate() noexcept;
     /** @param request 最新弹道请求。 @param active_generation 发送屏障内当前代际。
      * @param expired 原提交有效期是否已到期。 @return 本次映射尝试，不代表输出已成功。

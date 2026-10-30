@@ -4,6 +4,7 @@
 
 namespace mosas::adapters {
 bool SimulationCommandSink::start(){
+    std::lock_guard<std::mutex> lock(mutex_);
     if(!command_output_.configured()||!session_->ready()||(audit_&&!audit_->healthy()))return false;
     command_output_.reset();return true;
 }
