@@ -1,5 +1,6 @@
 #include <mosas/runtime/runtime_supervisor.hpp>
 
+#include "body_vector_test_support.hpp"
 #include "fakes/fake_algorithm_ports.hpp"
 #include "fakes/fake_camera_source.hpp"
 #include "fakes/fake_clock.hpp"
@@ -206,8 +207,7 @@ int main() {
 
     domain::FlightStateSnapshot flight_result{};
     flight_result.speed_mps.value = 12.5;
-    flight_result.attitude.valid = true;
-    flight_result.attitude.navigation_from_dart = {};
+    flight_result.attitude = test::vector_test_attitude(0.25, -0.5, 0.35);
     flight_result.attitude.corrected_angular_velocity = {0.0, 0.0, 0.0};
     flight_result.launch.phase = domain::LaunchPhase::launched;
     flight_result.launch.transition_time.monotonic_ns = 900'000'000;
@@ -225,8 +225,10 @@ int main() {
     vision_control->push(detection);
     vision_control->push(detection);
 
-    los_control->set_result({true, {0.1}, {-0.2}});
-    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {true,{1,0,0},{0,0.3,-0.4}}});
+    const domain::DirectionDartUnit body_los{0.48, -0.36, 0.8};
+    los_control->set_result({true, body_los});
+    rate_filter_control->set_result({true, {true, {0.3}, {-0.4}},
+                                    {true, {0.8, 0.36, 0.48}, {0, 0.3, -0.4}}});
     domain::GuidanceOutput guidance_result{};
     guidance_result.valid = true;
     guidance_result.invalid_reason = domain::GuidanceInvalidReason::none;
@@ -299,8 +301,21 @@ int main() {
     CHECK(valid_command_seen);
     CHECK(invalid_zero_command_seen);
 
+    while (std::chrono::steady_clock::now() < command_deadline &&
+           video_recorder_control->frames().size() < 2) {
+        CHECK(!runtime.faulted());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     const auto published = video_recorder_control->frames();
-    CHECK(!published.empty());
+    CHECK(published.size() == 2);
+    // 建基准帧只有旋转到导航系的观测角，不能显示镖体系角或伪造速率。
+    const auto navigation_los = flight_result.attitude.navigation_from_dart.apply(body_los);
+    CHECK(published[0].overlay.line_of_sight_valid);
+    CHECK_NEAR(published[0].overlay.line_of_sight_q_y.value,
+               std::atan2(navigation_los.y, std::hypot(navigation_los.x, navigation_los.z)), 1e-12);
+    CHECK_NEAR(published[0].overlay.line_of_sight_q_z.value,
+               std::atan2(navigation_los.z, navigation_los.x), 1e-12);
+    CHECK(!published[0].overlay.line_of_sight_rate_valid);
     const auto valid_frame =
         std::find_if(published.begin(), published.end(),
                      [](const CapturingVideoRecorder::PublishedFrame& frame) {
@@ -315,13 +330,24 @@ int main() {
     CHECK(valid_frame->guidance.command.launched);
     CHECK(valid_frame->guidance.command.target_found);
     CHECK(valid_frame->state.attitude.valid);
+    CHECK(valid_frame->state.attitude.time.monotonic_ns == kFrameSecondNs);
+    CHECK_NEAR(valid_frame->state.attitude.pitch_rad.value, 0.25, 1e-12);
+    CHECK_NEAR(valid_frame->state.attitude.roll_rad.value, -0.5, 1e-12);
+    // 有效滤波帧的角度和速率必须来自同一导航系滤波状态，而非原始镖体系观测。
+    CHECK(valid_frame->overlay.line_of_sight_valid);
+    CHECK_NEAR(valid_frame->overlay.line_of_sight_q_y.value, std::asin(0.36), 1e-12);
+    CHECK_NEAR(valid_frame->overlay.line_of_sight_q_z.value, std::atan2(0.48, 0.8), 1e-12);
+    CHECK(valid_frame->overlay.line_of_sight_rate_valid);
+    CHECK_NEAR(valid_frame->overlay.line_of_sight_rate_q_y.value, 0.3, 1e-12);
+    CHECK_NEAR(valid_frame->overlay.line_of_sight_rate_q_z.value, -0.4, 1e-12);
     CHECK(valid_frame->state.launch.phase == domain::LaunchPhase::launched);
     CHECK(valid_frame->frame.image.is_valid());
     CHECK(guidance_control->call_count() == 1);
     CHECK_NEAR(valid_frame->state.speed_mps.value, 12.5, 1e-12);
     CHECK_NEAR(guidance_control->last_input().speed_mps.value, 12.5, 1e-12);
-    CHECK_NEAR(rate_filter_control->last_input().line_of_sight.q_y.value, 0.1,
-               1e-12);
+    CHECK_NEAR(rate_filter_control->last_input().line_of_sight.direction.x, body_los.x, 1e-12);
+    CHECK_NEAR(rate_filter_control->last_input().line_of_sight.direction.y, body_los.y, 1e-12);
+    CHECK_NEAR(rate_filter_control->last_input().line_of_sight.direction.z, body_los.z, 1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.x, 0.0, 1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.y, 0.0, 1e-12);
     CHECK_NEAR(valid_frame->guidance.command.overload_g.z, 0.0, 1e-12);
@@ -394,7 +420,7 @@ int main() {
     flight_state_control->set_result(flight_result);
     vision_control->push(detection);
     vision_control->push(detection);
-    los_control->set_result({true, {0.1}, {-0.2}});
+    los_control->set_result({true, body_los});
     rate_filter_control->set_result({true, {true, {0.3}, {-0.4}}, {true,{1,0,0},{0,0.3,-0.4}}});
     guidance_control->set_result(guidance_result);
     imu_source_control->release();

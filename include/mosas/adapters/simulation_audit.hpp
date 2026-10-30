@@ -25,8 +25,10 @@ struct SimulationAuditMetadata {
     std::uint32_t width=0,height=0;
     std::array<double,4> intrinsics{};
     double camera_hz=0,imu_hz=0,launch_speed_mps=0,cap_g=0;
-    // schema v2: Ny, Nz, sigma_a, sigma_l, initial_rate_covariance, maximum_gap_seconds.
-    std::array<double,6> parameters{};
+    /** @brief Ny, Nz, sigma_a, sigma_a_pitch, sigma_a_yaw, sigma_q, initial_covariance,
+     * maximum_gap_seconds, camera_lever_arm_x, estimated_target_distance, enable_filter (0/1).
+     */
+    std::array<double,11> parameters{};
     double maximum_command_acceleration=100;
 };
 enum class AuditLifecycle {ready,fault,stopped};

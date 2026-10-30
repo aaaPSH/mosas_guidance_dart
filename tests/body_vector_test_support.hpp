@@ -58,11 +58,26 @@ inline std::array<double, 3> to_test_navigation(const domain::AttitudeState &att
             r[6] * value[0] + r[7] * value[1] + r[8] * value[2]};
 }
 
-/** @brief 将测试单位方向表示为现有 LOS 俯仰/偏航观测角。 */
-inline domain::LineOfSight test_los(const std::array<double, 3> &direction) {
-    return {true,
-            {std::atan2(direction[1], std::hypot(direction[0], direction[2]))},
-            {std::atan2(direction[2], direction[0])}};
+/**
+ * @brief 将测试方向单位化为镖体系 LOS 观测，不经过角度表示。
+ * @param direction 相机光心指向目标的镖体系非零有限方向。
+ * @return 单位方向观测；退化或非有限输入返回无效观测。
+ */
+inline domain::DartLineOfSight test_dart_los(const std::array<double, 3>& direction) {
+    const double norm = std::hypot(std::hypot(direction[0], direction[1]), direction[2]);
+    if (!std::isfinite(norm) || norm < 1e-12) return {};
+    return {true, {direction[0] / norm, direction[1] / norm, direction[2] / norm}};
+}
+
+/**
+ * @brief 仅为角运动测试生成镖体系单位方向。
+ * @param elevation 仰角，单位 rad。
+ * @param azimuth 方位角，单位 rad。
+ * @return 对应角运动的单位方向观测。
+ */
+inline domain::DartLineOfSight test_dart_los_from_angles(double elevation, double azimuth) {
+    return {true, {std::cos(elevation) * std::cos(azimuth), std::sin(elevation),
+                   std::cos(elevation) * std::sin(azimuth)}};
 }
 
 } // namespace mosas::test

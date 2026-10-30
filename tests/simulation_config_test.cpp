@@ -43,10 +43,15 @@ int main() {
     CHECK(cfg.app.camera.fps == 120 && cfg.app.imu.timing.frequency_hz == 1000);
     CHECK(cfg.app.algorithms.attitude.launch_speed_mps == 16);
     CHECK(cfg.app.algorithms.attitude.launch_detection_mode == runtime::LaunchDetectionMode::two_stage);
-    CHECK_NEAR(cfg.app.algorithms.inertial_filter.sigma_a, 4.0, 1e-12);
-    CHECK_NEAR(cfg.app.algorithms.inertial_filter.sigma_l, 0.0005, 1e-12);
-    CHECK_NEAR(cfg.app.algorithms.inertial_filter.initial_rate_covariance, 1.0, 1e-12);
-    CHECK_NEAR(cfg.app.algorithms.inertial_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.sigma_a, 8.0, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.sigma_a_pitch, 10.0, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.sigma_a_yaw, 3.5, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.sigma_q, 0.0035, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.initial_covariance, 1.0, 1e-12);
+    CHECK(cfg.app.algorithms.los_filter.enable_filter);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.maximum_gap_seconds, 0.2, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.camera_lever_arm_x, 0.10, 1e-12);
+    CHECK_NEAR(cfg.app.algorithms.los_filter.estimated_target_distance, 15.0, 1e-12);
     CHECK_NEAR(cfg.app.algorithms.command_mapping.maximum_command_overload, 0.3, 1e-12);
     CHECK_NEAR(cfg.app.algorithms.command_mapping.maximum_command_acceleration, 9.80665, 1e-12);
     auto algorithms = app::make_default_guidance_algorithms(cfg.app.algorithms);
@@ -79,7 +84,7 @@ int main() {
     CHECK(app::AppConfigLoader::load(fixture.directory / "app.conf", &original, &error));
     CHECK(cfg.app.guidance.camera_intrinsics.fx == original.guidance.camera_intrinsics.fx);
     CHECK(cfg.app.algorithms.command_mapping.maximum_command_overload == original.algorithms.command_mapping.maximum_command_overload);
-    CHECK(cfg.app.algorithms.inertial_filter.sigma_a == original.algorithms.inertial_filter.sigma_a);
+    CHECK(cfg.app.algorithms.los_filter.sigma_a == original.algorithms.los_filter.sigma_a);
     CHECK(cfg.app.serial.device == original.serial.device); // Parsed, never opened.
     for (const auto& bad : {"[simulation]\napp_config=app.conf\n", "[simulation]\nrecording_directory=x\n",
                            "[simulation]\napp_config=absent.conf\nrecording_directory=x\n"}) CHECK(!load(bad));

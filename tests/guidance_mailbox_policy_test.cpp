@@ -1,5 +1,5 @@
 #include <mosas/guidance/ballistic_png_guidance.hpp>
-#include <mosas/guidance/inertial_vector_los_filter.hpp>
+#include <mosas/guidance/inertial_angle_los_filter.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 #include "fakes/fake_algorithm_ports.hpp"
 #include "fakes/fake_camera_source.hpp"
@@ -13,12 +13,13 @@
 /** @brief 脚本化视觉 LOS，数学滤波和导引仍使用生产实现。 */
 class ScriptedLos final : public mosas::ports::ILosEstimator {
 public:
-    mosas::domain::LineOfSight estimate(const mosas::domain::VisionDetection&,
+    mosas::domain::DartLineOfSight estimate(const mosas::domain::VisionDetection&,
         const mosas::domain::CameraIntrinsics&,
         const mosas::domain::Rotation3<mosas::domain::DartFrameTag,mosas::domain::CameraFrameTag>&) override {
         const auto index=next_++;
         if(index>=8)return {};
-        return {true,{index>=6?std::acos(-1.0)/2:0},{0}};
+        return {true, index >= 6 ? mosas::domain::DirectionDartUnit{0, 1, 0}
+                                  : mosas::domain::DirectionDartUnit{1, 0, 0}};
     }
 private:
     int next_=0;
@@ -53,7 +54,7 @@ int main() {
     deps.flight_state_estimator = std::move(flight);
     deps.vision_detector = std::move(vision);
     deps.los_estimator = std::move(los);
-    deps.los_rate_filter = std::make_unique<guidance::InertialVectorLosFilter>();
+    deps.los_rate_filter = std::make_unique<guidance::InertialAngleLosFilter>();
     deps.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
     deps.monotonic_clock = std::make_unique<test::FakeClock>(230'000'000);
     runtime::RuntimeSupervisorConfig config;

@@ -167,7 +167,7 @@ private:
 
 class FakeLosEstimator final : public ports::ILosEstimator {
 public:
-    domain::LineOfSight estimate(
+    domain::DartLineOfSight estimate(
         const domain::VisionDetection& detection,
         const domain::CameraIntrinsics& intrinsics,
         const domain::Rotation3<domain::DartFrameTag,
@@ -180,7 +180,7 @@ public:
         return result_;
     }
 
-    void set_result(domain::LineOfSight result) noexcept { result_ = result; }
+    void set_result(domain::DartLineOfSight result) noexcept { result_ = result; }
     std::size_t call_count() const noexcept { return call_count_; }
     const domain::VisionDetection& last_detection() const noexcept {
         return last_detection_;
@@ -196,7 +196,7 @@ public:
     std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
-    domain::LineOfSight result_{};
+    domain::DartLineOfSight result_{};
     domain::VisionDetection last_detection_{};
     domain::CameraIntrinsics last_intrinsics_{};
     domain::Rotation3<domain::DartFrameTag, domain::CameraFrameTag>

@@ -554,7 +554,7 @@ private:
 
 class ProbeLosEstimator final : public mosas::ports::ILosEstimator {
 public:
-    mosas::domain::LineOfSight
+    mosas::domain::DartLineOfSight
     estimate(const mosas::domain::VisionDetection&,
              const mosas::domain::CameraIntrinsics&,
              const mosas::domain::Rotation3<mosas::domain::DartFrameTag,

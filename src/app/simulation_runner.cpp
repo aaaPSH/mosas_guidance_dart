@@ -132,11 +132,14 @@ void SimulationRunner::step() {
                 observed.width=c.width;observed.height=c.height;observed.intrinsics={c.fx,c.fy,c.cx,c.cy};
                 observed.camera_hz=c.camera_hz;observed.imu_hz=c.imu_hz;
                 observed.launch_speed_mps=config_.app.algorithms.attitude.launch_speed_mps;
-                const auto& png=config_.app.algorithms.ballistic_png;const auto& los=config_.app.algorithms.inertial_filter;
+                const auto& png=config_.app.algorithms.ballistic_png;const auto& los=config_.app.algorithms.los_filter;
                 observed.cap_g=config_.app.algorithms.command_mapping.maximum_command_overload;
                 observed.maximum_command_acceleration=config_.app.algorithms.command_mapping.maximum_command_acceleration;
-                observed.parameters={png.navigation_constant_y,png.navigation_constant_z,los.sigma_a,los.sigma_l,
-                                     los.initial_rate_covariance,los.maximum_gap_seconds};
+                observed.parameters={png.navigation_constant_y,png.navigation_constant_z,
+                                     los.sigma_a,los.sigma_a_pitch,los.sigma_a_yaw,los.sigma_q,
+                                     los.initial_covariance,los.maximum_gap_seconds,
+                                     los.camera_lever_arm_x,los.estimated_target_distance,
+                                     los.enable_filter ? 1.0 : 0.0};
                 audit_=std::make_shared<adapters::SimulationAudit>(*audit_options_,meta.session_id,observed);
             }
             guidance::PngTraceObserver observer;
@@ -168,7 +171,7 @@ void SimulationRunner::step() {
             std::ostringstream ready;
             ready<<"MOSAS simulation ready session="<<meta.session_id<<" source="<<config_.app_config_path
                  <<" camera="<<c.width<<'x'<<c.height<<'@'<<c.camera_hz
-                 <<" algorithm=inertial_vector_ballistic_png";
+                 <<" algorithm=inertial_angle_ballistic_png";
             report(ready.str());
         }
         if(audit_&&!audit_->healthy())throw std::runtime_error("simulation audit failed: "+audit_->diagnostics().error);

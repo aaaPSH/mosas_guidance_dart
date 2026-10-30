@@ -2,8 +2,8 @@
 
 #include <mosas/guidance/ballistic_png_guidance.hpp>
 #include <mosas/guidance/command_output_mapper.hpp>
-#include <mosas/guidance/default_algorithm_adapters.hpp>
-#include <mosas/guidance/inertial_vector_los_filter.hpp>
+#include <mosas/guidance/pinhole_los_estimator.hpp>
+#include <mosas/guidance/inertial_angle_los_filter.hpp>
 #include <mosas/runtime/clock.hpp>
 #include <mosas/runtime/legacy_flight_state_adapter.hpp>
 #include <mosas/vision/opencv_vision_detector.hpp>
@@ -22,10 +22,10 @@ runtime::RuntimeSupervisorDependencies make_default_guidance_algorithms(
         std::make_unique<runtime::LegacyFlightStateEstimatorAdapter>(
             config.attitude);
     dependencies.los_estimator =
-        std::make_unique<guidance::ExistingLosEstimatorAdapter>();
+        std::make_unique<guidance::PinholeLosEstimator>();
 
     dependencies.los_rate_filter =
-        std::make_unique<guidance::InertialVectorLosFilter>(config.inertial_filter);
+        std::make_unique<guidance::InertialAngleLosFilter>(config.los_filter);
     auto png = config.ballistic_png;
     png.gravity = config.attitude.gravity_mps2;
     dependencies.guidance_law =

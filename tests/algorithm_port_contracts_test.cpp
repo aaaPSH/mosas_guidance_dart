@@ -73,15 +73,16 @@ int main() {
     CHECK(flight_state.last_timestamp_ns() == -1);
 
     test::FakeLosEstimator los;
-    los.set_result({true, {0.1}, {-0.2}});
+    los.set_result({true, {0.8, 0.36, 0.48}});
     const domain::VisionDetection los_input{};
     const domain::CameraIntrinsics intrinsics{100.0, 100.0, 50.0, 50.0};
     const domain::Rotation3<domain::DartFrameTag,
                             domain::CameraFrameTag> camera_to_dart;
     const auto los_result = los.estimate(los_input, intrinsics, camera_to_dart);
     CHECK(los_result.valid);
-    CHECK_NEAR(los_result.q_y.value, 0.1, 1e-12);
-    CHECK_NEAR(los_result.q_z.value, -0.2, 1e-12);
+    CHECK_NEAR(los_result.direction.x, 0.8, 1e-12);
+    CHECK_NEAR(los_result.direction.y, 0.36, 1e-12);
+    CHECK_NEAR(los_result.direction.z, 0.48, 1e-12);
     CHECK(los.call_count() == 1);
 
     test::FakeLosRateFilter rate_filter;

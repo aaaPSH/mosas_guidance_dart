@@ -137,7 +137,8 @@ struct SimulationAudit::Impl {
             <<",\"height\":"<<metadata.height<<",\"intrinsics\":";array(meta,metadata.intrinsics);
         meta<<",\"camera_hz\":";real(meta,metadata.camera_hz);meta<<",\"imu_hz\":";real(meta,metadata.imu_hz);
         meta<<",\"launch_speed_mps\":";real(meta,metadata.launch_speed_mps);meta<<",\"cap_g\":";real(meta,metadata.cap_g);
-        meta<<",\"parameter_names\":[\"Ny\",\"Nz\",\"sigma_a\",\"sigma_l\",\"initial_rate_covariance\",\"maximum_gap_seconds\"]";
+        meta<<",\"parameter_names\":[\"Ny\",\"Nz\",\"sigma_a\",\"sigma_a_pitch\",\"sigma_a_yaw\",\"sigma_q\","
+              "\"initial_covariance\",\"maximum_gap_seconds\",\"camera_lever_arm_x\",\"estimated_target_distance\",\"enable_filter\"]";
         meta<<",\"parameters\":";array(meta,metadata.parameters);
         meta<<",\"maximum_command_acceleration_mps2\":";
         if(std::isfinite(metadata.maximum_command_acceleration)) real(meta,metadata.maximum_command_acceleration);

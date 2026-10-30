@@ -1,5 +1,5 @@
 #include <mosas/guidance/ballistic_png_guidance.hpp>
-#include <mosas/guidance/inertial_vector_los_filter.hpp>
+#include <mosas/guidance/inertial_angle_los_filter.hpp>
 #include <mosas/runtime/legacy_flight_state_adapter.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 
@@ -98,7 +98,7 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
         detection.observation.valid = true;
         vision_control->push(detection);
     }
-    los_control->set_result({true, {0.0}, {0.0}});
+    los_control->set_result({true, {1.0, 0.0, 0.0}});
     rate_control->set_result({true, {true, {0.2}, {0.0}},
                              {true, {1.0, 0.0, 0.0}, {0.0, 0.2, 0.0}}});
     imu_control->release();
@@ -177,7 +177,7 @@ int main() {
     dependencies.flight_state_estimator = std::move(flight);
     dependencies.vision_detector = std::move(vision);
     dependencies.los_estimator = std::move(los);
-    dependencies.los_rate_filter = std::make_unique<guidance::InertialVectorLosFilter>();
+    dependencies.los_rate_filter = std::make_unique<guidance::InertialAngleLosFilter>();
     dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
     dependencies.monotonic_clock = std::make_unique<test::FakeClock>(1'100'000'000);
     runtime::RuntimeSupervisorConfig config;
@@ -192,7 +192,7 @@ int main() {
     state.launch.phase = domain::LaunchPhase::launched;
     state.launch.transition_time.monotonic_ns = 900'000'000;
     flight_control->set_result(state);
-    los_control->set_result({true, {0.0}, {0.0}});
+    los_control->set_result({true, {1.0, 0.0, 0.0}});
     for (int i = 0; i < 7; ++i) {
         domain::VisionDetection detection;
         detection.observation.valid = i != 2;

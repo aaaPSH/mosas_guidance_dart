@@ -12,16 +12,17 @@ public:
     virtual ~ILosRateFilter() = default;
 
     /**
-     * @brief 结合视线测量和镖体角速度更新视线角速度估计。
-     * @param input LOS、同步姿态/校正角速度、帧间隔和起飞代际。
-     * @return 共同有效性、角速率诊断及可选矢量估计；不提供的表示保持无效。
-     * @note 首帧只建立基准；矢量惯性导数仍以镖体系表达，不能当作导航系分量。
+     * @brief 使用镖体系视线向量和曝光姿态更新导航系惯性视线估计。
+     * @param input 镖体系单位 LOS、曝光同步姿态、帧间隔和起飞代际。
+     * @return 共同有效性、导航系角速率诊断及导航系矢量估计。
+     * @note 首帧只建立基准；方向和惯性导数均以导航系表达，不能重复补偿机体转动。
+     *       默认实现先补偿向量，再滤波仰角/方位角；q_z 诊断为 cos(q_y)*dq_z/dt。
      */
     virtual domain::LosRateEstimate update(
         const domain::LosRateFilterInput& input) = 0;
 
     /**
-     * @brief 返回最近一次更新的原始、未滤波和最终视线速率诊断值。
+     * @brief 返回最近镖体系向量观测及补偿后的惯性角度差分、滤波速率诊断。
      * @return 最近一次处理对应的速率样本。
      */
     virtual domain::LineOfSightRateSample sample() const = 0;

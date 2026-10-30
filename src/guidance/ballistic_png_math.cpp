@@ -1,5 +1,4 @@
 #include <mosas/guidance/ballistic_png_math.hpp>
-#include <algorithm>
 #include <cmath>
 
 namespace mosas::guidance {
@@ -20,7 +19,7 @@ PngCalculationTrace evaluate_ballistic_png(
     const double rho = std::hypot(l.x, l.z);
     result.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
     if (rho < 1e-6) return result;
-    result.inertial_los_elevation_rad = std::asin(std::clamp(l.y, -1.0, 1.0));
+    result.inertial_los_elevation_rad = std::atan2(l.y, rho);
     result.measured_elevation_rate_rad_s = u.y / rho;
     result.measured_lateral_rate_rad_s = (l.x * u.z - l.z * u.x) / rho;
     result.parabolic_elevation_rate_rad_s = -gravity * rho / (2 * speed);

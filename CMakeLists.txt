@@ -55,9 +55,8 @@ if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
 endif()
 
 add_library(mosas_guidance STATIC
-    src/guidance/guidance_estimator.cpp
-    src/guidance/default_algorithm_adapters.cpp
-    src/guidance/inertial_vector_los_filter.cpp
+    src/guidance/pinhole_los_estimator.cpp
+    src/guidance/inertial_angle_los_filter.cpp
     src/guidance/ballistic_png_math.cpp
     src/guidance/command_output_mapper.cpp
     src/guidance/ballistic_png_guidance.cpp
@@ -404,10 +403,10 @@ if(BUILD_TESTING)
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
 
-    add_executable(inertial_vector_los_filter_test tests/inertial_vector_los_filter_test.cpp)
-    configure_mosas_target(inertial_vector_los_filter_test)
-    target_link_libraries(inertial_vector_los_filter_test PRIVATE mosas_guidance)
-    add_test(NAME inertial_vector_los_filter_test COMMAND inertial_vector_los_filter_test)
+    add_executable(inertial_angle_los_filter_test tests/inertial_angle_los_filter_test.cpp)
+    configure_mosas_target(inertial_angle_los_filter_test)
+    target_link_libraries(inertial_angle_los_filter_test PRIVATE mosas_guidance)
+    add_test(NAME inertial_angle_los_filter_test COMMAND inertial_angle_los_filter_test)
 
     add_executable(ballistic_png_guidance_test tests/ballistic_png_guidance_test.cpp)
     configure_mosas_target(ballistic_png_guidance_test)
@@ -419,10 +418,10 @@ if(BUILD_TESTING)
     target_link_libraries(png_calculation_trace_test PRIVATE mosas_guidance)
     add_test(NAME png_calculation_trace_test COMMAND png_calculation_trace_test)
 
-    add_executable(guidance_adapter_test tests/guidance_adapter_test.cpp)
-    configure_mosas_target(guidance_adapter_test)
-    target_link_libraries(guidance_adapter_test PRIVATE mosas_guidance)
-    add_test(NAME guidance_adapter_test COMMAND guidance_adapter_test)
+    add_executable(pinhole_los_estimator_test tests/pinhole_los_estimator_test.cpp)
+    configure_mosas_target(pinhole_los_estimator_test)
+    target_link_libraries(pinhole_los_estimator_test PRIVATE mosas_guidance)
+    add_test(NAME pinhole_los_estimator_test COMMAND pinhole_los_estimator_test)
 
     if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
         add_executable(vision_adapter_test tests/vision_adapter_test.cpp)

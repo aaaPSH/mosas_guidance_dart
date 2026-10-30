@@ -1,5 +1,5 @@
 #include <mosas/guidance/command_output_mapper.hpp>
-#include "vector_los_math.hpp"
+#include "rotation_validation.hpp"
 #include <cmath>
 
 namespace mosas::guidance {

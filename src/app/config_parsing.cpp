@@ -474,19 +474,34 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             algorithms.command_mapping.control_channel = channel;
             return true;
         }
-        if (key == "inertial_los_sigma_a") {
-            return set_double(&algorithms.inertial_filter.sigma_a) || invalid();
+        if (key == "los_kalman_sigma_a") {
+            return set_double(&algorithms.los_filter.sigma_a) || invalid();
         }
-        if (key == "inertial_los_sigma_l") {
-            return set_double(&algorithms.inertial_filter.sigma_l) || invalid();
+        if (key == "los_kalman_sigma_a_pitch") {
+            return set_double(&algorithms.los_filter.sigma_a_pitch) || invalid();
         }
-        if (key == "inertial_los_initial_rate_covariance") {
-            return set_double(&algorithms.inertial_filter.initial_rate_covariance) || invalid();
+        if (key == "los_kalman_sigma_a_yaw") {
+            return set_double(&algorithms.los_filter.sigma_a_yaw) || invalid();
         }
-        if (key == "inertial_los_maximum_gap_ms") {
+        if (key == "los_kalman_sigma_q") {
+            return set_double(&algorithms.los_filter.sigma_q) || invalid();
+        }
+        if (key == "los_initial_covariance") {
+            return set_double(&algorithms.los_filter.initial_covariance) || invalid();
+        }
+        if (key == "los_enable_filter") {
+            return parse_bool(value, &algorithms.los_filter.enable_filter) || invalid();
+        }
+        if (key == "los_maximum_gap_ms") {
             if (!parse_double(value, &decimal)) return invalid();
-            algorithms.inertial_filter.maximum_gap_seconds = decimal * 0.001;
+            algorithms.los_filter.maximum_gap_seconds = decimal * 0.001;
             return true;
+        }
+        if (key == "los_camera_lever_arm_x") {
+            return set_double(&algorithms.los_filter.camera_lever_arm_x) || invalid();
+        }
+        if (key == "los_estimated_target_distance") {
+            return set_double(&algorithms.los_filter.estimated_target_distance) || invalid();
         }
         if (key == "initial_roi_x") return set_int(&algorithms.vision_config.initial_roi.x) || invalid();
         if (key == "initial_roi_y") return set_int(&algorithms.vision_config.initial_roi.y) || invalid();
@@ -681,10 +696,10 @@ bool validate_guidance(const std::filesystem::path& path, const AppConfig& confi
     }
     auto ballistic_pn = config.algorithms.ballistic_png;
     ballistic_pn.gravity = attitude.gravity_mps2;
-    if (!guidance::InertialVectorLosFilter::valid_config(config.algorithms.inertial_filter) ||
+    if (!guidance::InertialAngleLosFilter::valid_config(config.algorithms.los_filter) ||
         !guidance::BallisticPngGuidance::valid_config(ballistic_pn) ||
         !guidance::CommandOutputMapper::valid_config(mapping)) {
-        return fail_global(path, "惯性系矢量滤波或弹道系比例导引参数无效", error);
+        return fail_global(path, "惯性系角度滤波或弹道系比例导引参数无效", error);
     }
     if (!runtime::AttitudeEstimator::valid_config(attitude)) {
         return fail_global(path, "姿态/发射触发参数无效", error);

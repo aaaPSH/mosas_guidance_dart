@@ -1,6 +1,7 @@
 #include <mosas/app/default_guidance_algorithms.hpp>
 #include <mosas/app/app_config.hpp>
-#include <mosas/guidance/inertial_vector_los_filter.hpp>
+#include <mosas/guidance/inertial_angle_los_filter.hpp>
+#include <mosas/guidance/pinhole_los_estimator.hpp>
 #include "command_output_test_support.hpp"
 #include "test_support.hpp"
 #include <filesystem>
@@ -42,9 +43,15 @@ int main() {
     const auto root=std::filesystem::path(MOSAS_SOURCE_DIR)/"config";
     CHECK(app::AppConfigLoader::load(root/"mosas_guidance.conf",&config,&error));
     CHECK(!config.enable_timing_statistics && config.sync_calibration.directory.empty());
-    CHECK_NEAR(config.algorithms.inertial_filter.sigma_a,4,1e-12);
-    CHECK_NEAR(config.algorithms.inertial_filter.sigma_l,0.0005,1e-12);
-    CHECK_NEAR(config.algorithms.inertial_filter.maximum_gap_seconds,0.2,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a,8.0,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a_pitch,10.0,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a_yaw,3.5,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_q,0.0035,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.initial_covariance,1.0,1e-12);
+    CHECK(config.algorithms.los_filter.enable_filter);
+    CHECK_NEAR(config.algorithms.los_filter.maximum_gap_seconds,0.2,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.camera_lever_arm_x,0.10,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.estimated_target_distance,15.0,1e-12);
     CHECK_NEAR(config.algorithms.command_mapping.maximum_command_overload,0.3,1e-12);
     CHECK_NEAR(config.algorithms.command_mapping.maximum_command_acceleration,9.80665,1e-12);
     CHECK(config.camera.fps==120 && config.command.send_rate_hz==100 && config.command.command_timeout_ms==100);
@@ -56,13 +63,19 @@ int main() {
     CHECK(calibration.sync_calibration.directory==root.parent_path()/"data/sync_capture_01");
     CHECK(calibration.sync_calibration.seconds==45 && calibration.sync_calibration.fps==30);
     CHECK(calibration.sync_calibration.max_bytes==2048ULL*1024*1024);
+    CHECK_NEAR(calibration.algorithms.los_filter.sigma_a,8.0,1e-12);
+    CHECK_NEAR(calibration.algorithms.los_filter.sigma_a_pitch,10.0,1e-12);
+    CHECK_NEAR(calibration.algorithms.los_filter.sigma_a_yaw,3.5,1e-12);
+    CHECK_NEAR(calibration.algorithms.los_filter.sigma_q,0.0035,1e-12);
+    CHECK_NEAR(calibration.algorithms.los_filter.camera_lever_arm_x,0.18,1e-12);
 
     CHECK(file.load("png_navigation_constant_y=7\npng_navigation_constant_z=11\npng_maximum_command_overload=10\npng_maximum_command_acceleration=inf\n",config,error));
     bool observed=false;
     auto deps=app::make_default_guidance_algorithms(config.algorithms,
         [&](const domain::GuidanceInput& input,const guidance::PngCalculationTrace& trace){observed=input.source_frame_id==91 && trace.valid;});
     CHECK(deps.vision_detector && deps.flight_state_estimator && deps.los_estimator && deps.los_rate_filter && deps.guidance_law && deps.command_mapper && deps.monotonic_clock);
-    CHECK(dynamic_cast<guidance::InertialVectorLosFilter*>(deps.los_rate_filter.get()));
+    CHECK(dynamic_cast<guidance::PinholeLosEstimator*>(deps.los_estimator.get()));
+    CHECK(dynamic_cast<guidance::InertialAngleLosFilter*>(deps.los_rate_filter.get()));
     CHECK(dynamic_cast<guidance::BallisticPngGuidance*>(deps.guidance_law.get()));
     domain::GuidanceInput input;
     input.source_frame_id=91;input.time=test::command_test_time(1'000'000);
@@ -89,14 +102,29 @@ int main() {
         CHECK(actual.command.valid);
         CHECK(actual.command.overload_g.y==0 && actual.command.overload_g.z==0);
     }
+    CHECK(file.load("los_kalman_sigma_a=6\nlos_kalman_sigma_a_pitch=0\nlos_kalman_sigma_a_yaw=2\n"
+                    "los_kalman_sigma_q=0.01\nlos_initial_covariance=0\nlos_enable_filter=false\n"
+                    "los_maximum_gap_ms=150\nlos_camera_lever_arm_x=-0.12\nlos_estimated_target_distance=20\n",config,error));
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a,6.0,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a_pitch,0.0,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_a_yaw,2.0,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.sigma_q,0.01,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.initial_covariance,0.0,1e-12);
+    CHECK(!config.algorithms.los_filter.enable_filter);
+    CHECK_NEAR(config.algorithms.los_filter.maximum_gap_seconds,0.15,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.camera_lever_arm_x,-0.12,1e-12);
+    CHECK_NEAR(config.algorithms.los_filter.estimated_target_distance,20.0,1e-12);
     for(const auto* deleted:{"guidance_algorithm=png\n","body_vector_los_sigma_a=4\n","body_vector_navigation_constant=3\n",
-            "los_kalman_sigma_a_pitch=10\n","los_kalman_sigma_a_yaw=3\n","los_enable_filter=true\n",
-            "los_initial_covariance=1\n","los_process_noise=4\n","ballistic_png_navigation_constant=3\n"}) {
+            "inertial_los_sigma_a=4\n","inertial_los_sigma_l=0.0005\n","inertial_los_initial_rate_covariance=1\n",
+            "inertial_los_maximum_gap_ms=200\n","inertial_los_camera_lever_arm_x=0.18\n","inertial_los_estimated_target_distance=15\n",
+            "los_process_noise=4\n","ballistic_png_navigation_constant=3\n"}) {
         CHECK(!file.load(deleted,config,error));
         CHECK(error.find(std::string(deleted).substr(0,std::string(deleted).find('=')))!=std::string::npos);
     }
     for(const auto* invalid:{"control_channel=Pitch\n","png_navigation_constant_y=0\n","png_navigation_constant_z=nan\n",
-            "inertial_los_sigma_l=0\n","inertial_los_initial_rate_covariance=0\n","inertial_los_maximum_gap_ms=0\n",
+            "los_kalman_sigma_a=0\n","los_kalman_sigma_a_pitch=-1\n","los_kalman_sigma_a_yaw=nan\n",
+            "los_kalman_sigma_q=0\n","los_initial_covariance=-1\n","los_maximum_gap_ms=0\n",
+            "los_enable_filter=maybe\n","los_camera_lever_arm_x=inf\n","los_estimated_target_distance=0\n",
             "png_maximum_command_overload=-1\n","png_maximum_command_acceleration=-1\n","png_gravity=0\n",
             "camera_to_body_m00=2\n","launch_speed_mps=0\n","launch_detection_mode=unknown\n",
             "launch_release_confirm_ms=0\n","launch_release_timeout_ms=10\n","attitude_maximum_gap_ms=0\n",

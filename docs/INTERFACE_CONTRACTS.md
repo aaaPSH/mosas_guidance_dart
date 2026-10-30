@@ -146,7 +146,7 @@ using OverloadDartG = Vec3<DartFrameTag>; // 每分量以 g 为单位的无量�
 - Camera `C`：接口保留 `R_D_from_C`；默认单位矩阵，未来标定值只在一处注入。
 - roll 单位 rad，正方向绕 `+X` 右手规则。
 - LOS q 单位 rad，LOS rate 单位 rad/s，加速度/比力 m/s²，过载 g。
-- `DirectionDartUnit` 为镖体系单位 LOS，无量纲；`DirectionRateDartPerSec` 是 LOS 惯性导数的镖体系表达，单位 1/s。惯性导数不是相机测得的相对导数，也不是导航系坐标分量。
+- `DartLineOfSight::direction` 使用无量纲的镖体系单位向量 `DirectionDartUnit`，不经过镖体系视线角。滤波器使用曝光姿态直接旋转到导航系，输出 `DirectionNavigationUnit` 和 `DirectionRateNavigationPerSec`；导数单位为 1/s，不是相机测得的相对导数。
 - 指令过载是下发的横向比力/g，不是净运动学加速度/g。PNG 与矢量 PN 均在 LOS 速率域扣除自然抛物线基准，不在输出端另加重力；矢量 PN 的基准方向经完整姿态转换到镖体系。
 
 任何 `Vec3` 跨模块传递必须通过坐标标签/字段名表达坐标系。禁止把“navigation_acceleration”“body_overload”等不同含义复用同一个无标签数组。
@@ -220,20 +220,15 @@ struct AttitudeState {
     bool valid;
 };
 
-template<class Frame>
-struct LosMeasurement {
-    SensorTime time;
+struct DartLineOfSight {
     bool valid;
-    double q_y_rad;
-    double q_z_rad;
+    DirectionDartUnit direction; // 相机光心指向目标，有限且单位化
 };
 
-template<class Frame>
-struct LosRate {
-    SensorTime time;
+struct LineOfSightAngularVelocity {
     bool valid;
-    double q_y_rad_s;
-    double q_z_rad_s;
+    Quantity<RadiansPerSecond> q_y;
+    Quantity<RadiansPerSecond> q_z; // 横向有效角速率 cos(q_y) * dq_z/dt
 };
 
 enum class LaunchPhase { unknown, pre_launch, launched };
@@ -258,30 +253,33 @@ struct ImuSampleAtFrame {
 
 struct VectorLosEstimate {
     bool valid;
-    DirectionDartUnit direction;
-    DirectionRateDartPerSec inertial_direction_rate;
+    DirectionNavigationUnit direction;
+    DirectionRateNavigationPerSec inertial_direction_rate;
 };
 
 struct LosRateFilterInput {
-    LineOfSight line_of_sight;
+    DartLineOfSight line_of_sight;
     AttitudeState attitude;
     double dt_seconds;
     std::uint64_t generation;
 };
 
 struct LosRateEstimate {
-    bool valid; // 制导估计的共同有效性，不等同于角度诊断有效性
+    bool valid; // 惯性角度及角速率状态有效；角度滤波在方位极点拒绝输出
     LineOfSightAngularVelocity angular_velocity;
     VectorLosEstimate vector;
+};
+
+struct LineOfSightRateSample {
+    DartLineOfSight line_of_sight;
+    LineOfSightAngularVelocity raw_angular_velocity;
+    LineOfSightAngularVelocity filtered_angular_velocity;
 };
 
 struct GuidanceInput {
     std::uint64_t source_frame_id;
     SensorTime time;
-    LineOfSight line_of_sight;
-    LineOfSightAngularVelocity angular_velocity;
     Quantity<MetersPerSecond> speed_mps;
-    AttitudeState attitude;
     VectorLosEstimate vector_los;
 };
 
@@ -392,8 +390,11 @@ public:
 
 class ILosEstimator {
 public:
-    virtual ResultCode estimate(const TargetObservation&,
-                                LosMeasurement<DartFrameTag>*) noexcept = 0;
+    virtual domain::DartLineOfSight estimate(
+        const domain::VisionDetection& observation,
+        const domain::CameraIntrinsics& intrinsics,
+        const domain::Rotation3<domain::DartFrameTag,
+                                domain::CameraFrameTag>& dart_from_camera) = 0;
     virtual ~ILosEstimator() = default;
 };
 
@@ -454,66 +455,50 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 
 ### 6.2 默认 PNG 的抛物线 LOS 角速度补偿
 
-默认 `png` 在角速度域扣除自然抛物线基准，不改变标量 LOS 滤波器的测量状态；`body_vector_pn` 使用同一基准的矢量形式（见 6.3）。PNG 先用当前完整姿态将镖体系 LOS 单位方向转到导航系，再求惯性 LOS 仰角：
+`BallisticPngGuidance` 在角速度域扣除自然抛物线基准，不改变角度滤波器的状态。它直接使用滤波器输出的导航系单位方向 `l_N` 及切向导数 `u_N`：
 
-```
-l_N = R_N_from_D * l_D
-q_y_inertial = atan2(l_N.y, hypot(l_N.x, l_N.z))
-q_dot_y_parabola = -g0 * cos(q_y_inertial) / (2 * V_actual)
+```text
+rho = hypot(l_N.x, l_N.z)
+q_y_inertial = atan2(l_N.y, rho)
+q_dot_y_measured = u_N.y / rho
+q_dot_z_effective = (l_N.x*u_N.z - l_N.z*u_N.x) / rho
+q_dot_y_parabola = -g0 * rho / (2 * V_actual)
 s_y = q_dot_y_measured - q_dot_y_parabola
 n_y = N_y * V_actual * s_y / g0
+n_z = N_z * V_actual * q_dot_z_effective / g0
 ```
 
-`q_dot_y_measured` 使用已有 IMU 转动补偿、滤波后的惯性 LOS 角速度（rad/s），不额外积分成视线角；`V_actual` 使用曝光时刻同步的动态速度。完整姿态用于求惯性仰角，不能直接用机体视线角、机体俯仰或两者相加替代。
+`V_actual` 使用曝光时刻同步的动态速度。姿态转换和杆臂补偿已在滤波之前完成，不再重复施加机体转动补偿。若测量速率恰好等于自然抛物线速率且横向速率为零，原始弹道请求为零，输出端不叠加保持高度的比力。
 
-补偿发生在导引律增益之前；原纵向输出中的 `+cos(pitch)` 删除。若测量速率恰好等于自然抛物线速率且横向速率为零，过载输出为零，不再自动叠加保持高度的比力。横向 PNG 公式和 roll 变换保持原逻辑；转到镖体系后按 `control_channel` 选择通道，再执行合成过载和加速度限幅，默认 `both` 保持双通道行为。姿态传递完整旋转矩阵，pitch/roll 从该矩阵求得，旧的独立角度接口移除。
+`PngCalculationTrace` 记录惯性仰角、测量速率、抛物线基准和补偿后速率；CSV 与 overlay 不扣除该基准。发送端使用最新姿态将原始弹道请求映射到镖体系，再按 `control_channel` 选轴及限幅。速度、视线或最新姿态无效时拒绝输出，不用旧公式回退。
 
-`PngCalculationTrace` 额外记录惯性仰角、测量纵向速率、抛物线基准速率和补偿后速率；原始/滤波 LOS 观测及 overlay 不因补偿而被覆盖。速度或姿态无效时拒绝计算，不使用固定初速或未补偿旧公式回退。
+### 6.3 补偿后的惯性系双通道视线角滤波
 
-### 6.3 可选镖体系矢量 PN
+默认工厂只装配 `PinholeLosEstimator`、`InertialAngleLosFilter` 和 `BallisticPngGuidance`。观测端保留向量接口，先完成安装旋转、曝光姿态转换和相对首帧的杆臂补偿，再按原始 `atan2` 公式计算仰角、方位角：
 
-`[guidance] guidance_algorithm=png|body_vector_pn` 控制工厂成对选择滤波器和制导律；未配置该键时仍使用上述带抛物线速率补偿的 PNG。仓库 `config/mosas_guidance.conf` 显式选择 `body_vector_pn`。标量滤波实现不伪造矢量估计，新制导律也不从角速率诊断回退重建矢量状态。
-
-`BodyVectorLosFilter` 保存六状态 `[l_D,u_D]` 和完整 6×6 协方差。测量为单位 LOS；`u_D` 为惯性 LOS 导数的镖体系表达。两帧的坐标运输采用：
-
-```
-C = transpose(R_N_from_D_current) * R_N_from_D_previous
-l_pred = C * (l_previous + dt * u_previous)
-u_pred = C * u_previous
-```
-
-完整协方差同样运输，测量更新采用 Joseph 形式；单位长度和切向约束通过归一化映射及其 Jacobian 同时施加到状态和协方差。姿态运输已包含 IMU 转动补偿，不能再叠加 `omega_body × l`。
-
-首帧只建立基准，不传播占位间隔。丢目标、IMU/姿态匹配失败、时间异常、generation 切换后流水线清除连续段；新滤波器也在超过 `body_vector_los_maximum_gap_ms` 时以当前帧重建基准。恢复后的第一帧不输出有效速率。新算法不对丢失目标盲目外推制导。
-
-新 PN 使用单个导航系数，速度方向按小攻角/侧滑模型近似为镖体 +X：
-
-```
-l_N = R_N_from_D * l_D
-e_up_N = (0,1,0)
-u_parabola_N = -g / (2 * V_actual) * (e_up_N - l_N.y * l_N)
-u_parabola_D = transpose(R_N_from_D) * u_parabola_N
-u_compensated_D = u_D - u_parabola_D
-omega_compensated_D = l_D × u_compensated_D
-f_command_D = N * V_actual * (omega_compensated_D × e_x)
-n_command_D = f_command_D / g
+```text
+v_C = [1, -(v-cy)/fy, (u-cx)/fx]
+l_D = normalize(R_D_from_C * v_C)
+l_N_cam = R_N_from_D(t_exposure) * l_D
+r_cam_N = R_N_from_D(t_exposure) * [L_x, 0, 0]
+z_N = normalize(l_N_cam + (r_cam_N-r_cam_N_reference) / R_estimated)
+q_y = atan2(z_N.y, hypot(z_N.x, z_N.z))
+q_z = atan2(z_N.z, z_N.x)
 ```
 
-`u_parabola_N` 是 `q_dot_y_parabola=-g*cos(q_y_inertial)/(2*V_actual)`、惯性 LOS 方位角速率为零的单位方向导数：`e_up_N-l_N.y*l_N` 的长度为 `cos(q_y_inertial)`，不需要除以该余弦，故导航系仰角极点也连续有效。基准经完整姿态转换到镖体系后才扣除，roll=90° 时补偿不会仍固定在镖体 Y。滤波器原始/滤波方向与惯性导数保持不变，仅在制导计算局部使用补偿值；不使用标量速率诊断作为回退。
+`PinholeLosEstimator` 检查目标、有限内参、正焦距和 SO(3) 安装旋转。`InertialAngleLosFilter` 防御性单位化输入方向，拒绝非有限、模长小于 1e-12 或溢出的方向；相机起点和既有相对基准帧视差公式不变。
 
-导航项不再额外按 roll 旋转，也不使用旧横向 `cos_pitch` 因子；输出端的 `+g*R[1][1/2]` 横向重力项已删除，避免重复补偿。最终先按 `control_channel` 选择镖体系通道，再对启用的 Y/Z 指令比力同比例限幅，取过载上限和加速度上限/g 的较小值；X=0、Y/Z 分别下发。弹道系诊断量仅为记录转换，不反馈到镖体系命令计算。
+俯仰、方位各使用一个独立的二状态 Kalman：`x=[q,dq/dt]`，`F=[1,dt;0,1]`，`H=[1,0]`，`Q=sigma_a_channel²*[dt⁴/4,dt³/2;dt³/2,dt²]`，`R=sigma_q²`。首帧以当前角度、零速率、`P=diag(R,initial_covariance)` 初始化；后续帧直接更新角度观测，不再使用机体角速度前馈。协方差以与原二状态更新等价的 Joseph 形式计算；方位差分、创新和状态正确处理 ±π 跨界。
 
-角速率展示由矢量投影得到，LOS 仰角极点处可以无效，但不影响有效矢量 PN。LOS 离轴角不要求很小，但速度轴近似、实际机动能力、闭环延迟仍限制适用范围，不能据此承诺命中。
+恢复的 `[guidance]` 参数为 `los_kalman_sigma_a=8`、`los_kalman_sigma_a_pitch=10`、`los_kalman_sigma_a_yaw=3.5`、`los_kalman_sigma_q=0.0035`、`los_initial_covariance=1`、`los_enable_filter=true`。噪声为标准差；通道噪声设为 0 时使用公共值，初始速率方差可为 0。关闭滤波时仍先补偿惯性向量，再计算角度及帧间差分。
 
-新配置键：`body_vector_navigation_constant`、`body_vector_los_sigma_a`（1/s²）、`body_vector_los_sigma_l`（无量纲）、`body_vector_los_initial_rate_covariance`（(1/s)²）、`body_vector_los_maximum_gap_ms`、`body_vector_maximum_command_overload`（g）、`body_vector_maximum_command_acceleration`（m/s²，`inf` 可禁用）。重力共用现有 `png_gravity` 配置和姿态估计的 `gravity_mps2`；`launch_speed_mps` 仅为标定发射速度初值，不再作为固定制导速度。
+下游 `VectorLosEstimate` 不再是六维滤波状态，而是由滤波角度解析生成：`l_N=[cos(q_y)cos(q_z),sin(q_y),cos(q_y)sin(q_z)]`，`u_N` 为该式对时间的导数，天然满足单位长度和切向约束。公共角速率诊断保持 `dq_y/dt`、`cos(q_y)*dq_z/dt` 的定义，不能将未经投影的方位角导数送给 PNG。
 
-C++ 参数结构的缺省值保持 N=3、sigma_a=8、sigma_l=0.0035、初始速率方差=1、最大间隔=200ms，总比力限制为 1g/9.80665m/s²。仓库配置显式采用离线回放候选 sigma_a=4、sigma_l=0.0005，初始速率方差和最大间隔保持不变；总比力上限显式设为 0.3g、加速度上限保持 9.80665m/s²，避免算法切换意外提高既有上限。候选参数尚需独立实测验证。限幅作用于抛物线速率补偿后的最终指令，不单独保留保持高度的重力前馈。测得的矢量惯性导数等于自然抛物线基准时输出为零；零 LOS 速率并不等于基准速率，例如水平前向 LOS、零速率时未限幅指令为 `N/2 g`。矢量 PN 保留自身几何投影，不承诺离轴场景中与标量 PNG 的各轴输出完全相同。
-
-“滚转一致性”验证保持同一物理场景并同步转换输入；不同 roll 的镖体系输出应不同，但转换回相同惯性系后的指令一致。固定镖体系输入数值只改变 roll，不是这个等价性测试。
+首帧不传播占位间隔。丢目标、姿态匹配失败、时间异常或 generation 切换后清除连续段；超过 `los_maximum_gap_ms` 时重建角度和杆臂基准，不盲目外推制导。`los_camera_lever_arm_x` 和 `los_estimated_target_distance` 保留原补偿几何。方位极点（单位方向水平投影小于 1e-6）无法支持角度状态，滤波器重置并返回无效结果。显示与 CSV 从同一滤波状态生成惯性角度和速率；首帧及滤波不可用时仅显示曝光姿态旋转后的当前观测。六维矢量滤波器、球面投影、各向同性协方差及 `inertial_los_*` 配置均已删除，不保留兼容入口。
 
 ### 6.4 镖体系控制通道选择
 
-`[guidance] control_channel=both|pitch|yaw` 在启动时同时配置 PNG 和矢量 PN；省略时为 `both`，未知值拒绝加载，不接受带 `_only` 的别名。修改后须重启，不在运行中切换算法状态。
+`[guidance] control_channel=both|pitch|yaw` 在启动时配置发送端通道选择；省略时为 `both`，未知值拒绝加载，不接受带 `_only` 的别名。修改后须重启，不在运行中切换算法状态。
 
 | 值 | 启用输出 | 关闭输出 |
 | --- | --- | --- |

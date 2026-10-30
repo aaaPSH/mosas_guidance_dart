@@ -4,7 +4,7 @@
 #include <mosas/guidance/ballistic_png_guidance.hpp>
 #include <mosas/guidance/command_output_mapper.hpp>
 #include <mosas/vision/vision_types.hpp>
-#include <mosas/guidance/inertial_vector_los_filter.hpp>
+#include <mosas/guidance/inertial_angle_los_filter.hpp>
 #include <mosas/runtime/attitude_estimator.hpp>
 #include <mosas/runtime/runtime_supervisor.hpp>
 #include <mosas/output/output_config.hpp>
@@ -86,12 +86,12 @@ struct CommandAppConfig {
     int command_timeout_ms = 100;
 };
 
-/** @brief 唯一惯性矢量制导及发送端输出配置。 */
+/** @brief 惯性视线角滤波、弹道 PNG 及发送端输出配置。 */
 struct GuidanceAlgorithmConfig {
     VisionConfig vision_config{
         {0, 0, 320, 240}, {35, 85, 80, 255, 100, 255}, 40, 40, 8, 0.5,
         0.35};
-    guidance::InertialVectorLosFilterConfig inertial_filter{};
+    guidance::InertialAngleLosFilterConfig los_filter{};
     guidance::BallisticPngConfig ballistic_png{};
     guidance::CommandMappingConfig command_mapping{};
     runtime::AttitudeEstimatorConfig attitude{};

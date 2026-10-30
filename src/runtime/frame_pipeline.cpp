@@ -67,6 +67,30 @@ format_imu_source_diagnostics(const ImuSourceDiagnostics& diagnostics) {
     return message.str();
 }
 
+/**
+ * @brief 将导航系 LOS 方向投影成 CSV 与画面共用的仰角、方位角。
+ * @param direction 曝光时刻的导航系观测或滤波方向，不能传入镖体系方向。
+ * @param overlay 写入角度和有效位；无效方向或仰角极点不伪造方位角。
+ */
+void set_inertial_los_overlay(const domain::DirectionNavigationUnit& direction,
+                              domain::GuidanceOverlay& overlay) noexcept {
+    overlay.line_of_sight_valid = false;
+    overlay.line_of_sight_q_y = {};
+    overlay.line_of_sight_q_z = {};
+    if (!std::isfinite(direction.x) || !std::isfinite(direction.y) ||
+        !std::isfinite(direction.z)) {
+        return;
+    }
+    const double horizontal = std::hypot(direction.x, direction.z);
+    const double norm = std::hypot(horizontal, direction.y);
+    if (!std::isfinite(norm) || norm < 1e-12 || horizontal < 1e-6 * norm) {
+        return;
+    }
+    overlay.line_of_sight_valid = true;
+    overlay.line_of_sight_q_y.value = std::atan2(direction.y, horizontal);
+    overlay.line_of_sight_q_z.value = std::atan2(direction.z, direction.x);
+}
+
 domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>
 to_domain_rotation(const RotationMatrix3& rotation) {
     return domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>(
@@ -718,7 +742,7 @@ void FramePipeline::processing_worker() noexcept {
             }
 
             const auto line_of_sight_started = std::chrono::steady_clock::now();
-            const domain::LineOfSight line_of_sight = los_estimator_->estimate(
+            const domain::DartLineOfSight line_of_sight = los_estimator_->estimate(
                 result.vision_detection, config_.camera_intrinsics,
                 config_.dart_from_camera);
             record_timing(TimingStage::line_of_sight,
@@ -729,7 +753,7 @@ void FramePipeline::processing_worker() noexcept {
                     domain::GuidanceInvalidReason::invalid_los);
                 const std::string details =
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns);
-                log_output_diagnostic("视线角计算无效", details);
+                log_output_diagnostic("视线向量计算无效", details);
                 reset_rate_segment();
                 if (attitude_lookup->launched &&
                     !submit_neutral_command(
@@ -742,9 +766,10 @@ void FramePipeline::processing_worker() noexcept {
                 result = ProcessedFrame{};
                 continue;
             }
-            result.overlay.line_of_sight_valid = true;
-            result.overlay.line_of_sight_q_y = line_of_sight.q_y;
-            result.overlay.line_of_sight_q_z = line_of_sight.q_z;
+            // 触发前及建基准帧直接旋转观测向量，仅在显示端提取导航系角度。
+            set_inertial_los_overlay(
+                result.flight_state.attitude.navigation_from_dart.apply(line_of_sight.direction),
+                result.overlay);
 
             if (!attitude_lookup->launched) {
                 // 触发前图像仍可识别目标，但不建立飞行滤波状态或计算制导。
@@ -760,7 +785,7 @@ void FramePipeline::processing_worker() noexcept {
 
             if (!has_frame_timestamp) {
                 los_rate_filter_->reset();
-                // 首帧仅建立基准；占位 dt 不用于矢量状态的时间传播。
+                // 首帧仅建立角度和杆臂基准，不按占位 dt 传播滤波状态。
                 const auto initial_rate = los_rate_filter_->update(
                     {line_of_sight, result.flight_state.attitude, 1.0,
                      attitude_lookup->launch_generation});
@@ -833,6 +858,10 @@ void FramePipeline::processing_worker() noexcept {
                 result = ProcessedFrame{};
                 continue;
             }
+            // 有效滤波帧的角度与角速率来自同一状态，保留杆臂修正，不显示原始机体角。
+            set_inertial_los_overlay(
+                rate.vector.valid ? rate.vector.direction : domain::DirectionNavigationUnit{},
+                result.overlay);
             result.overlay.line_of_sight_rate_valid = rate.angular_velocity.valid;
             result.overlay.line_of_sight_rate_q_y = rate.angular_velocity.q_y;
             result.overlay.line_of_sight_rate_q_z = rate.angular_velocity.q_z;

@@ -50,7 +50,7 @@ int verify_frame_metadata() {
     runtime::RuntimeOutputPorts ports; ports.video=std::move(recorder);
     auto vision=std::make_unique<test::FakeVisionDetector>(); auto* vision_control=vision.get();
     auto estimator=std::make_unique<test::FakeFlightStateEstimator>(); auto* estimator_control=estimator.get();
-    auto los=std::make_unique<test::FakeLosEstimator>(); domain::LineOfSight line; line.valid=true; los->set_result(line);
+    auto los=std::make_unique<test::FakeLosEstimator>(); los->set_result({true, {1,0,0}});
     auto rate=std::make_unique<test::FakeLosRateFilter>(); domain::LosRateEstimate r; r.valid=true; r.angular_velocity.valid=true; rate->set_result(r);
     auto guidance=std::make_unique<test::FakeGuidanceLaw>(); domain::GuidanceOutput g; g.valid=true; g.command.overload_g={0,2,3}; guidance->set_result(g);
     auto dependencies = test::mapped_dependencies();
