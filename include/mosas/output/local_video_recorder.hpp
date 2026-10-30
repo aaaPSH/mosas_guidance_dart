@@ -12,14 +12,12 @@
 #include <string>
 #include <vector>
 
-#include <opencv2/core/types.hpp>
 #include <opencv2/videoio.hpp>
 
 namespace mosas::output {
 
 struct LocalVideoRecorderOptions {
     bool draw_visualization = false;
-    cv::Point2d line_of_sight_reference_point{};
 };
 
 /// 本地视频 sink；连续模式直接写帧，起飞窗口模式在内存上限内缓存并持久化。
@@ -28,7 +26,7 @@ public:
     /**
      * @brief 创建本地视频记录器。
      * @param session 与遥测 CSV sink 共用的路径及窗口协调会话。
-     * @param options 可视化叠加和 LOS 参考点配置。
+     * @param options 可视化叠加开关。
      */
     explicit LocalVideoRecorder(
         std::shared_ptr<LocalRecordingSession> session,

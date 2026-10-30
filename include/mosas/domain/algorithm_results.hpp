@@ -26,7 +26,6 @@ struct VisionDiagnostics {
     PixelRect bounding_box{};
     PixelRect next_search_region{};
     int area_pixels = 0;
-    int minimum_blob_area_pixels = 0;
 };
 
 struct VisionDetection {

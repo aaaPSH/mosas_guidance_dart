@@ -17,7 +17,6 @@ void copy_diagnostics(const VisionResult& result,
     diagnostics->next_search_region = {
         result.next_roi.x, result.next_roi.y, result.next_roi.width,
         result.next_roi.height};
-    diagnostics->minimum_blob_area_pixels = result.minimum_blob_area;
     if (result.found) {
         diagnostics->bounding_box = {result.blob.x, result.blob.y,
                                      result.blob.width, result.blob.height};

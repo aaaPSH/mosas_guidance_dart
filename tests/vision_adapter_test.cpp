@@ -34,7 +34,6 @@ int main() {
     CHECK(found.next_roi.y == 36);
     CHECK(found.next_roi.width == 22);
     CHECK(found.next_roi.height == 18);
-    CHECK(found.minimum_blob_area == 20);
     CHECK(recognizer.is_tracking());
 
     mosas::vision::OpenCvVisionDetector detector(config);
@@ -63,8 +62,6 @@ int main() {
     CHECK(adapted.diagnostics.next_search_region.y == found.next_roi.y);
     CHECK(adapted.diagnostics.next_search_region.width == found.next_roi.width);
     CHECK(adapted.diagnostics.next_search_region.height == found.next_roi.height);
-    CHECK(adapted.diagnostics.minimum_blob_area_pixels ==
-          found.minimum_blob_area);
 
     const cv::Mat empty_frame(96, 128, CV_8UC3, cv::Scalar(0, 0, 0));
     const VisionResult lost = recognizer.process(empty_frame);
@@ -73,7 +70,6 @@ int main() {
     CHECK(lost.next_roi.y == config.initial_roi.y);
     CHECK(lost.next_roi.width == config.initial_roi.width);
     CHECK(lost.next_roi.height == config.initial_roi.height);
-    CHECK(lost.minimum_blob_area == config.min_blob_area);
     CHECK(!recognizer.is_tracking());
     const auto adapted_lost = detector.detect(
         {empty_frame.data,
@@ -87,8 +83,6 @@ int main() {
           mosas::domain::ObservationReason::not_found);
     CHECK(adapted_lost.diagnostics.next_search_region.x ==
           config.initial_roi.x);
-    CHECK(adapted_lost.diagnostics.minimum_blob_area_pixels ==
-          config.min_blob_area);
 
     const cv::Mat invalid_frame;
     const VisionResult invalid = recognizer.process(invalid_frame);
@@ -97,7 +91,6 @@ int main() {
     CHECK(invalid.next_roi.y == config.initial_roi.y);
     CHECK(invalid.next_roi.width == config.initial_roi.width);
     CHECK(invalid.next_roi.height == config.initial_roi.height);
-    CHECK(invalid.minimum_blob_area == config.min_blob_area);
     const auto adapted_invalid = detector.detect(
         {nullptr, 0, 0, 0, 0, mosas::domain::PixelFormat::unknown}, 79,
         frame_time);
@@ -106,7 +99,5 @@ int main() {
           mosas::domain::ObservationReason::invalid_frame);
     CHECK(adapted_invalid.diagnostics.next_search_region.x ==
           config.initial_roi.x);
-    CHECK(adapted_invalid.diagnostics.minimum_blob_area_pixels ==
-          config.min_blob_area);
     return 0;
 }

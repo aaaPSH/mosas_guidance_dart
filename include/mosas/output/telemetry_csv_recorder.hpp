@@ -45,6 +45,12 @@ public:
 private:
     bool record_continuous(const runtime::ProcessedFrame& frame);
     bool record_launch_window(const runtime::ProcessedFrame& frame);
+    /**
+     * @brief 序列化当前帧的导航惯性系 LOS、曝光三轴姿态和匹配的输出尝试。
+     * @param frame_index 本录制文件内的递增帧序号。
+     * @param frame 不可变的处理快照；姿态须已插值到相机曝光时刻。
+     * @return 与 CSV 表头匹配的一行，含换行符；无效姿态三列留空。
+     */
     std::string make_csv_row(std::uint64_t frame_index,
                              const runtime::ProcessedFrame& frame) const;
     bool open_recording(std::uint64_t generation);

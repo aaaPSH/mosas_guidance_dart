@@ -1,4 +1,5 @@
 #include <mosas/output/telemetry_csv_recorder.hpp>
+#include <mosas/output/output_mapping.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -15,12 +16,11 @@ constexpr char kFlightDataHeader[] =
     "imu_timestamp_ns,vision_found,target_x,target_y,target_width,"
     "target_height,target_area,target_center_x,target_center_y,"
     "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
-    "imu_acceleration_z_mps2,imu_angular_velocity_x_rad_s,"
-    "imu_angular_velocity_y_rad_s,imu_angular_velocity_z_rad_s,"
+    "imu_acceleration_z_mps2,imu_roll_rad,imu_pitch_rad,imu_yaw_rad,"
     "servo_control_p_normalized,servo_control_y_normalized,"
-    "imu_pitch_rad,imu_roll_rad,imu_attitude_valid,imu_launched,los_valid,"
-    "los_q_y_rad,los_q_z_rad,los_rate_valid,los_rate_q_y_rad_s,"
-    "los_rate_q_z_rad_s,guidance_valid,"
+    "imu_attitude_valid,imu_launched,los_inertial_valid,"
+    "los_inertial_q_y_rad,los_inertial_q_z_rad,los_inertial_rate_valid,"
+    "los_inertial_rate_q_y_rad_s,los_inertial_rate_q_z_rad_s,guidance_valid,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
     "command_overload_g,command_phase_rad,source_frame_id,"
     "output_present,output_valid,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns\n";
@@ -143,7 +143,7 @@ std::string TelemetryCsvRecorder::make_csv_row(
     const auto& overlay = frame.overlay;
     const auto& box = vision_detection.diagnostics.bounding_box;
     const auto& sample = flight_state.imu_sample;
-    const auto& attitude = flight_state.attitude;
+    const auto attitude = detail::make_attitude_angles(flight_state.attitude);
     const auto& launch = flight_state.launch;
     const auto* emitted = frame.command_emission ? &*frame.command_emission : nullptr;
     std::ostringstream row;
@@ -156,11 +156,14 @@ std::string TelemetryCsvRecorder::make_csv_row(
         << vision_detection.observation.center.u << ','
         << vision_detection.observation.center.v << ','
         << sample.acceleration.x << ',' << sample.acceleration.y << ','
-        << sample.acceleration.z << ',' << sample.angular_velocity.x << ','
-        << sample.angular_velocity.y << ',' << sample.angular_velocity.z << ','
-        << sample.servo_control_p_normalized << ','
+        << sample.acceleration.z << ',';
+    if (attitude.valid) {
+        row << attitude.roll_rad << ',' << attitude.pitch_rad << ',' << attitude.yaw_rad << ',';
+    } else {
+        row << ",,,";
+    }
+    row << sample.servo_control_p_normalized << ','
         << sample.servo_control_y_normalized << ','
-        << attitude.pitch_rad.value << ',' << attitude.roll_rad.value << ','
         << (attitude.valid ? 1 : 0) << ','
         << (launch.phase == domain::LaunchPhase::launched ? 1 : 0) << ','
         << (overlay.line_of_sight_valid ? 1 : 0) << ','

@@ -21,11 +21,9 @@ public:
      * @brief 创建 RTSP 可视化 sink；此时不启动网络流。
      * @param output_config 叠加绘制等输出配置。
      * @param stream_config RTSP 地址、编码、尺寸和帧率配置。
-     * @param line_of_sight_reference_point 图像中的 LOS 参考点（像素）。
      */
     RtspVisualizationSink(OutputConfig output_config,
-                          wireless::RtspStreamConfig stream_config,
-                          cv::Point2d line_of_sight_reference_point);
+                          wireless::RtspStreamConfig stream_config);
     ~RtspVisualizationSink() override;
 
     bool start() override;
@@ -47,7 +45,6 @@ private:
 
     OutputConfig output_config_;
     wireless::RtspStreamConfig stream_config_;
-    cv::Point2d line_of_sight_reference_point_;
     cv::Mat rendered_frame_;
     cv::Mat rtsp_frame_;
     std::mutex stream_mutex_;

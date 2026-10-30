@@ -1,6 +1,29 @@
 #include <mosas/output/output_mapping.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 namespace mosas::output::detail {
+
+AttitudeAngles make_attitude_angles(const domain::AttitudeState& attitude) noexcept {
+    const auto& m = attitude.navigation_from_dart.matrix();
+    if (!attitude.valid ||
+        !std::all_of(m.begin(), m.end(), [](double value) { return std::isfinite(value); })) {
+        return {};
+    }
+    const double horizontal = std::hypot(m[0], m[6]);
+    AttitudeAngles result;
+    result.valid = true;
+    result.pitch_rad = std::atan2(m[3], horizontal);
+    if (horizontal < 1e-12) {
+        // 极点的 roll/yaw 不独立，选 yaw=0 并保留同一旋转的组合滚转角。
+        result.roll_rad = std::atan2(m[7], m[8]);
+    } else {
+        result.roll_rad = std::atan2(-m[5], m[4]);
+        result.yaw_rad = std::atan2(m[6], m[0]);
+    }
+    return result;
+}
 
 VisionResult make_legacy_vision_result(
     const domain::VisionDetection& detection) {
@@ -17,8 +40,6 @@ VisionResult make_legacy_vision_result(
                        detection.diagnostics.next_search_region.y,
                        detection.diagnostics.next_search_region.width,
                        detection.diagnostics.next_search_region.height};
-    result.minimum_blob_area =
-        detection.diagnostics.minimum_blob_area_pixels;
     return result;
 }
 
@@ -38,9 +59,11 @@ VisionOverlayData make_legacy_overlay(
     result.body_overload_x_g = overlay.body_overload.x;
     result.body_overload_y_g = overlay.body_overload.y;
     result.body_overload_z_g = overlay.body_overload.z;
-    result.attitude_valid = state.attitude.valid;
-    result.attitude_pitch_rad = state.attitude.pitch_rad.value;
-    result.attitude_roll_rad = state.attitude.roll_rad.value;
+    const auto attitude = make_attitude_angles(state.attitude);
+    result.attitude_valid = attitude.valid;
+    result.attitude_pitch_rad = attitude.pitch_rad;
+    result.attitude_roll_rad = attitude.roll_rad;
+    result.attitude_yaw_rad = attitude.yaw_rad;
     result.output_attitude_valid = overlay.output_attitude_valid;
     result.output_attitude_pitch_rad = overlay.output_attitude_pitch.value;
     result.output_attitude_roll_rad = overlay.output_attitude_roll.value;

@@ -170,8 +170,7 @@ bool LocalVideoRecorder::prepare_recording_frame(
     if (options_.draw_visualization) {
         source.copyTo(rendered);
         VisionVisualizer::draw_result(
-            rendered, detail::make_legacy_vision_result(frame.vision_detection),
-            options_.line_of_sight_reference_point);
+            rendered, detail::make_legacy_vision_result(frame.vision_detection));
         VisionVisualizer::draw_guidance_overlay(
             rendered,
             detail::make_legacy_overlay(frame.overlay, frame.flight_state));

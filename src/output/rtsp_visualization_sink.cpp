@@ -12,11 +12,9 @@
 namespace mosas::output {
 
 RtspVisualizationSink::RtspVisualizationSink(
-    OutputConfig output_config, wireless::RtspStreamConfig stream_config,
-    cv::Point2d line_of_sight_reference_point)
+    OutputConfig output_config, wireless::RtspStreamConfig stream_config)
     : output_config_(std::move(output_config)),
-      stream_config_(std::move(stream_config)),
-      line_of_sight_reference_point_(line_of_sight_reference_point) {}
+      stream_config_(std::move(stream_config)) {}
 
 RtspVisualizationSink::~RtspVisualizationSink() { stop(); }
 
@@ -52,8 +50,7 @@ bool RtspVisualizationSink::publish(const runtime::ProcessedFrame& frame) {
             source.copyTo(rendered_frame_);
             ::VisionVisualizer::draw_result(
                 rendered_frame_,
-                detail::make_legacy_vision_result(frame.vision_detection),
-                line_of_sight_reference_point_);
+                detail::make_legacy_vision_result(frame.vision_detection));
             ::VisionVisualizer::draw_guidance_overlay(
                 rendered_frame_, detail::make_legacy_overlay(
                                      frame.overlay, frame.flight_state));

@@ -2,6 +2,9 @@
 #include <mosas/output/local_video_recorder.hpp>
 #include <mosas/output/telemetry_csv_recorder.hpp>
 
+#include <mosas/output/output_mapping.hpp>
+
+#include "body_vector_test_support.hpp"
 #include "test_support.hpp"
 
 #include <chrono>
@@ -166,14 +169,16 @@ int main() {
         CHECK(lines[0].substr(lines[0].rfind(',') + 1) == "output_mapping_timestamp_ns");
         const auto cols1 = split_csv(lines[1]);
         const auto cols2 = split_csv(lines[2]);
-        CHECK(cols1.size() == 43);
-        CHECK(cols2.size() == 43);
-        CHECK(cols1[36] == "101");
-        CHECK(cols2[36] == "102");
-        CHECK(cols1[37] == "0");
-        CHECK(cols2[37] == "0");
-        // 尚未输出时 body 控制量列必须保留为空
-        CHECK(cols1[31].empty() && cols1[32].empty() && cols1[33].empty());
+        CHECK(cols1.size() == 41);
+        CHECK(cols2.size() == 41);
+        CHECK(cols1[34] == "101");
+        CHECK(cols2[34] == "102");
+        CHECK(cols1[35] == "0");
+        CHECK(cols2[35] == "0");
+        // 无姿态或尚未输出时对应列留空，不能伪装成有效零值。
+        CHECK(cols1[15].empty() && cols1[16].empty() && cols1[17].empty());
+        CHECK(cols1[20] == "0");
+        CHECK(cols1[29].empty() && cols1[30].empty() && cols1[31].empty());
     }
 
     {
@@ -216,10 +221,10 @@ int main() {
         CHECK(lines.size() == 3);
         const auto cols1 = split_csv(lines[1]);
         const auto cols2 = split_csv(lines[2]);
-        CHECK(cols1.size() == 43);
-        CHECK(cols2.size() == 43);
-        CHECK(cols1[36] == "201");
-        CHECK(cols2[36] == "202");
+        CHECK(cols1.size() == 41);
+        CHECK(cols2.size() == 41);
+        CHECK(cols1[34] == "201");
+        CHECK(cols2[34] == "202");
     }
 
     {
@@ -312,6 +317,15 @@ int main() {
         CHECK(telemetry.start());
 
         auto frame = make_frame(501, 5'000'000);
+        frame.flight_state.attitude = test::vector_test_attitude(0.25, -0.5, 0.35);
+        frame.flight_state.attitude.time.monotonic_ns = frame.frame.timestamp_ns;
+        frame.flight_state.imu_sample.angular_velocity = {4.0, 5.0, 6.0};
+        frame.overlay.line_of_sight_valid = true;
+        frame.overlay.line_of_sight_q_y = {0.1};
+        frame.overlay.line_of_sight_q_z = {-0.2};
+        frame.overlay.line_of_sight_rate_valid = true;
+        frame.overlay.line_of_sight_rate_q_y = {0.3};
+        frame.overlay.line_of_sight_rate_q_z = {-0.4};
         domain::CommandEmissionSnapshot emission;
         emission.attempt_id = 7;
         emission.disposition = domain::CommandEmissionDisposition::serial_written;
@@ -333,18 +347,38 @@ int main() {
         CHECK(csv_files.size() == 1);
         const auto lines = read_lines(csv_files[0]);
         CHECK(lines.size() == 2);
+        const auto header = split_csv(lines[0]);
         const auto cols = split_csv(lines[1]);
-        CHECK(cols.size() == 43);
-        CHECK(cols[31] == "0");
-        CHECK(cols[32] == "0.25");
-        CHECK(cols[33] == "-0.35");
-        CHECK(cols[36] == "501");
-        CHECK(cols[37] == "1");
-        CHECK(cols[38] == "1");
-        CHECK(cols[39] == "7");
-        CHECK(cols[40] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
-        CHECK(cols[41] == "5000000");
-        CHECK(cols[42] == "5000200");
+        CHECK(cols.size() == 41);
+        CHECK(header.size() == cols.size());
+        CHECK(lines[0].find("imu_angular_velocity_") == std::string::npos);
+        CHECK(header[15] == "imu_roll_rad");
+        CHECK(header[16] == "imu_pitch_rad");
+        CHECK(header[17] == "imu_yaw_rad");
+        CHECK(header[23] == "los_inertial_q_y_rad");
+        CHECK(header[24] == "los_inertial_q_z_rad");
+        CHECK(header[26] == "los_inertial_rate_q_y_rad_s");
+        CHECK(header[27] == "los_inertial_rate_q_z_rad_s");
+        CHECK(cols[1] == "5000000" && cols[3] == cols[1]);
+        CHECK(cols[20] == "1");
+        const auto displayed = output::detail::make_legacy_overlay(frame.overlay, frame.flight_state);
+        CHECK_NEAR(std::stod(cols[15]), displayed.attitude_roll_rad, 1e-6);
+        CHECK_NEAR(std::stod(cols[16]), displayed.attitude_pitch_rad, 1e-6);
+        CHECK_NEAR(std::stod(cols[17]), displayed.attitude_yaw_rad, 1e-6);
+        CHECK_NEAR(std::stod(cols[23]), displayed.line_of_sight_q_y_rad, 1e-6);
+        CHECK_NEAR(std::stod(cols[24]), displayed.line_of_sight_q_z_rad, 1e-6);
+        CHECK_NEAR(std::stod(cols[26]), displayed.line_of_sight_rate_q_y_rad_s, 1e-6);
+        CHECK_NEAR(std::stod(cols[27]), displayed.line_of_sight_rate_q_z_rad_s, 1e-6);
+        CHECK(cols[29] == "0");
+        CHECK(cols[30] == "0.25");
+        CHECK(cols[31] == "-0.35");
+        CHECK(cols[34] == "501");
+        CHECK(cols[35] == "1");
+        CHECK(cols[36] == "1");
+        CHECK(cols[37] == "7");
+        CHECK(cols[38] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
+        CHECK(cols[39] == "5000000");
+        CHECK(cols[40] == "5000200");
     }
 
 

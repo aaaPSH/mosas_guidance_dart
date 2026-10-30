@@ -562,7 +562,13 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 | `match` | 起飞窗口本地视频 + 逐帧遥测 CSV | IMU CSV + 异步日志 |
 | `rtsp` | RTSP 可视化 | IMU CSV + 异步日志 |
 
-`RuntimeSupervisor` 持有输出端口并统一管理 start/cancel/close/join/stop 生命周期。`FramePipeline` 向每个帧输出 worker 独立提交同一 processed-frame snapshot；`ImuPipeline` 将 IMU 样本提交给独立 recorder。match 模式的视频与遥测 sink 共享路径及 generation/window 协调元数据，但保留独立队列、writer、错误状态；只有两者均成功完成窗口后才发出 rearm。各文件可能因独立队列丢帧而包含不同帧子集，遥测 CSV 保留原有列顺序并在末尾附加 `source_frame_id` 供关联。
+`RuntimeSupervisor` 持有输出端口并统一管理 start/cancel/close/join/stop 生命周期。`FramePipeline` 向每个帧输出 worker 独立提交同一 processed-frame snapshot；`ImuPipeline` 将 IMU 样本提交给独立 recorder。match 模式的视频与遥测 sink 共享路径及 generation/window 协调元数据，但保留独立队列、writer、错误状态；只有两者均成功完成窗口后才发出 rearm。各文件可能因独立队列丢帧而包含不同帧子集，使用遥测 CSV 的 `source_frame_id` 关联原始帧，不依赖行号或视频帧序号一致。
+
+逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，速率有效位为 0；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
+
+逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。本次 CSV 字段结构不保留旧别名，读取方须按表头取列；全量原始 IMU CSV 的三轴角速度及其字段结构保持不变。
+
+录像与 RTSP 使用同一绘图实现：保留搜索 ROI 的红色边框、目标蓝色边框和中央姿态十字；左上角数据及底部目标状态文字统一为白色，不再绘制参考圆或目标中心红色标记。目标中心坐标仍用于 LOS 计算和 CSV 记录；识别面积阈值仍用于检测，但不再通过结果结构传递参考圆的绘图参数。
 
 输出诊断由 `RuntimeSupervisor::output_diagnostics()` 汇总，应用周期性及退出时显示。输出故障策略、命令生成/提交顺序、坐标换算和传感器协议保持不变。
 
@@ -578,6 +584,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 - **接口与队列**：`output_contracts_test` 检查窄端口与 disabled-neutral 诊断；`multi_output_dispatcher_test` 验证阻塞 sink 不影响其他帧 worker、队列丢弃和错误按 sink 隔离。
 - **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
+- **观测坐标与时间**：`runtime_supervisor_test` 验证建基准帧的导航系角度及有效滤波帧的同源 LOS 角度/速率；`output_mapping_test` 验证曝光矩阵的三轴姿态提取、时间插值和俯仰极点约定；`local_recorders_test` 验证新 CSV 表头、无效姿态留空及 CSV 与显示数据一致。
 - **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
 - **发射触发**：`launch_detection_test`、`attitude_adapter_test` 验证默认加速触发、可选两阶段确认、误触发拒绝、超时边界、断流/异常样本及复位重校准；`body_vector_runtime_test` 在两种模式及两种 PN 下验证触发前不建立飞行滤波状态、跨触发边界不下发、使用触发后的动态速度；默认算法和仿真测试覆盖参数解析、缺省/非法模式、确认时刻元数据及两种模式下真实 Socket 录制链路。

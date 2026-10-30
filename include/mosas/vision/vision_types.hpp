@@ -44,11 +44,9 @@ struct VisionResult {
     bool found;
     VisionBlob blob;
     VisionRoi next_roi;
-    // 用于可视化视线角基准点的最小目标面积阈值，单位：像素。
-    int minimum_blob_area = 0;
 };
 
-// 可视化面板使用的引导数据，角度单位为弧度，角速度单位为弧度/秒。
+/** @brief 可视化快照；LOS 属于导航惯性系，曝光姿态为同一时刻的三轴角；单位 rad、rad/s。 */
 struct VisionOverlayData {
     bool line_of_sight_valid;
     double line_of_sight_q_y_rad;
@@ -63,6 +61,7 @@ struct VisionOverlayData {
     bool attitude_valid = false;
     double attitude_pitch_rad = 0.0;
     double attitude_roll_rad = 0.0;
+    double attitude_yaw_rad = 0.0;
     bool output_attitude_valid = false;
     double output_attitude_pitch_rad = 0.0;
     double output_attitude_roll_rad = 0.0;

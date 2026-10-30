@@ -55,9 +55,6 @@ runtime::RuntimeOutputPorts make_runtime_output_ports(
                 std::move(recorder_config));
             output::LocalVideoRecorderOptions video_options;
             video_options.draw_visualization = config.output.draw_visualization;
-            video_options.line_of_sight_reference_point =
-                {config.guidance.camera_intrinsics.cx,
-                 config.guidance.camera_intrinsics.cy};
             outputs.video = std::make_unique<output::LocalVideoRecorder>(
                 session, video_options);
             outputs.telemetry =
@@ -72,9 +69,7 @@ runtime::RuntimeOutputPorts make_runtime_output_ports(
 #if defined(MOSAS_OUTPUT_HAS_WIRELESS)
             outputs.visualization =
                 std::make_unique<output::RtspVisualizationSink>(
-                    config.output, config.wireless,
-                    cv::Point2d{config.guidance.camera_intrinsics.cx,
-                                config.guidance.camera_intrinsics.cy});
+                    config.output, config.wireless);
             return outputs;
 #else
             throw std::invalid_argument(

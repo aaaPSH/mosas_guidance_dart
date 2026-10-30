@@ -12,8 +12,7 @@
 namespace {
 
 constexpr double kRadiansToDegrees = 57.29577951308232;
-constexpr double kPi = 3.14159265358979323846;
-const cv::Scalar kOverlayColor{0, 255, 0};
+const cv::Scalar kTextColor{255, 255, 255};
 
 bool is_valid_frame(const cv::Mat& frame) {
     return !frame.empty() && frame.rows > 0 && frame.cols > 0 &&
@@ -36,35 +35,6 @@ void draw_rectangle(cv::Mat& frame, const VisionRoi& raw_roi,
     }
     cv::rectangle(frame, cv::Rect(roi.x, roi.y, roi.width, roi.height), color,
                   1);
-}
-
-void draw_cross(cv::Mat& frame, const cv::Point2d& raw_center,
-                const cv::Scalar& color) {
-    if (!std::isfinite(raw_center.x) || !std::isfinite(raw_center.y)) {
-        return;
-    }
-
-    const cv::Point center(cvRound(raw_center.x), cvRound(raw_center.y));
-    cv::line(frame, {center.x - 2, center.y}, {center.x + 2, center.y}, color,
-             1);
-    cv::line(frame, {center.x, center.y - 2}, {center.x, center.y + 2}, color,
-             1);
-}
-
-void draw_reference_circle(cv::Mat& frame, const cv::Point2d& raw_center,
-                           int minimum_blob_area,
-                           const cv::Scalar& color) {
-    if (!std::isfinite(raw_center.x) || !std::isfinite(raw_center.y) ||
-        minimum_blob_area <= 0) {
-        return;
-    }
-
-    const double radius = std::sqrt(
-        static_cast<double>(minimum_blob_area) / kPi);
-    const int radius_pixels = std::max(1, cvRound(radius));
-    cv::circle(frame,
-               {cvRound(raw_center.x), cvRound(raw_center.y)},
-               radius_pixels, color, 1, cv::LINE_8);
 }
 
 void draw_roll_cross(cv::Mat& frame, double roll_rad) {
@@ -104,42 +74,6 @@ void draw_roll_cross(cv::Mat& frame, double roll_rad) {
              cv::LINE_AA);
 }
 
-void draw_result_impl(cv::Mat& frame, const VisionResult& result,
-                      const cv::Point2d* line_of_sight_reference_point) {
-    if (!is_valid_frame(frame)) {
-        return;
-    }
-
-    try {
-        // 使用 OpenCV BGR 存储约定：基准圆为绿色，目标框为蓝色，目标中心十字为红色。
-        draw_rectangle(frame, result.next_roi, {0, 0, 255});
-        if (line_of_sight_reference_point != nullptr) {
-            draw_reference_circle(frame, *line_of_sight_reference_point,
-                                  result.minimum_blob_area, {0, 255, 0});
-        }
-        const std::string detection_status =
-            result.found ? "Target: DETECTED" : "Target: NOT DETECTED";
-        const cv::Scalar status_color =
-            result.found ? kOverlayColor : cv::Scalar{0, 0, 255};
-        cv::putText(frame, detection_status, {6, std::max(18, frame.rows - 8)},
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, status_color, 1,
-                    cv::LINE_AA);
-        if (!result.found) {
-            return;
-        }
-
-        draw_rectangle(frame,
-                       {result.blob.x, result.blob.y, result.blob.width,
-                        result.blob.height},
-                       {255, 0, 0});
-        draw_cross(frame,
-                   {result.blob.center_x, result.blob.center_y},
-                   {0, 0, 255});
-    } catch (const cv::Exception&) {
-        return;
-    }
-}
-
 std::string format_value(bool valid, double value, double scale,
                          const char* unit, int precision = 2) {
     if (!valid || !std::isfinite(value)) {
@@ -168,13 +102,13 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
     }
 
     const std::vector<std::string> lines{
-        "LOS(deg): qy " +
+        "Inertial LOS(deg): qy " +
             format_value(data.line_of_sight_valid,
                          data.line_of_sight_q_y_rad, kRadiansToDegrees, "") +
             " qz " +
             format_value(data.line_of_sight_valid,
                          data.line_of_sight_q_z_rad, kRadiansToDegrees, ""),
-        "LOS rate(deg/s): qy " +
+        "Inertial LOS rate(deg/s): qy " +
             format_value(data.line_of_sight_rate_valid,
                          data.line_of_sight_rate_q_y_rad_s,
                          kRadiansToDegrees, "") +
@@ -196,6 +130,9 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
                          kRadiansToDegrees, "") +
             " pitch " +
             format_value(data.attitude_valid, data.attitude_pitch_rad,
+                         kRadiansToDegrees, "") +
+            " yaw " +
+            format_value(data.attitude_valid, data.attitude_yaw_rad,
                          kRadiansToDegrees, "") +
             " phase " +
             (data.attitude_valid ? (data.launched ? "LAUNCHED" : "PRELAUNCH")
@@ -228,7 +165,7 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             }
             cv::putText(frame, lines[index], {kPanel_x + kPanel_padding,
                                               baseline},
-                        cv::FONT_HERSHEY_SIMPLEX, 0.38, kOverlayColor, 1,
+                        cv::FONT_HERSHEY_SIMPLEX, 0.38, kTextColor, 1,
                         cv::LINE_AA);
         }
         if (data.attitude_valid) {
@@ -242,13 +179,28 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
 }  // namespace
 
 void VisionVisualizer::draw_result(cv::Mat& frame, const VisionResult& result) {
-    draw_result_impl(frame, result, nullptr);
-}
+    if (!is_valid_frame(frame)) {
+        return;
+    }
 
-void VisionVisualizer::draw_result(
-    cv::Mat& frame, const VisionResult& result,
-    const cv::Point2d& line_of_sight_reference_point) {
-    draw_result_impl(frame, result, &line_of_sight_reference_point);
+    try {
+        draw_rectangle(frame, result.next_roi, {0, 0, 255});
+        const std::string detection_status =
+            result.found ? "Target: DETECTED" : "Target: NOT DETECTED";
+        cv::putText(frame, detection_status, {6, std::max(18, frame.rows - 8)},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, kTextColor, 1,
+                    cv::LINE_AA);
+        if (!result.found) {
+            return;
+        }
+
+        draw_rectangle(frame,
+                       {result.blob.x, result.blob.y, result.blob.width,
+                        result.blob.height},
+                       {255, 0, 0});
+    } catch (const cv::Exception&) {
+        return;
+    }
 }
 
 void VisionVisualizer::draw_guidance_overlay(

@@ -213,7 +213,6 @@ bool VisionRecognizer::scan_coarse_pooled(const cv::Mat& frame,
 VisionResult VisionRecognizer::process(const cv::Mat& frame) {
     VisionResult result{};
     result.next_roi = current_roi_;
-    result.minimum_blob_area = config_.min_blob_area;
     if (!is_valid_frame(frame)) {
         return result;
     }
