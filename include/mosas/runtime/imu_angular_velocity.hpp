@@ -1,7 +1,9 @@
 #ifndef MOSAS_RUNTIME_IMU_ANGULAR_VELOCITY_HPP
 #define MOSAS_RUNTIME_IMU_ANGULAR_VELOCITY_HPP
 
+#include <mosas/domain/time.hpp>
 #include <mosas/runtime/clock.hpp>
+#include <optional>
 #include <mosas/runtime/vector3.hpp>
 
 namespace mosas::runtime {
@@ -14,6 +16,10 @@ struct ImuAngularVelocitySample {
     // 舵机 P/Y 控制参数，范围 [-1, 1]。
     double servo_control_p_normalized = 0.0;
     double servo_control_y_normalized = 0.0;
+    std::optional<domain::SensorTime> sensor_time = std::nullopt;
+    /** @brief Acquisition segment and logical sample slot, assigned before queue publication. */
+    std::uint64_t acquisition_epoch = 0;
+    std::uint64_t sample_sequence = 0;
 };
 
 }  // namespace mosas::runtime

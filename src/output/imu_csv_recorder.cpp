@@ -1,6 +1,6 @@
 #include <mosas/output/imu_csv_recorder.hpp>
 
-#include "recording_paths.hpp"
+#include "recording_session_id.hpp"
 
 #include <chrono>
 #include <exception>
@@ -38,15 +38,19 @@ std::filesystem::path make_imu_csv_path(const std::string& base_path) {
 
 }  // namespace
 
-ImuCsvRecorder::ImuCsvRecorder(std::string recording_base_path)
+ImuCsvRecorder::ImuCsvRecorder(std::string recording_base_path,
+                               std::size_t queue_capacity)
     : recording_base_path_(std::move(recording_base_path)),
-      sample_queue_(kQueueCapacity) {}
+      sample_queue_(queue_capacity) {}
 
 ImuCsvRecorder::~ImuCsvRecorder() { stop(); }
 
 bool ImuCsvRecorder::start() {
     stop();
     sample_queue_.reset();
+    accepted_count_.store(0, std::memory_order_relaxed);
+    dropped_count_.store(0, std::memory_order_relaxed);
+    failure_count_.store(0, std::memory_order_relaxed);
     failed_.store(false, std::memory_order_release);
     stop_requested_.store(false, std::memory_order_release);
     {
@@ -108,16 +112,42 @@ bool ImuCsvRecorder::start() {
 }
 
 bool ImuCsvRecorder::try_record(
-    const runtime::ImuAngularVelocitySample& sample) noexcept {
+    const domain::ImuKinematicSample& sample) noexcept {
     if (!accepting_samples_.load(std::memory_order_acquire) ||
         failed_.load(std::memory_order_acquire)) {
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (!sample_queue_.try_push(sample)) {
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
         set_error("IMU CSV 写入队列已满");
         return false;
     }
+    accepted_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+runtime::SinkDiagnostics ImuCsvRecorder::diagnostics() const noexcept {
+    runtime::SinkDiagnostics diagnostics;
+    diagnostics.enabled = true;
+    diagnostics.healthy = !failed_.load(std::memory_order_acquire);
+    diagnostics.accepted_count =
+        accepted_count_.load(std::memory_order_relaxed);
+    diagnostics.dropped_count = dropped_count_.load(std::memory_order_relaxed);
+    diagnostics.failure_count = failure_count_.load(std::memory_order_relaxed);
+    diagnostics.queue_depth = sample_queue_.size();
+    diagnostics.queue_capacity = sample_queue_.capacity();
+    try {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        diagnostics.last_error = last_error_;
+    } catch (...) {
+    }
+    return diagnostics;
+}
+
+void ImuCsvRecorder::cancel() noexcept {
+    accepting_samples_.store(false, std::memory_order_release);
+    stop_requested_.store(true, std::memory_order_release);
 }
 
 void ImuCsvRecorder::stop() noexcept {
@@ -138,13 +168,10 @@ void ImuCsvRecorder::stop() noexcept {
     }
 }
 
-std::string ImuCsvRecorder::last_error() const {
-    std::lock_guard<std::mutex> lock(error_mutex_);
-    return last_error_;
-}
-
 void ImuCsvRecorder::set_error(const char* message) noexcept {
-    failed_.store(true, std::memory_order_release);
+    if (!failed_.exchange(true, std::memory_order_acq_rel)) {
+        failure_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     accepting_samples_.store(false, std::memory_order_release);
     try {
         std::lock_guard<std::mutex> lock(error_mutex_);
@@ -156,7 +183,9 @@ void ImuCsvRecorder::set_error(const char* message) noexcept {
 }
 
 void ImuCsvRecorder::set_error(const std::string& message) noexcept {
-    failed_.store(true, std::memory_order_release);
+    if (!failed_.exchange(true, std::memory_order_acq_rel)) {
+        failure_count_.fetch_add(1, std::memory_order_relaxed);
+    }
     accepting_samples_.store(false, std::memory_order_release);
     try {
         std::lock_guard<std::mutex> lock(error_mutex_);
@@ -196,11 +225,11 @@ void ImuCsvRecorder::worker_loop() noexcept {
         batch.reserve(64 * 1024);
         while (!stop_requested_.load(std::memory_order_acquire) ||
                !sample_queue_.empty()) {
-            runtime::ImuAngularVelocitySample sample{};
+            domain::ImuKinematicSample sample{};
             if (sample_queue_.try_pop(&sample)) {
                 std::ostringstream row;
                 row.imbue(std::locale::classic());
-                row << sample_index++ << ',' << sample.timestamp_ns << ','
+                row << sample_index++ << ',' << sample.time.monotonic_ns << ','
                     << std::setprecision(
                            std::numeric_limits<double>::max_digits10)
                     << sample.acceleration.x << ',' << sample.acceleration.y

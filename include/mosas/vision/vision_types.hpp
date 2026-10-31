@@ -3,8 +3,6 @@
 
 #include <cstdint>
 
-#include <opencv2/core/mat.hpp>
-
 struct VisionRoi {
     int x;
     int y;
@@ -46,11 +44,9 @@ struct VisionResult {
     bool found;
     VisionBlob blob;
     VisionRoi next_roi;
-    // 用于可视化视线角基准点的最小目标面积阈值，单位：像素。
-    int minimum_blob_area = 0;
 };
 
-// 可视化面板使用的引导数据，角度单位为弧度，角速度单位为弧度/秒。
+/** @brief 可视化快照；LOS 属于导航惯性系，曝光姿态为同帧三轴角；角度单位 rad、rad/s，补偿距离单位 m。 */
 struct VisionOverlayData {
     bool line_of_sight_valid;
     double line_of_sight_q_y_rad;
@@ -65,8 +61,15 @@ struct VisionOverlayData {
     bool attitude_valid = false;
     double attitude_pitch_rad = 0.0;
     double attitude_roll_rad = 0.0;
+    double attitude_yaw_rad = 0.0;
+    bool output_attitude_valid = false;
+    double output_attitude_pitch_rad = 0.0;
+    double output_attitude_roll_rad = 0.0;
     bool launched = false;
     double processing_fps = 0.0;
+    /** @brief 当前帧实际补偿距离是否有效；关闭补偿、未初始化或观测失效时为 false。 */
+    bool lever_arm_distance_valid = false;
+    double lever_arm_distance_m = 0.0; ///< 杆臂补偿距离，m；显示两位小数，无效时显示 N/A。
 };
 
 #endif  // VISION_TYPES_HPP

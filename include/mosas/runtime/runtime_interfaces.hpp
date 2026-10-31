@@ -1,15 +1,16 @@
 #ifndef MOSAS_RUNTIME_INTERFACES_HPP
 #define MOSAS_RUNTIME_INTERFACES_HPP
 
+#include <mosas/domain/algorithm_results.hpp>
+#include <mosas/domain/contracts.hpp>
+#include <mosas/domain/sequence_time.hpp>
 #include <mosas/runtime/runtime_types.hpp>
 #include <mosas/runtime/imu_angular_velocity.hpp>
-#include <mosas/vision/vision_types.hpp>
+#include <mosas/runtime/command_output.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <thread>
 
 namespace mosas::runtime {
 
@@ -34,13 +35,13 @@ struct ImuSourceDiagnostics {
     std::size_t pending_frame_count = 0;
     std::size_t buffered_bytes = 0;
     std::uint64_t delivered_sample_count = 0;
-    std::uint64_t timeout_count = 0;
     std::uint64_t parse_error_count = 0;
     std::uint64_t backlog_event_count = 0;
     std::uint64_t received_chunk_count = 0;
     std::uint64_t dropped_chunk_count = 0;
     std::uint64_t sequence_gap_count = 0;
-    std::uint64_t timestamp_rollback_count = 0;
+    std::uint64_t crc_error_count = 0;
+    domain::SequenceTimeDiagnostics timing{};
     std::uint64_t dropped_sample_count = 0;
     std::size_t queued_chunk_count = 0;
     std::size_t chunk_queue_capacity = 0;
@@ -62,28 +63,48 @@ inline const char* source_status_name(SourceStatus status) noexcept {
     return "unknown";
 }
 
+/// IMU 输入端口；try_pop 与 wait_for_data 由唯一的 IMU 消费线程调用。
 class ImuSource {
 public:
     virtual ~ImuSource() = default;
+    /** @return Whether this source participates in host sequence-clock synchronization. */
+    virtual bool uses_sequence_time() const noexcept { return false; }
+    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
-    // try_pop 用于非阻塞取样；没有样本时，调用方可等待数据源就绪。
-    virtual SourceResult start() { return {SourceStatus::ok, {}}; }
-    virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept {
-        (void)sample;
-        return false;
-    }
-    // 无数据时等待数据源通知；未实现通知的旧数据源使用短暂退避。
-    virtual bool wait_for_data() noexcept {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        return true;
-    }
-    virtual void stop() noexcept {}
+    /**
+     * @brief 启动 IMU 数据源及其接收资源。
+     * @return 启动状态和可选错误说明；成功时 status 为 ok。
+     */
+    virtual SourceResult start() = 0;
 
-    // 保留旧接口以兼容现有外部数据源；运行时主路径使用上面的异步接口。
-    virtual SourceResult read(ImuSample* sample) = 0;
+    /**
+     * @brief 非阻塞地取出一个已解析 IMU 样本。
+     * @param sample 非空输出指针；成功时写入样本。
+     * @return 取得样本时为 true，否则为 false。
+     */
+    virtual bool try_pop(ImuAngularVelocitySample* sample) noexcept = 0;
+
+    /**
+     * @brief 在当前没有样本时等待数据源就绪或取消。
+     * @return 数据源仍可消费时为 true；停止或取消时为 false。
+     */
+    virtual bool wait_for_data() noexcept = 0;
+
+    /**
+     * @brief 停止并回收数据源资源；允许等待内部接收线程退出。
+     */
+    virtual void stop() noexcept = 0;
+
+    /**
+     * @brief 非阻塞地请求停止，并唤醒可能阻塞在 wait_for_data 的线程。
+     */
     virtual void cancel() noexcept = 0;
 
-    // 返回线程安全的接收诊断；通用或模拟数据源默认不提供该信息。
+    /**
+     * @brief 获取线程安全的接收诊断快照。
+     * @return 可用时返回计数和队列状态；不支持诊断的数据源返回 available=false。
+     */
     virtual ImuSourceDiagnostics diagnostics() const noexcept { return {}; }
 };
 
@@ -96,54 +117,105 @@ struct CameraCaptureConfig {
     CameraCaptureMode mode = CameraCaptureMode::free_run;
 };
 
+/// 相机输入端口；捕获和预处理分开，以便在处理线程中执行帧转换。
 class CameraSource {
 public:
     virtual ~CameraSource() = default;
+    /** @return Whether this source participates in host sequence-clock synchronization. */
+    virtual bool uses_sequence_time() const noexcept { return false; }
+    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
+    /**
+     * @brief 根据采集模式初始化相机源。
+     * @param config 采集模式配置；设备分辨率和格式由具体适配器配置。
+     * @return 配置状态和可选错误说明。
+     */
     virtual SourceResult configure(const CameraCaptureConfig& config) = 0;
+
+    /**
+     * @brief 获取一帧拥有型图像及其采集/接收时间信息。
+     * @param frame 非空输出指针；成功时填入帧数据。
+     * @return 捕获状态；无数据、取消和致命故障由 status 区分。
+     * @note 本操作可能等待下一帧，调用方必须提供可取消的生命周期。
+     */
     virtual SourceResult capture(CameraFrame* frame) = 0;
 
-    // 返回相机源实测的有效帧到达速率；返回 0 时运行时使用本地统计回退。
+    /**
+     * @brief 返回相机源实测的有效帧到达速率。
+     * @return 帧率；返回 0 表示适配器未提供统计，运行时改用本地测量。
+     */
     virtual double capture_fps() const noexcept { return 0.0; }
 
-    // 在处理线程完成颜色转换、缩放和相机安装方向修正等帧预处理。
+    /**
+     * @brief 在处理线程执行可选的颜色转换、缩放或安装方向修正。
+     * @param frame 输入/输出帧；图像必须有效。
+     * @return 处理状态；基础实现只验证帧有效性。
+     */
     virtual SourceResult prepare(CameraFrame* frame) {
-        if (frame == nullptr || frame->image.empty() ||
-            frame->image.type() != CV_8UC3) {
+        if (frame == nullptr || !frame->image.is_valid()) {
             return {SourceStatus::fatal, "camera frame is invalid"};
         }
         return {SourceStatus::ok, {}};
     }
 
-    // 仅请求取消并唤醒阻塞操作；source 资源由 stop() 最终释放。
+    /**
+     * @brief 停止并最终释放相机资源；具体适配器可覆写。
+     */
     virtual void stop() noexcept {}
 
+    /**
+     * @brief 非阻塞地请求取消并唤醒阻塞中的捕获；实际清理由 stop() 完成。
+     */
     virtual void cancel() noexcept = 0;
 };
 
+/// 制导命令输出端口；实时路径只提交命令，实际 I/O 由 sink 自己执行。
 class CommandSink {
 public:
     virtual ~CommandSink() = default;
 
-    virtual bool start() { return true; }
-
-    // 只提交最新控制量；实现不得在调用线程执行串口/文件写入。
-    virtual bool try_submit(const GuidanceCommand& command) noexcept {
-        return send(command);
+    /** @param binding 启动前绑定的映射、状态和时钟依赖。 @return 依赖完整时为 true。
+     * @note 基类执行真实共享绑定，不提供旧 body 命令回退或空操作实现。
+     */
+    virtual bool bind_output(CommandOutputBinding binding) {
+        return command_output_.bind(std::move(binding));
+    }
+    /** @return 最近实际输出尝试；无输出时为空，不重算或伪造预览。 */
+    virtual std::optional<domain::CommandEmissionSnapshot> latest_emission() const noexcept {
+        return command_output_.latest_emission();
     }
 
-    // 兼容旧的同步数据源；新的运行时路径不直接调用该接口。
-    virtual bool send(const GuidanceCommand& command) {
-        (void)command;
-        return false;
-    }
+    /**
+     * @brief 启动命令输出资源。
+     * @return 成功启动时为 true。
+     */
+    virtual bool start() = 0;
 
-    // 起飞周期切换后，异步 sink 应丢弃尚未发送的旧周期命令。
+    /**
+     * @brief 非阻塞地提交最新制导命令。
+     * @param command 带有效性、来源帧、时间戳和起飞代际的命令。
+     * @return 命令已接受时为 true；队列/邮箱不可用或提交失败时为 false。
+     * @note 不得在调用线程执行串口或文件写入；队列容量及替代策略由实现保证。
+     */
+    virtual bool try_submit(const GuidanceCommand& command) noexcept = 0;
+
+    /**
+     * @brief 通知异步 sink 当前有效的起飞代际。
+     * @param generation 新代际编号；旧代际尚未发送的命令应被丢弃。
+     */
     virtual void set_active_generation(std::uint64_t generation) noexcept {
         (void)generation;
     }
 
+    /**
+     * @brief 非阻塞地请求取消正在进行的发送工作。
+     */
     virtual void cancel() noexcept {}
+
+    /**
+     * @brief 停止输出并回收发送资源。
+     */
     virtual void stop() noexcept {}
 
     struct Diagnostics {
@@ -153,49 +225,14 @@ public:
         std::uint64_t send_failure_count = 0;
     };
 
+    /**
+     * @brief 返回命令输出计数器快照。
+     * @return 可用时包含提交、丢弃和发送失败计数。
+     */
     virtual Diagnostics diagnostics() const noexcept { return {}; }
-};
 
-class FrameSink {
-public:
-    virtual ~FrameSink() = default;
-
-    // 非阻塞提交一条已经通过运行时校验的 IMU 样本；默认不记录。
-    virtual bool try_record_imu_sample(
-        const ImuAngularVelocitySample& sample) noexcept {
-        (void)sample;
-        return true;
-    }
-
-    // 请求中断可能阻塞的发布操作；实现必须是线程安全且非阻塞的。
-    virtual void cancel() noexcept {}
-
-    // 新一轮运行开始前清除上一次停止状态。
-    virtual void reset() noexcept {}
-
-    // 运行时工作线程退出后释放网络、录像和传感器记录等资源。
-    virtual void stop() noexcept {}
-
-    // 输出模块完成一段起飞窗口落盘后，请求运行时切换起飞周期。
-    virtual bool take_rearm_request() noexcept { return false; }
-
-    // 停止和刷新输出时报告最后一次录像/推流错误。
-    virtual std::string last_error() const { return {}; }
-
-    virtual bool publish(const CameraFrame& frame,
-                         const VisionResult& vision_result,
-                         const ImuStateSnapshot& imu_state,
-                         const PngGuidanceOutput& guidance) = 0;
-
-    // 携带视线角和视线角速度，供可视化接收；旧接口保持兼容。
-    virtual bool publish(const CameraFrame& frame,
-                         const VisionResult& vision_result,
-                         const ImuStateSnapshot& imu_state,
-                         const PngGuidanceOutput& guidance,
-                         const VisionOverlayData& overlay) {
-        (void)overlay;
-        return publish(frame, vision_result, imu_state, guidance);
-    }
+protected:
+    CommandOutputProcessor command_output_;
 };
 
 }  // namespace mosas::runtime

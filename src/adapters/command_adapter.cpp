@@ -1,0 +1,12 @@
+#include "command_adapter.hpp"
+
+namespace mosas::app::detail {
+
+serial_package::ControlFrameValues make_control_frame_values(
+    const domain::MappedGuidanceCommand& command) noexcept {
+    return {command.launched, command.target_found,
+            command.valid ? command.overload_g.z : 0.0,
+            command.valid ? command.overload_g.y : 0.0};
+}
+
+}  // namespace mosas::app::detail

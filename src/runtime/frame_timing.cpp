@@ -3,22 +3,17 @@
 #include <limits>
 
 namespace mosas::runtime {
-namespace {
 
-std::optional<TimestampNs> checked_add(TimestampNs left,
-                                       TimestampNs right) noexcept {
-    if (right > 0 &&
-        left > std::numeric_limits<TimestampNs>::max() - right) {
+std::optional<TimestampNs> apply_camera_timestamp_bias(TimestampNs timestamp_ns,
+                                                     TimestampNs bias_ns) noexcept {
+    if (timestamp_ns < 0 ||
+        (bias_ns > 0 && timestamp_ns > std::numeric_limits<TimestampNs>::max() - bias_ns) ||
+        // timestamp_ns is nonnegative, so negating it is safe even when bias_ns is INT64_MIN.
+        bias_ns < -timestamp_ns) {
         return std::nullopt;
     }
-    if (right < 0 &&
-        left < std::numeric_limits<TimestampNs>::min() - right) {
-        return std::nullopt;
-    }
-    return left + right;
+    return timestamp_ns + bias_ns;
 }
-
-}  // namespace
 
 std::optional<TimestampNs> convert_camera_timeval(
     std::int64_t seconds, std::int64_t microseconds,
@@ -46,7 +41,7 @@ std::optional<TimestampNs> convert_camera_timeval(
     if (!monotonic_ns.has_value()) {
         return std::nullopt;
     }
-    return checked_add(*monotonic_ns, bias_ns);
+    return apply_camera_timestamp_bias(*monotonic_ns, bias_ns);
 }
 
 bool validate_camera_timestamp(TimestampNs timestamp_ns,

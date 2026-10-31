@@ -28,7 +28,7 @@
 | 图像时间 | 使用 SDK `Frame_Time`；控制链统一到 `CLOCK_MONOTONIC` |
 | 日志时间 | 面向人的日志显示 `CLOCK_REALTIME`；内部耗时和排序仍用单调时钟 |
 
-实时初始目标为每个有效相机帧产生一次制导更新，120 FPS 对应约 8.33 ms 周期。目标板需分别测量“采集到命令提交”和“采集到串口写完”的延迟；两者不可混为一个指标。8.33 ms 是首轮目标，不应在没有 A133P 实测前宣称为硬实时保证。
+实时计算目标为每个有效相机帧产生一次制导更新，120 FPS 对应约 8.33 ms 周期。串口发送与计算解耦，默认按 100 Hz（10 ms）采样最新命令；不排队或插值，未发射及命令超时时持续发送零过载，配置和状态位契约见 `INTERFACE_CONTRACTS.md`。目标板需分别测量“采集到命令提交”和“采集到串口写完”的延迟；两者不可混为一个指标。上述频率均为调度目标，不应在没有 A133P 实测前宣称为硬实时保证。
 
 ### 1.3 行为保持原则
 
@@ -101,7 +101,7 @@ Domain/Ports 不依赖 Nori SDK、串口类、FFmpeg、OpenCV UI 类型或具体
 | `ImuSource` | 接收原始字节、解码固定协议并产生带时间质量的 IMU 样本 | 串口实现 / Fake / 文件回放 |
 | `TimeSync` | SDK 时钟域转单调时钟；IMU 接收时间回推；报告质量和不确定度 | 软件估时 / 将来的硬触发同步 |
 | `VisionDetector` | 单帧目标识别，输出像素目标观测；不访问串口、日志或界面 | 当前识别器 / 替代识别器 |
-| `FlightStateEstimator` | 每个 IMU 样本输出姿态快照与实际起飞状态 | 第一版适配现有组合式 `AttitudeEstimator`，避免重复消费 IMU |
+| `FlightStateEstimator` | 每个 IMU 样本输出同步姿态、纵向速度与实际起飞状态 | 第一版适配现有组合式 `AttitudeEstimator`，避免重复消费 IMU |
 | `AttitudeEstimator` / `LaunchDetector` | 可独立替换的姿态和起飞判据子模块 | 在行为回归通过后拆开组合；起飞判据先保持不变 |
 | `LosEstimator` | 像素观测、相机内参和固定外参转换为镖体系 LOS | 纯逻辑单测 |
 | `LosRateFilter` | 使用带时间戳 LOS 与同步角速度估计 LOS 角速度 | 当前 Kalman / 其他滤波器 |
@@ -178,7 +178,7 @@ Nori SDK 有外部硬件触发模式入口。保留 `ISyncProvider`/`ITriggerEve
 - roll 正方向按绕 `+X` 的右手规则；坐标变换用带方向的 `R_target_from_source`，满足 `v_target = R_target_from_source * v_source`。
 - `CameraFrame C` 到 `D` 保留静态旋转外参，默认单位矩阵；`D_from_C` 是唯一外参方向命名。坐标轴相同不等同于未经标定的内参正确。
 - LOS 角/角速度统一用 rad、rad/s；加速度用 m/s²；过载用以 `g` 为单位的无量纲数值。结构字段名中携带单位和坐标系。
-- 当前下行控制帧中，原双字节 roll 槽已拆为 byte 2 的发射标志（未发射为 0，已检测到发射为 1）和 byte 3 的识别位（当前帧识别到目标为 1，否则为 0，独立于制导有效性）；body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。14-byte 帧长和 CRC 覆盖范围不变，具体布局见 `INTERFACE_CONTRACTS.md`；下位机须同步采用此布局。
+- 当前下行控制帧布局与 `main` 对齐：原双字节 roll 槽拆为 byte 2 的发射标志和 byte 3 的识别位（当前帧识别到目标为 1，否则为 0，独立于制导有效性）。发射标志按 `launch_detection_mode` 所选判据置 1：默认 `acceleration` 持续加速确认即触发，可选 `two_stage` 还须低比力离架确认；复位后为 0。body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。14-byte 帧长和 CRC 覆盖范围不变，具体判据及布局见 `INTERFACE_CONTRACTS.md`；下位机须同步采用此布局。
 
 ## 8. 故障与兼容边界
 
@@ -190,14 +190,6 @@ Nori SDK 有外部硬件触发模式入口。保留 `ISyncProvider`/`ITriggerEve
 
 ## 9. 渐进实施与验收路线
 
-### 阶段 0 — 锁定基线与行为样本
-
-- 只以 `93db8b4` 作为行为基线；不清理或覆盖当前未提交改动。
-- 记录现有配置、串口参考帧、目标板启动/停止和有效/无效制导路径。
-- 给视觉/姿态/LOS/滤波/PNG 建立可回放样本或基准输出；记录量化误差容限。
-- 先确认下位机没有新命令时的保持/watchdog行为。
-
-**验收门**：可复现基线；每个后续阶段可比较结果；协议帧参考向量通过。
 
 ### 阶段 1 — 测试基础与领域契约
 

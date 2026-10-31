@@ -76,7 +76,7 @@ if ! rsync --archive --recursive \
   --exclude='/.worktrees/' \
   --include='/camera_SDk/***' \
   --include='/config/***' \
-  --include='/examples/***' \
+  --include='/main/***' \
   --include='/include/***' \
   --include='/scripts/***' \
   --include='/serial_forward_test/***' \

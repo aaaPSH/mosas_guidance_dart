@@ -1,4 +1,5 @@
 #include <mosas/runtime/attitude_history.hpp>
+#include <mosas/runtime/vector3.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -114,7 +115,7 @@ double AttitudeHistory::bits_double(std::uint64_t bits) noexcept {
 
 bool AttitudeHistory::push(const AttitudeSample& sample) noexcept {
     if (sample.timestamp_ns < 0 || !std::isfinite(sample.pitch_rad) ||
-        !std::isfinite(sample.roll_rad) ||
+        !std::isfinite(sample.roll_rad) || !std::isfinite(sample.speed_mps) ||
         !finite_rotation(sample.body_to_navigation) ||
         (has_timestamp_ && sample.timestamp_ns <= last_timestamp_ns_)) {
         return false;
@@ -129,6 +130,8 @@ bool AttitudeHistory::push(const AttitudeSample& sample) noexcept {
                           std::memory_order_relaxed);
     slot.roll_bits.store(double_bits(sample.roll_rad),
                          std::memory_order_relaxed);
+    slot.speed_bits.store(double_bits(sample.speed_mps),
+                          std::memory_order_relaxed);
     slot.matrix_m00_bits.store(double_bits(sample.body_to_navigation.m00),
                                std::memory_order_relaxed);
     slot.matrix_m01_bits.store(double_bits(sample.body_to_navigation.m01),
@@ -187,7 +190,7 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
             if (!std::isfinite(pitch) || !std::isfinite(roll)) {
                 return std::nullopt;
             }
-            return AttitudeLookup{pitch, roll,
+            return AttitudeLookup{pitch, roll, candidate.speed_mps,
                                   candidate.body_to_navigation, false,
                                   candidate.timestamp_ns,
                                   candidate.timestamp_ns, candidate.launched,
@@ -231,7 +234,9 @@ std::optional<AttitudeLookup> AttitudeHistory::find_interpolated(
     if (!std::isfinite(pitch) || !std::isfinite(roll)) {
         return std::nullopt;
     }
-    return AttitudeLookup{pitch, roll, matrix, true, lower.timestamp_ns,
+    const double speed = (1.0 - fraction) * lower.speed_mps +
+                         fraction * upper.speed_mps;
+    return AttitudeLookup{pitch, roll, speed, matrix, true, lower.timestamp_ns,
                           upper.timestamp_ns, lower.launched,
                           lower.launch_timestamp_ns,
                           lower.launch_generation};
@@ -242,6 +247,7 @@ void AttitudeHistory::reset() noexcept {
         slots_[index].sequence.store(0, std::memory_order_relaxed);
         slots_[index].timestamp_ns.store(-1, std::memory_order_relaxed);
         slots_[index].pitch_bits.store(0, std::memory_order_relaxed);
+        slots_[index].speed_bits.store(0, std::memory_order_relaxed);
         slots_[index].matrix_m00_bits.store(0, std::memory_order_relaxed);
         slots_[index].matrix_m01_bits.store(0, std::memory_order_relaxed);
         slots_[index].matrix_m02_bits.store(0, std::memory_order_relaxed);
@@ -280,6 +286,8 @@ bool AttitudeHistory::read_slot(std::size_t index,
         bits_double(slot.pitch_bits.load(std::memory_order_relaxed));
     sample->roll_rad =
         bits_double(slot.roll_bits.load(std::memory_order_relaxed));
+    sample->speed_mps =
+        bits_double(slot.speed_bits.load(std::memory_order_relaxed));
     sample->body_to_navigation = {
         bits_double(slot.matrix_m00_bits.load(std::memory_order_relaxed)),
         bits_double(slot.matrix_m01_bits.load(std::memory_order_relaxed)),

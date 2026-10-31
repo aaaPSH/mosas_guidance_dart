@@ -369,11 +369,15 @@ bool SerialPort::start_receive(ReceiveCallback callback, void* context,
     return true;
 }
 
+void SerialPort::request_stop_receive() noexcept {
+    receive_stop_requested_.store(true, std::memory_order_release);
+}
+
 void SerialPort::stop_receive() noexcept {
+    request_stop_receive();
     std::thread receive_thread;
     {
         std::lock_guard<std::mutex> lock(receive_mutex_);
-        receive_stop_requested_.store(true, std::memory_order_release);
         receive_thread.swap(receive_thread_);
     }
     if (receive_thread.joinable()) {

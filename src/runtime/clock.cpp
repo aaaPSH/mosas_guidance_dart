@@ -55,6 +55,10 @@ TimestampNs realtime_timestamp_ns() noexcept {
     return read_clock(CLOCK_REALTIME);
 }
 
+TimestampNs SystemMonotonicClock::now_ns() const noexcept {
+    return monotonic_timestamp_ns();
+}
+
 std::optional<TimestampNs> timeval_to_nanoseconds(
     std::int64_t seconds, std::int64_t microseconds) noexcept {
     if (seconds < 0 || microseconds < 0 || microseconds >= 1'000'000 ||
