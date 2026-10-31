@@ -50,7 +50,7 @@ int sampling(){
     }
     CHECK(skipped&&previous>=33);CHECK(errors.str().empty());return 0;
 }
-/** @return Zero if the real periodic writer triggers launch-delay output with an empty mailbox. */
+/** @return 串口空邮箱下从实际发射确认计时，且发射前等待不消耗延迟时返回 0。 */
 int launch_delay_without_visual_commands() {
     SerialFixture serial;
     CHECK(serial.open());
@@ -69,7 +69,7 @@ int launch_delay_without_visual_commands() {
     binding.latest_state = [&] {
         auto state = command_test_state(now.load());
         state.launch.phase = launched ? domain::LaunchPhase::launched : domain::LaunchPhase::pre_launch;
-        state.launch.transition_time = command_test_time(1'000'000'000);
+        state.launch.transition_time = command_test_time(6'000'000'000);
         return std::optional<domain::FlightStateSnapshot>(state);
     };
     binding.now_ns = [&] { return now.load(); };
@@ -79,16 +79,20 @@ int launch_delay_without_visual_commands() {
     CHECK(sink.bind_output(std::move(binding)));
     CHECK(sink.start());
     CHECK(serial.wait_for(encoded(false, false)));
-    now = 1'100'000'000;
+    now = 5'000'000'000;
+    CHECK(serial.wait_for(encoded(false, false)));
+    now = 6'000'000'000;
     launched = true;
     CHECK(serial.wait_for(encoded(true, false)));
-    now = 1'200'000'000;
+    now = 6'100'000'000;
+    CHECK(serial.wait_for(encoded(true, false)));
+    now = 6'200'000'000;
     CHECK(serial.wait_for(encoded(true, true, 0.4, -0.2)));
     enabled = false; // The runtime's stop/fault gate must still suppress fixed commands.
     CHECK(serial.wait_for(encoded(true, false)));
     enabled = true;
     CHECK(serial.wait_for(encoded(true, true, 0.4, -0.2)));
-    now = 1'300'000'000;
+    now = 6'300'000'000;
     CHECK(serial.wait_for(encoded(true, false)));
     sink.stop();
     CHECK(sink.diagnostics().submitted_count == 0);
@@ -109,6 +113,8 @@ int target_trigger_restart() {
     app::SerialCommandSink sink(serial.port, {}, errors);
     CHECK(bind_live_output(sink, state, config));
     CHECK(sink.start());
+    CHECK(serial.wait_for(encoded(true, false))); // 已发射但尚无视觉命令时维持上升阶段。
+    CHECK(sink.diagnostics().submitted_count == 0);
     CHECK(sink.try_submit(fresh_command()));
     CHECK(serial.wait_for(encoded(true, true, 0.4)));
     auto missing = fresh_command();

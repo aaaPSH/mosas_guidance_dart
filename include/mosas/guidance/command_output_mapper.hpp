@@ -64,9 +64,11 @@ public:
     void reset() noexcept override;
 
     /**
-     * @param request 弹道系 Y/Z 请求。
-     * @param context 本次发送时刻状态；launch_delay 使用当前代际的发射状态及有效发射时间，不要求视觉请求。
-     * @return 精确限幅后的 body 命令；正常模式保护拒绝时为零，调试模式下按触发条件发送固定指令。
+     * @brief 映射正常制导请求，或在固定模式触发后生成镖体系调试指令。
+     * @param request 弹道系 Y/Z 请求；固定模式不使用其过载值。
+     * @param context 本次发送状态；两种固定模式均使用当前代际的 IMU 发射状态。
+     *        launch_delay 从发射确认时间计时；target_detected 仅由未过期的发射后识别结果首次触发。
+     * @return 精确限幅后的 body 命令；固定模式触发前发送零过载、零识别位并保留 IMU 发射标志。
      */
     domain::CommandMappingResult map(const domain::BallisticOverloadG& request,
         const domain::CommandOutputContext& context) const noexcept override;

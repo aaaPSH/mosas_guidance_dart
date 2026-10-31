@@ -39,3 +39,11 @@ Add concise comments for non-obvious logic, important design decisions, and comp
 Do not add redundant comments that merely repeat what the code already expresses.
 
 When modifying code, update or remove outdated comments to ensure documentation remains accurate and consistent with the implementation.
+
+## Git Commit Messages
+
+Match the existing commit history exactly: `type(scope): <Chinese summary>`.
+
+Use a lowercase English type and scope, followed by a colon, one space, and a concise Chinese summary.
+
+Keep each commit message to a single subject line. Do not include a body, bullet points, testing notes, or additional paragraphs.

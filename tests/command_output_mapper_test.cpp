@@ -30,7 +30,7 @@ mosas::domain::CommandOutputContext context(double roll = 0) {
     return c;
 }
 
-/** @return Zero if launch-delay output needs no visual request and retains its safety gates. */
+/** @return 发射前等待不消耗延迟、视觉不提前接管且空邮箱仍能触发时返回 0。 */
 int launch_delay_without_visual_request() {
     using namespace mosas;
     guidance::CommandMappingConfig config;
@@ -43,10 +43,25 @@ int launch_delay_without_visual_request() {
     c.launched = c.request_valid = c.target_found = false;
     c.expired = true;
     c.source_time = {};
-    c.emit_time_ns = 1'100'000'000;
+    c.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+    c.emit_time_ns = 1'000'000'000;
+    CHECK(!mapper.map({}, c).command.launched);
+    c.emit_time_ns = 6'000'000'000; // 程序启动后等待 5 秒才发射。
+    CHECK(!mapper.map({}, c).command.launched);
+    c.latest_state->launch.phase = domain::LaunchPhase::launched;
+    c.latest_state->launch.transition_time.monotonic_ns = c.emit_time_ns;
+    c.latest_state->launch.transition_time.source_time_ns = c.emit_time_ns;
     auto result = mapper.map({}, c);
-    CHECK(!result.command.valid && result.command.launched);
-    c.emit_time_ns = 1'200'000'000;
+    CHECK(!result.command.valid && result.command.launched && !result.command.target_found);
+    c.emit_time_ns = 6'199'999'999;
+    c.launched = c.target_found = true;
+    c.expired = false;
+    result = mapper.map({}, c);
+    CHECK(!result.command.valid && result.command.launched && !result.command.target_found);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+    c.launched = c.target_found = false;
+    c.expired = true;
+    c.emit_time_ns = 6'200'000'000;
     result = mapper.map({}, c);
     CHECK(result.command.valid && result.command.launched && result.command.target_found);
     CHECK_NEAR(result.command.overload_g.z, 0.5, 1e-12);
@@ -65,11 +80,60 @@ int launch_delay_without_visual_request() {
         CHECK(!command.valid);
         CHECK(command.overload_g.y == 0 && command.overload_g.z == 0);
     }
-    c.emit_time_ns = 1'300'000'000;
-    CHECK(!mapper.map({}, c).command.valid);
+    c.emit_time_ns = 6'300'000'000;
+    result = mapper.map({}, c);
+    CHECK(!result.command.valid && result.command.launched && !result.command.target_found);
     c.latest_state->launch.transition_time.monotonic_ns = 0;
     c.emit_time_ns = 200'000'000;
     CHECK(mapper.map({}, c).command.valid); // Time zero is a valid launch timestamp.
+    return 0;
+}
+
+/** @return 无视觉命令时仍发送上升状态，且仅未过期的发射后识别能首次触发时返回 0。 */
+int target_ascent_without_visual_request() {
+    using namespace mosas;
+    guidance::CommandMappingConfig config;
+    config.debug.mode = guidance::GuidanceDebugMode::target_detected;
+    config.debug.yaw_overload_g = 0.5;
+    guidance::CommandOutputMapper mapper(config);
+    auto c = context();
+    c.launched = c.request_valid = c.target_found = false;
+    c.expired = true;
+    c.source_time = {};
+    c.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+    CHECK(!mapper.map({}, c).command.launched);
+    c.latest_state->launch.phase = domain::LaunchPhase::launched;
+    auto result = mapper.map({}, c);
+    CHECK(!result.command.valid && result.command.launched && !result.command.target_found);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+    for (int invalid = 0; invalid < 5; ++invalid) {
+        auto rejected = c;
+        rejected.launched = rejected.target_found = true;
+        rejected.expired = false;
+        if (invalid == 0) rejected.latest_state.reset();
+        if (invalid == 1) rejected.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+        if (invalid == 2) ++rejected.latest_state->launch.generation;
+        if (invalid == 3) ++rejected.generation;
+        if (invalid == 4) rejected.output_enabled = false;
+        const auto command = mapper.map({}, rejected).command;
+        CHECK(!command.valid && !command.target_found);
+        CHECK(command.overload_g.y == 0 && command.overload_g.z == 0);
+    }
+    c.launched = c.target_found = true;
+    c.source_time = c.latest_state->time;
+    CHECK(!mapper.map({}, c).command.target_found); // 已过期的识别结果不能首次触发。
+    c.expired = false;
+    c.launched = false;
+    CHECK(!mapper.map({}, c).command.target_found); // 发射前图像不能借最新 IMU 状态触发。
+    c.launched = true;
+    c.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
+    result = mapper.map({}, c); // 首次识别无需等待 LOS 速率或 PNG 请求有效。
+    CHECK(result.command.valid && result.command.launched && result.command.target_found);
+    CHECK_NEAR(result.command.overload_g.z, 0.5, 1e-12);
+    c.target_found = false;
+    c.expired = true;
+    c.emit_time_ns += 200'000'000;
+    CHECK(mapper.map({}, c).command.valid); // 触发后不因目标丢失或邮箱超时撤销锁存。
     return 0;
 }
 
@@ -321,6 +385,7 @@ int main() {
     }
 
     CHECK(launch_delay_without_visual_request() == 0);
+    CHECK(target_ascent_without_visual_request() == 0);
     CHECK(target_trigger_state_boundaries() == 0);
     return 0;
 }

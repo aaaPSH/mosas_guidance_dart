@@ -43,14 +43,15 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     auto& trace = result.trace;
     command.source_frame_id = c.source_frame_id;
     command.generation = c.generation;
+    const bool debug = config_.debug.mode != GuidanceDebugMode::disabled;
     const bool launch_delay = config_.debug.mode == GuidanceDebugMode::launch_delay;
     command.source_time = launch_delay && c.latest_state ? c.latest_state->time : c.source_time;
-    // Timer output is driven by the current flight state, even if vision never submitted a request.
-    const bool launched = launch_delay
+    // 固定模式即使没有视觉命令，也要向下位机发布 IMU 确认的上升状态。
+    const bool launched = debug
         ? c.latest_state && c.latest_state->launch.phase == domain::LaunchPhase::launched
         : c.launched;
     command.launched = launched && c.generation == c.active_generation;
-    command.target_found = c.target_found && !c.expired;
+    command.target_found = !debug && c.target_found && !c.expired;
     trace.emit_time_ns = c.emit_time_ns;
     const auto reject = [&](Reason reason) {
         command.valid = false;
@@ -83,16 +84,12 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     // ==========================================
     // 调试模式分支（发射后延时或识别后发送固定指令）
     // ==========================================
-    if (config_.debug.mode != GuidanceDebugMode::disabled) {
+    if (debug) {
         if (c.emit_time_ns < 0) return reject(Reason::stale_input);
         std::lock_guard<std::mutex> lock(debug_mutex_);
         if (last_generation_ != c.generation) {
             reset_debug_state_locked();
             last_generation_ = c.generation;
-        }
-
-        if (c.target_found && !first_target_detected_time_ns_) {
-            first_target_detected_time_ns_ = c.emit_time_ns;
         }
 
         bool triggered = false;
@@ -112,6 +109,10 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
                 }
             }
         } else if (config_.debug.mode == GuidanceDebugMode::target_detected) {
+            // 识别须来自未过期的发射后图像；首帧速率无效不影响识别触发。
+            if (c.launched && c.target_found && !c.expired && !first_target_detected_time_ns_) {
+                first_target_detected_time_ns_ = c.emit_time_ns;
+            }
             if (first_target_detected_time_ns_) {
                 if (c.emit_time_ns < *first_target_detected_time_ns_) return reject(Reason::stale_input);
                 const int64_t elapsed_ns = c.emit_time_ns - *first_target_detected_time_ns_;
@@ -129,7 +130,8 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
         }
 
         if (!triggered) {
-            command.target_found = first_target_detected_time_ns_.has_value() || c.target_found;
+            // 延迟等待不受视觉影响；识别模式触发后保留原有识别锁存语义。
+            command.target_found = first_target_detected_time_ns_.has_value();
             return reject(Reason::none);
         }
 
