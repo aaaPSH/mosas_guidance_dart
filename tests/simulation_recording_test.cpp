@@ -97,31 +97,37 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
     for(int shot=0;shot<2;++shot) {
         if(shot){snapshot.session_id=602;server.set_snapshot(snapshot);}
         CHECK(advance(runner,[&]{return runner.running() && runner.session_id()==snapshot.session_id;}));
-        // Stationary history, a 100 ms acceleration ramp, then low-specific-force flight.
+        // A full 250 ms stationary history, a 100 ms ramp, then low-specific-force flight.
         // Neither protocol flight phase nor estimator launch state is injected.
-        for(std::int64_t time=0;time<=200'000'000;time+=5'000'000) {
-            const bool accelerating=time>50'000'000 && time<=150'000'000;
-            const bool released=time>150'000'000;
+        for(std::int64_t time=0;time<=400'000'000;time+=5'000'000) {
+            const bool accelerating=time>250'000'000 && time<=350'000'000;
+            const bool released=time>350'000'000;
             CHECK(server.submit(Imu{3,{accelerating?original.algorithms.attitude.launch_speed_mps/0.1:0,
                                       0,released?0:standard_gravity},{}},time));
-            if(time==180'000'000) {
-                // Wait before advancing simulation time beyond the 10 ms sync
-                // budget or overwriting the transport's intentional latest-only image slot.
-                CHECK(server.submit(image(snapshot.camera,220),175'000'000));
+            if(time==205'000'000) {
+                // Keep the camera stream live during the longer calibration;
+                // match recording must still ignore this prelaunch frame.
+                CHECK(server.submit(image(snapshot.camera,200),200'000'000));
                 CHECK(advance(runner,[&]{return runner.timing().output.samples>=2;}));
             }
+            if(time==380'000'000) {
+                // Wait before advancing simulation time beyond the 10 ms sync
+                // budget or overwriting the transport's intentional latest-only image slot.
+                CHECK(server.submit(image(snapshot.camera,220),375'000'000));
+                CHECK(advance(runner,[&]{return runner.timing().output.samples>=4;}));
+            }
         }
-        CHECK(server.submit(image(snapshot.camera,240),195'000'000));
-        CHECK(advance(runner,[&]{return runner.timing().output.samples>=4;}));
+        CHECK(server.submit(image(snapshot.camera,240),395'000'000));
+        CHECK(advance(runner,[&]{return runner.timing().output.samples>=6;}));
         CHECK(runner.running());
         const auto diagnostics=runner.output_diagnostics();
-        CHECK(diagnostics.video.accepted_count==2 && diagnostics.video.healthy);
-        CHECK(diagnostics.telemetry.accepted_count==2 && diagnostics.telemetry.healthy);
-        CHECK(diagnostics.imu_recording.accepted_count==41 && diagnostics.imu_recording.healthy);
+        CHECK(diagnostics.video.accepted_count==3 && diagnostics.video.healthy);
+        CHECK(diagnostics.telemetry.accepted_count==3 && diagnostics.telemetry.healthy);
+        CHECK(diagnostics.imu_recording.accepted_count==81 && diagnostics.imu_recording.healthy);
         CHECK(diagnostics.video.dropped_count==0 && diagnostics.telemetry.dropped_count==0);
         CHECK(diagnostics.imu_recording.dropped_count==0);
         const auto launch_ns = original.algorithms.attitude.launch_detection_mode ==
-            runtime::LaunchDetectionMode::two_stage ? "165000000" : "75000000";
+            runtime::LaunchDetectionMode::two_stage ? "365000000" : "275000000";
         CHECK(contains(log, std::string("MOSAS launch_detected_ns=") + launch_ns));
         CHECK(files_in(recordings,".avi").size()==static_cast<std::size_t>(shot));
         runner.stop(); // Less than 4 seconds: joins workers, encodes partial window, flushes CSVs.
@@ -142,14 +148,14 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
         auto telemetry=video;telemetry.replace_extension(".csv");
         const auto rows=lines_in(telemetry);
         CHECK(rows.size()==3);CHECK(rows[0].find("frame_index,frame_timestamp_ns,")==0);
-        CHECK(rows[1].find("0,175000000,")==0);CHECK(rows[2].find("1,195000000,")==0);
+        CHECK(rows[1].find("0,375000000,")==0);CHECK(rows[2].find("1,395000000,")==0);
         std::vector<std::filesystem::path> imu_files;
         for(const auto& path:files_in(video.parent_path(),".csv"))
             if(path.filename().string().find("_imu_")!=std::string::npos)imu_files.push_back(path);
         CHECK(imu_files.size()==1);
         const auto samples=lines_in(imu_files[0]);
-        CHECK(samples.size()==42);CHECK(samples[0].find("sample_index,timestamp_ns,")==0);
-        CHECK(samples[1].find("0,0,")==0);CHECK(samples.back().find("40,200000000,")==0);
+        CHECK(samples.size()==82);CHECK(samples[0].find("sample_index,timestamp_ns,")==0);
+        CHECK(samples[1].find("0,0,")==0);CHECK(samples.back().find("80,400000000,")==0);
         if(shot) {
             CHECK(video.parent_path()!=previous_directory);
             for(const auto& saved:previous_files)CHECK(read_bytes(saved.first)==saved.second);
@@ -159,9 +165,9 @@ int match_partial_windows_survive_two_sessions(const app::AppConfig& original) {
         }
         previous_directory=video.parent_path();
     }
-    CHECK(contains(log,"output video accepted=2 dropped=0 failures=0"));
-    CHECK(contains(log,"output telemetry accepted=2 dropped=0 failures=0"));
-    CHECK(contains(log,"output imu accepted=41 dropped=0 failures=0"));
+    CHECK(contains(log,"output video accepted=3 dropped=0 failures=0"));
+    CHECK(contains(log,"output telemetry accepted=3 dropped=0 failures=0"));
+    CHECK(contains(log,"output imu accepted=81 dropped=0 failures=0"));
     return 0;
 }
 
@@ -180,9 +186,9 @@ int prelaunch_and_debug_follow_original_policy(const app::AppConfig& original) {
         Endpoint server(config.socket_directory,snapshot);std::vector<std::string> log;
         app::SimulationRunner runner(config,[&](const auto& line){log.push_back(line);});
         CHECK(advance(runner,[&]{return runner.running();}));
-        for(std::int64_t time=0;time<=20'000'000;time+=5'000'000)
+        for(std::int64_t time=0;time<=220'000'000;time+=5'000'000)
             CHECK(server.submit(Imu{3,{0,0,standard_gravity},{}},time));
-        CHECK(server.submit(image(snapshot.camera,220),15'000'000));
+        CHECK(server.submit(image(snapshot.camera,220),215'000'000));
         CHECK(advance(runner,[&]{return runner.timing().output.samples>=2;}));
         runner.stop();CHECK(runner.last_error().empty());
         CHECK(!contains(log,"MOSAS launch_detected_ns="));
@@ -191,7 +197,7 @@ int prelaunch_and_debug_follow_original_policy(const app::AppConfig& original) {
         std::size_t imu_files=0;
         for(const auto& path:files_in(fixture.root/"recordings",".csv"))
             if(path.filename().string().find("_imu_")!=std::string::npos) {
-                ++imu_files;CHECK(lines_in(path).size()==6);
+                ++imu_files;CHECK(lines_in(path).size()==46);
             }
         CHECK(imu_files==1);
         if(debug) {
@@ -200,7 +206,7 @@ int prelaunch_and_debug_follow_original_policy(const app::AppConfig& original) {
             CHECK_NEAR(capture.get(cv::CAP_PROP_FPS),120,0.001);CHECK(!capture.read(frame));
             auto telemetry=videos[0];telemetry.replace_extension(".csv");
             const auto rows=lines_in(telemetry);CHECK(rows.size()==2);
-            CHECK(rows[1].find("0,15000000,")==0);
+            CHECK(rows[1].find("0,215000000,")==0);
         }
     }
     return 0;

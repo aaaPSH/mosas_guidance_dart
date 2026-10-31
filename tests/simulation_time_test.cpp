@@ -130,10 +130,10 @@ int main() {
         config.launch_detection_mode = mode;
         runtime::LegacyFlightStateEstimatorAdapter legacy(config);
         domain::FlightStateSnapshot flight;
-        const int trigger_index = mode == runtime::LaunchDetectionMode::two_stage ? 42 : 24;
-        for (int i = 0; i < 50; ++i) {
-            const bool accelerating = i >= 20 && i < 40;
-            const bool released = i >= 40;
+        const int trigger_index = mode == runtime::LaunchDetectionMode::two_stage ? 72 : 54;
+        for (int i = 0; i < 80; ++i) {
+            const bool accelerating = i >= 50 && i < 70;
+            const bool released = i >= 70;
             domain::ImuKinematicSample input;
             input.time = domain::make_simulation_time(i * 5'000'000);
             input.acceleration = {accelerating ? 250.0 : 0.0, released ? 0.0 : 9.80665, 0.0};

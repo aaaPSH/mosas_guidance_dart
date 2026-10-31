@@ -29,6 +29,10 @@ bool AttitudeEstimator::valid_config(
            finite(config.gyro_bias_filter_alpha) &&
            config.gyro_bias_filter_alpha > 0.0 &&
            config.gyro_bias_filter_alpha <= 1.0 &&
+           finite(config.accel_filter_alpha) &&
+           config.accel_filter_alpha > 0.0 &&
+           config.accel_filter_alpha <= 1.0 &&
+           config.stationary_confirm_ns >= 200'000'000 &&
            finite(config.launch_ax_threshold_mps2) &&
            config.launch_ax_threshold_mps2 > 0.0 &&
            config.launch_confirm_ns > 0 &&
@@ -203,6 +207,7 @@ void AttitudeEstimator::reset_launch_detection() noexcept {
     launch_stage_ = LaunchStage::awaiting_acceleration;
     launch_candidate_start_ns_ = -1;
     acceleration_confirmed_ns_ = -1;
+    stationary_start_ns_ = -1;
     has_launch_baseline_ = false;
 }
 
@@ -275,12 +280,32 @@ AttitudeEstimate AttitudeEstimator::update(
         launch_stage_ == LaunchStage::awaiting_acceleration &&
         is_stationary(sample.acceleration, sample.angular_velocity);
     if (stationary) {
-        attitude_valid = update_prelaunch_attitude(sample.acceleration);
-        if (attitude_valid) {
+        if (stationary_start_ns_ < 0) {
+            // 新连续段从当前样本初始化，不能混入上次姿态或冲击前的重力。
+            stationary_start_ns_ = sample.timestamp_ns;
+            filtered_acceleration_ = sample.acceleration;
+        } else {
+            const double alpha = config_.accel_filter_alpha;
+            filtered_acceleration_.x = alpha * sample.acceleration.x +
+                                       (1.0 - alpha) * filtered_acceleration_.x;
+            filtered_acceleration_.y = alpha * sample.acceleration.y +
+                                       (1.0 - alpha) * filtered_acceleration_.y;
+            filtered_acceleration_.z = alpha * sample.acceleration.z +
+                                       (1.0 - alpha) * filtered_acceleration_.z;
+        }
+
+        // 姿态、零偏和发射基线共用确认窗，首帧不能绕过静止确认。
+        if (sample.timestamp_ns - stationary_start_ns_ >=
+                config_.stationary_confirm_ns &&
+            update_prelaunch_attitude(filtered_acceleration_)) {
+            attitude_valid = true;
             update_gyro_bias(sample.angular_velocity);
-            launch_baseline_x_ = sample.acceleration.x;
+            launch_baseline_x_ = filtered_acceleration_.x;
             has_launch_baseline_ = true;
         }
+    } else {
+        // 扰动只撤销静止候选，不篡改已经锁定的姿态和基线。
+        stationary_start_ns_ = -1;
     }
     corrected_angular_velocity_ = {
         sample.angular_velocity.x - gyro_bias_.x,
@@ -292,45 +317,16 @@ AttitudeEstimate AttitudeEstimator::update(
                             sample.timestamp_ns);
     }
 
-    const auto integrate = [&] {
-        if (!has_timestamp_) {
-            return;
-        }
+    // 只从触发确认的下一连续帧开始积分；不回补所选判据的确认窗口。
+    if (was_launched && continuous && attitude_valid) {
         const double dt_seconds =
             static_cast<double>(sample.timestamp_ns - last_timestamp_ns_) * 1e-9;
-        if (finite(dt_seconds) && dt_seconds > 0.0 && continuous && attitude_valid) {
-            orientation_ = normalize(multiply(
-                orientation_,
-                delta_from_body_rate(corrected_angular_velocity_, dt_seconds)));
-            if (was_launched) {
-                const double pitch = pitch_from_matrix(to_matrix(orientation_));
-                speed_mps_ += (sample.acceleration.x -
-                               config_.gravity_mps2 * std::sin(pitch)) *
-                              dt_seconds;
-            }
-        }
-    };
-
-    if (was_launched) {
-        // 已确认发射后，从下一连续有效帧起积分姿态和纵向速度。
-        integrate();
-    } else {
-        if (stationary) {
-            if (!attitude_valid) {
-                reset_launch_detection();
-            }
-        } else if (config_.launch_detection_mode ==
-                   LaunchDetectionMode::acceleration) {
-            // acceleration 模式保留 main 分支发射前非静止时通过角速度积分维持发射初角度
-            const bool prelaunch_near_zero_acceleration =
-                !finite(acceleration_norm) || acceleration_norm < kEpsilon;
-            if (prelaunch_near_zero_acceleration) {
-                attitude_valid = false;
-                reset_launch_detection();
-            } else if (launch_stage_ != LaunchStage::triggered) {
-                integrate();
-            }
-        }
+        orientation_ = normalize(multiply(
+            orientation_,
+            delta_from_body_rate(corrected_angular_velocity_, dt_seconds)));
+        const double pitch = pitch_from_matrix(to_matrix(orientation_));
+        speed_mps_ += (sample.acceleration.x -
+                       config_.gravity_mps2 * std::sin(pitch)) * dt_seconds;
     }
 
     last_timestamp_ns_ = sample.timestamp_ns;
@@ -342,6 +338,7 @@ AttitudeEstimate AttitudeEstimator::update(
 void AttitudeEstimator::reset() noexcept {
     orientation_ = {};
     gyro_bias_ = {0.0, 0.0, 0.0};
+    filtered_acceleration_ = {0.0, 0.0, 0.0};
     corrected_angular_velocity_ = {0.0, 0.0, 0.0};
     speed_mps_ = config_.launch_speed_mps;
     launch_baseline_x_ = 0.0;

@@ -547,6 +547,8 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
         if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
         if (key == "attitude_gyro_bias_filter_alpha") return set_double(&algorithms.attitude.gyro_bias_filter_alpha) || invalid();
+        if (key == "attitude_accel_filter_alpha") return set_double(&algorithms.attitude.accel_filter_alpha) || invalid();
+        if (key == "attitude_stationary_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.stationary_confirm_ns) || invalid();
         if (key == "launch_detection_mode") {
             if (value == "acceleration") {
                 algorithms.attitude.launch_detection_mode = runtime::LaunchDetectionMode::acceleration;

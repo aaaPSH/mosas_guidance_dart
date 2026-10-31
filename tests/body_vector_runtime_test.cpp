@@ -71,32 +71,35 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
     using namespace mosas;
     const bool two_stage = mode == runtime::LaunchDetectionMode::two_stage;
     const std::vector<runtime::TimestampNs> command_times = two_stage
-        ? std::vector<runtime::TimestampNs>{60'000'000, 70'000'000, 90'000'000}
-        : std::vector<runtime::TimestampNs>{40'000'000, 45'000'000, 60'000'000,
-                                            70'000'000, 90'000'000};
+        ? std::vector<runtime::TimestampNs>{260'000'000, 270'000'000, 290'000'000}
+        : std::vector<runtime::TimestampNs>{240'000'000, 245'000'000, 260'000'000,
+                                            270'000'000, 290'000'000};
     const std::vector<double> guidance_speeds = two_stage
         ? std::vector<double>{15.99, 15.97}
         : std::vector<double>{16.015, 16.04, 16.01, 15.99};
     constexpr double gravity = 9.80665;
-    auto imu = std::make_unique<test::FakeImuSource>(
-        std::vector<runtime::ImuAngularVelocitySample>{
-            {0, {0.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {10'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {30'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
-            {40'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
-            {50'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
-            {60'000'000, {2.0, 0.0, 0.0}, {}, 0.0, 0.0},
-            {80'000'000, {-3.0, 0.0, 0.0}, {}, 0.0, 0.0},
-            {100'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0}});
+    std::vector<runtime::ImuAngularVelocitySample> samples;
+    for (std::int64_t ms = 0; ms < 200; ms += 10)
+        samples.push_back({ms * 1'000'000, {0.0, gravity, 0.0}, {}, 0.0, 0.0});
+    samples.insert(samples.end(), {
+        {200'000'000, {0.0, gravity, 0.0}, {}, 0.0, 0.0},
+        {210'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
+        {230'000'000, {30.0, gravity, 0.0}, {}, 0.0, 0.0},
+        {240'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
+        {250'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0},
+        {260'000'000, {2.0, 0.0, 0.0}, {}, 0.0, 0.0},
+        {280'000'000, {-3.0, 0.0, 0.0}, {}, 0.0, 0.0},
+        {300'000'000, {1.0, 0.0, 0.0}, {}, 0.0, 0.0}});
+    auto imu = std::make_unique<test::FakeImuSource>(samples);
     auto* imu_control = imu.get();
     auto camera = std::make_unique<test::FakeCameraSource>(
-        std::vector<runtime::CameraFrame>{make_frame(20'000'000),
-                                        make_frame(40'000'000),
-                                        // two_stage 下区间跨越 50 ms 确认点；acceleration 下已触发。
-                                        make_frame(45'000'000),
-                                        make_frame(60'000'000),
-                                        make_frame(70'000'000),
-                                        make_frame(90'000'000)});
+        std::vector<runtime::CameraFrame>{make_frame(220'000'000),
+                                        make_frame(240'000'000),
+                                        // two_stage 下区间跨越 250 ms 确认点；acceleration 下已触发。
+                                        make_frame(245'000'000),
+                                        make_frame(260'000'000),
+                                        make_frame(270'000'000),
+                                        make_frame(290'000'000)});
     auto* camera_control = camera.get();
     auto commands = std::make_unique<test::FakeCommandSink>();
     auto* command_control = commands.get();
@@ -116,7 +119,7 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
     dependencies.los_estimator = std::move(los);
     dependencies.los_rate_filter = std::move(rate);
     dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
-    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(100'000'000);
+    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(300'000'000);
     runtime::RuntimeSupervisorConfig config;
     config.capture_queue_capacity = 6;
     runtime::RuntimeSupervisor runtime(std::move(imu), std::move(camera),
@@ -134,12 +137,12 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
         const auto latest = runtime.latest_state();
-        if (latest && latest->time.monotonic_ns == 100'000'000)
+        if (latest && latest->time.monotonic_ns == 300'000'000)
             break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(runtime.latest_state().has_value());
-    CHECK(runtime.latest_state()->time.monotonic_ns == 100'000'000);
+    CHECK(runtime.latest_state()->time.monotonic_ns == 300'000'000);
     CHECK_NEAR(runtime.latest_state()->speed_mps.value,
                two_stage ? 15.98 : 16.0, 1e-12);
     camera_control->release();

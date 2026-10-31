@@ -43,6 +43,9 @@ int main() {
     const auto root=std::filesystem::path(MOSAS_SOURCE_DIR)/"config";
     CHECK(app::AppConfigLoader::load(root/"mosas_guidance.conf",&config,&error));
     CHECK(!config.enable_timing_statistics && config.sync_calibration.directory.empty());
+    CHECK_NEAR(config.algorithms.attitude.gyro_stationary_threshold_rad_s,0.05,1e-12);
+    CHECK_NEAR(config.algorithms.attitude.accel_filter_alpha,0.02,1e-12);
+    CHECK(config.algorithms.attitude.stationary_confirm_ns==200'000'000);
     CHECK_NEAR(config.algorithms.los_filter.sigma_a,8.0,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.sigma_a_pitch,10.0,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.sigma_a_yaw,3.5,1e-12);
@@ -61,6 +64,9 @@ int main() {
     app::AppConfig calibration;
     CHECK(app::AppConfigLoader::load(root/"mosas_sync_calibration.conf",&calibration,&error));
     CHECK(calibration.enable_timing_statistics);
+    CHECK_NEAR(calibration.algorithms.attitude.gyro_stationary_threshold_rad_s,0.05,1e-12);
+    CHECK_NEAR(calibration.algorithms.attitude.accel_filter_alpha,0.02,1e-12);
+    CHECK(calibration.algorithms.attitude.stationary_confirm_ns==200'000'000);
     CHECK(calibration.sync_calibration.directory==root.parent_path()/"data/sync_capture_01");
     CHECK(calibration.sync_calibration.seconds==45 && calibration.sync_calibration.fps==30);
     CHECK(calibration.sync_calibration.max_bytes==2048ULL*1024*1024);
@@ -133,18 +139,27 @@ int main() {
             "png_maximum_command_overload=-1\n","png_maximum_command_acceleration=-1\n","png_gravity=0\n",
             "camera_to_body_m00=2\n","launch_speed_mps=0\n","launch_detection_mode=unknown\n",
             "launch_release_confirm_ms=0\n","launch_release_timeout_ms=10\n","attitude_maximum_gap_ms=0\n",
+            "attitude_accel_filter_alpha=0\n","attitude_accel_filter_alpha=nan\n","attitude_accel_filter_alpha=1.1\n",
+            "attitude_stationary_confirm_ms=0\n","attitude_stationary_confirm_ms=199\n",
             "launch_release_acceleration_max_mps2=9.6\n","send_rate_hz=0\n","send_rate_hz=1001\n","command_timeout_ms=0\n"})
         CHECK(!file.load(invalid,config,error));
+    CHECK(file.load("attitude_accel_filter_alpha=0.1\nattitude_stationary_confirm_ms=300\n",config,error));
+    CHECK_NEAR(config.algorithms.attitude.accel_filter_alpha,0.1,1e-12);
+    CHECK(config.algorithms.attitude.stationary_confirm_ns==300'000'000);
     for(const std::string mode:{"acceleration","two_stage"}) {
         CHECK(file.load("launch_detection_mode="+mode+"\n",config,error));
         auto algorithms=app::make_default_guidance_algorithms(config.algorithms);
         domain::ImuKinematicSample imu;
-        imu.time.monotonic_ns=0;imu.acceleration={0,9.80665,0};algorithms.flight_state_estimator->update(imu);
-        imu.time.monotonic_ns=5'000'000;imu.acceleration={30,0,0};algorithms.flight_state_estimator->update(imu);
-        imu.time.monotonic_ns=25'000'000;
+        imu.acceleration={0,9.80665,0};
+        for(std::int64_t ms=0;ms<=200;ms+=5) {
+            imu.time.monotonic_ns=ms*1'000'000;
+            CHECK(algorithms.flight_state_estimator->update(imu).attitude.valid==(ms==200));
+        }
+        imu.time.monotonic_ns=205'000'000;imu.acceleration={30,0,0};algorithms.flight_state_estimator->update(imu);
+        imu.time.monotonic_ns=225'000'000;
         CHECK((algorithms.flight_state_estimator->update(imu).launch.phase==domain::LaunchPhase::launched)==(mode=="acceleration"));
-        imu.time.monotonic_ns=30'000'000;imu.acceleration={1,0,0};algorithms.flight_state_estimator->update(imu);
-        imu.time.monotonic_ns=40'000'000;
+        imu.time.monotonic_ns=230'000'000;imu.acceleration={1,0,0};algorithms.flight_state_estimator->update(imu);
+        imu.time.monotonic_ns=240'000'000;
         CHECK(algorithms.flight_state_estimator->update(imu).launch.phase==domain::LaunchPhase::launched);
     }
     CHECK(file.load("png_gravity=10\npng_maximum_command_overload=10\npng_maximum_command_acceleration=inf\n",config,error));

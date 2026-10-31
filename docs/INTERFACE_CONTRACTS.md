@@ -447,7 +447,7 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 
 两种模式共用当前的静止标定、触发前非静止姿态冻结、异常保护及触发后积分。开关仅切换触发判据/时刻，不回滚旧版本的整套姿态传播或滤波实现。`LaunchPhase::launched`、串口发射标志和 match 录像窗口均跟随所选判据；`transition_time` 是该判据的确认帧时间，`LaunchReason::threshold_confirmed` 表示所选判据已满足。
 
-1. 待加速阶段只使用满足静止条件（比力模长接近重力且角速度足够小）的样本校准姿态、陀螺零偏和 X 轴基线；未获得静止基线时禁止启动发射检测。其他触发前样本保持姿态，不进行陀螺传播。
+1. 待加速阶段要求比力模长接近重力、原始角速度模长不超过 `attitude_gyro_stationary_threshold_rad_s`（默认 0.05 rad/s），并连续满足 `attitude_stationary_confirm_ms`（默认且至少 200 ms）。确认前首次姿态无效且禁止启动发射检测；确认后用该连续段的重力矢量 EMA（`attitude_accel_filter_alpha`，默认 0.02，范围 (0, 1]）求解姿态并更新 X 轴基线及陀螺零偏。扰动立即清除静止计时和 EMA 候选；重新满足完整窗口之前保持已锁姿态，不进行陀螺传播。无效样本、断流和离架超时同样清除静止候选，并要求重新确认基线，但不覆写已锁姿态；完整 reset 清除全部标定。
 2. 两种模式共用 `launch_ax_threshold_mps2`（默认 14.709975 m/s²）和 `launch_confirm_ms`（默认 20 ms）。加速确认后，`acceleration` 立即触发并锁存；`two_stage` 仅进入待离架状态，冻结校准结果但不启用制导。
 3. 仅 `two_stage` 在待离架阶段使用 `launch_release_acceleration_max_mps2`（默认 3 m/s²）及 `launch_release_confirm_ms`（默认 10 ms），低比力连续确认后才触发。比力阈值必须严格低于静止校准区间，单独失重或短冲击不能绕过加速确认。
 4. 仅 `two_stage` 使用 `launch_release_timeout_ms`（默认 500 ms）：加速确认后超时未确认离架，取消候选并要求重新静止校准；超时必须大于低比力确认时长，允许恰在边界完成确认。两种模式均在触发前遇到新的无效样本或超过 `attitude_maximum_gap_ms` 的断流时取消候选并要求重校准，不把不连续时长算作有效证据。重复和回退的非负时间戳优先忽略，即使载荷无效也不能清除当前检测证据或打断后续积分。
