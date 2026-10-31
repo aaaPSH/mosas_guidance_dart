@@ -55,6 +55,8 @@ VisionOverlayData make_legacy_overlay(
         overlay.line_of_sight_rate_q_y.value;
     result.line_of_sight_rate_q_z_rad_s =
         overlay.line_of_sight_rate_q_z.value;
+    result.lever_arm_distance_valid = overlay.lever_arm_distance_valid;
+    result.lever_arm_distance_m = overlay.lever_arm_distance_m;
     result.body_overload_valid = overlay.body_overload_valid;
     result.body_overload_x_g = overlay.body_overload.x;
     result.body_overload_y_g = overlay.body_overload.y;

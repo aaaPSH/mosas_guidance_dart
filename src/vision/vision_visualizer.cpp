@@ -95,6 +95,11 @@ std::string format_fps(double value) {
     return stream.str();
 }
 
+/**
+ * @brief 绘制共用的引导信息面板和姿态十字；距离直接使用同帧补偿快照，不重新积分。
+ * @param frame 原地绘制的 BGR888 图像；无效图像保持不变。
+ * @param data 当前帧显示快照；补偿距离使用两位小数和 m，无效时显示 N/A。
+ */
 void draw_guidance_overlay_impl(cv::Mat& frame,
                                 const VisionOverlayData& data) {
     if (!is_valid_frame(frame)) {
@@ -116,6 +121,9 @@ void draw_guidance_overlay_impl(cv::Mat& frame,
             format_value(data.line_of_sight_rate_valid,
                          data.line_of_sight_rate_q_z_rad_s,
                          kRadiansToDegrees, ""),
+        "Lever-arm distance: " +
+            format_value(data.lever_arm_distance_valid,
+                         data.lever_arm_distance_m, 1.0, " m"),
         "Body overload(g): x " +
             format_value(data.body_overload_valid, data.body_overload_x_g,
                          1.0, "") +

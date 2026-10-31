@@ -49,6 +49,7 @@ int main() {
     CHECK_NEAR(config.algorithms.los_filter.sigma_q,0.0035,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.initial_covariance,1.0,1e-12);
     CHECK(config.algorithms.los_filter.enable_filter);
+    CHECK(config.algorithms.los_filter.enable_lever_arm_compensation);
     CHECK_NEAR(config.algorithms.los_filter.maximum_gap_seconds,0.2,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.camera_lever_arm_x,0.10,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.estimated_target_distance,15.0,1e-12);
@@ -68,6 +69,7 @@ int main() {
     CHECK_NEAR(calibration.algorithms.los_filter.sigma_a_yaw,3.5,1e-12);
     CHECK_NEAR(calibration.algorithms.los_filter.sigma_q,0.0035,1e-12);
     CHECK_NEAR(calibration.algorithms.los_filter.camera_lever_arm_x,0.18,1e-12);
+    CHECK(calibration.algorithms.los_filter.enable_lever_arm_compensation);
 
     CHECK(file.load("png_navigation_constant_y=7\npng_navigation_constant_z=11\npng_maximum_command_overload=10\npng_maximum_command_acceleration=inf\n",config,error));
     bool observed=false;
@@ -104,6 +106,7 @@ int main() {
     }
     CHECK(file.load("los_kalman_sigma_a=6\nlos_kalman_sigma_a_pitch=0\nlos_kalman_sigma_a_yaw=2\n"
                     "los_kalman_sigma_q=0.01\nlos_initial_covariance=0\nlos_enable_filter=false\n"
+                    "los_enable_lever_arm_compensation=false\n"
                     "los_maximum_gap_ms=150\nlos_camera_lever_arm_x=-0.12\nlos_estimated_target_distance=20\n",config,error));
     CHECK_NEAR(config.algorithms.los_filter.sigma_a,6.0,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.sigma_a_pitch,0.0,1e-12);
@@ -111,6 +114,7 @@ int main() {
     CHECK_NEAR(config.algorithms.los_filter.sigma_q,0.01,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.initial_covariance,0.0,1e-12);
     CHECK(!config.algorithms.los_filter.enable_filter);
+    CHECK(!config.algorithms.los_filter.enable_lever_arm_compensation);
     CHECK_NEAR(config.algorithms.los_filter.maximum_gap_seconds,0.15,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.camera_lever_arm_x,-0.12,1e-12);
     CHECK_NEAR(config.algorithms.los_filter.estimated_target_distance,20.0,1e-12);
@@ -124,7 +128,8 @@ int main() {
     for(const auto* invalid:{"control_channel=Pitch\n","png_navigation_constant_y=0\n","png_navigation_constant_z=nan\n",
             "los_kalman_sigma_a=0\n","los_kalman_sigma_a_pitch=-1\n","los_kalman_sigma_a_yaw=nan\n",
             "los_kalman_sigma_q=0\n","los_initial_covariance=-1\n","los_maximum_gap_ms=0\n",
-            "los_enable_filter=maybe\n","los_camera_lever_arm_x=inf\n","los_estimated_target_distance=0\n",
+            "los_enable_filter=maybe\n","los_enable_lever_arm_compensation=maybe\n",
+            "los_camera_lever_arm_x=inf\n","los_estimated_target_distance=0\n",
             "png_maximum_command_overload=-1\n","png_maximum_command_acceleration=-1\n","png_gravity=0\n",
             "camera_to_body_m00=2\n","launch_speed_mps=0\n","launch_detection_mode=unknown\n",
             "launch_release_confirm_ms=0\n","launch_release_timeout_ms=10\n","attitude_maximum_gap_ms=0\n",

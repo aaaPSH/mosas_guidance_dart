@@ -516,6 +516,9 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             algorithms.los_filter.maximum_gap_seconds = decimal * 0.001;
             return true;
         }
+        if (key == "los_enable_lever_arm_compensation") {
+            return parse_bool(value, &algorithms.los_filter.enable_lever_arm_compensation) || invalid();
+        }
         if (key == "los_camera_lever_arm_x") {
             return set_double(&algorithms.los_filter.camera_lever_arm_x) || invalid();
         }

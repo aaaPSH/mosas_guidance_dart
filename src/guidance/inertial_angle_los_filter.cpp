@@ -2,6 +2,7 @@
 
 #include "rotation_validation.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -11,6 +12,7 @@ namespace {
 constexpr double kEpsilon = 1e-12;
 constexpr double kPoleThreshold = 1e-6;
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kMinEstimatedDistance = 1.0;
 
 /** @param angle 有限角度，rad。 @return [-pi, pi) 内的等价角度。 */
 double normalize_angle(double angle) noexcept {
@@ -47,12 +49,16 @@ void InertialAngleLosFilter::reset() noexcept {
     initialized_ = false;
     generation_ = 0;
     previous_pitch_ = previous_yaw_ = 0.0;
-    reference_camera_position_ = {};
+    estimated_target_distance_ = std::max(config_.estimated_target_distance, kMinEstimatedDistance);
+    previous_speed_mps_ = 0.0;
     sample_ = {};
 }
 
 domain::LineOfSightRateSample InertialAngleLosFilter::sample() const {
-    return sample_;
+    auto result = sample_;
+    result.lever_arm_distance_valid = initialized_ && config_.enable_lever_arm_compensation;
+    result.lever_arm_distance_m = result.lever_arm_distance_valid ? estimated_target_distance_ : 0.0;
+    return result;
 }
 
 void InertialAngleLosFilter::AngleState::initialize(
@@ -99,6 +105,8 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     if (!input.line_of_sight.valid || !input.attitude.valid ||
         !std::isfinite(input.dt_seconds) || input.dt_seconds < 0.0 ||
         (initialized_ && input.dt_seconds == 0.0) ||
+        (config_.enable_lever_arm_compensation &&
+         (!std::isfinite(input.speed_mps.value) || input.speed_mps.value < 0.0)) ||
         !detail::valid_rotation(input.attitude.navigation_from_dart.matrix())) {
         reset();
         return {};
@@ -113,24 +121,33 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const domain::DartLineOfSight normalized_los{
         true, {direction.x / norm, direction.y / norm, direction.z / norm}};
     const auto navigation_direction = input.attitude.navigation_from_dart.apply(normalized_los.direction);
-    const auto& m = input.attitude.navigation_from_dart.matrix();
-    const std::array<double, 3> camera_position{
-        m[0] * config_.camera_lever_arm_x,
-        m[3] * config_.camera_lever_arm_x,
-        m[6] * config_.camera_lever_arm_x};
-
     const bool new_segment = !initialized_ || input.generation != generation_ ||
                              input.dt_seconds > config_.maximum_gap_seconds;
     if (new_segment) {
         reset();
-        reference_camera_position_ = camera_position;
     }
 
-    // 保留相对首帧的杆臂视差补偿，先补偿向量再提取角度，不对机体角直接滤波。
-    const double distance = config_.estimated_target_distance;
-    double x = navigation_direction.x + (camera_position[0] - reference_camera_position_[0]) / distance;
-    double y = navigation_direction.y + (camera_position[1] - reference_camera_position_[1]) / distance;
-    double z = navigation_direction.z + (camera_position[2] - reference_camera_position_[2]) / distance;
+    double x = navigation_direction.x;
+    double y = navigation_direction.y;
+    double z = navigation_direction.z;
+    if (config_.enable_lever_arm_compensation) {
+        if (!new_segment) {
+            // 首帧只建立距离/速度基准；后续按相邻曝光速度梯形积分，避免固定距离视差误差。
+            const double average_speed = 0.5 * previous_speed_mps_ + 0.5 * input.speed_mps.value;
+            const double travelled = average_speed * input.dt_seconds;
+            if (!std::isfinite(travelled)) {
+                reset();
+                return {};
+            }
+            estimated_target_distance_ = std::max(kMinEstimatedDistance, estimated_target_distance_ - travelled);
+        }
+        previous_speed_mps_ = input.speed_mps.value;
+        // 绝对杆臂补偿将视线起点移至质心；1 m 距离下限限制近距离视差放大。
+        const auto& m = input.attitude.navigation_from_dart.matrix();
+        x += m[0] * config_.camera_lever_arm_x / estimated_target_distance_;
+        y += m[3] * config_.camera_lever_arm_x / estimated_target_distance_;
+        z += m[6] * config_.camera_lever_arm_x / estimated_target_distance_;
+    }
     const double corrected_norm = std::hypot(std::hypot(x, y), z);
     if (!std::isfinite(corrected_norm) || corrected_norm < kEpsilon) {
         reset();

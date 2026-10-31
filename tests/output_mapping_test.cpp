@@ -5,10 +5,44 @@
 #include "body_vector_test_support.hpp"
 #include "test_support.hpp"
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <vector>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+
+namespace {
+/** @return 杆臂补偿距离文字使用两位小数和 m，无效或非有限值显示 N/A 时为 0。 */
+int verify_distance_overlay() {
+    struct Case {
+        bool valid;
+        double distance;
+        const char* text;
+    };
+    const std::array<Case, 5> cases{{
+        {true, 12.346, "Lever-arm distance: 12.35 m"},
+        {true, 1.0, "Lever-arm distance: 1.00 m"},
+        {false, 12.346, "Lever-arm distance: N/A"},
+        {true, std::numeric_limits<double>::quiet_NaN(), "Lever-arm distance: N/A"},
+        {true, std::numeric_limits<double>::infinity(), "Lever-arm distance: N/A"},
+    }};
+    for (const auto& item : cases) {
+        VisionOverlayData data{};
+        data.lever_arm_distance_valid = item.valid;
+        data.lever_arm_distance_m = item.distance;
+        cv::Mat actual(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+        cv::Mat expected = actual.clone();
+        VisionVisualizer::draw_guidance_overlay(actual, data);
+        cv::putText(expected, item.text, {11, 57}, cv::FONT_HERSHEY_SIMPLEX,
+                    0.38, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        // 第三行只包含补偿距离，独立核对实际文字，避免仅比较同一个绘图实现。
+        const cv::Rect row(0, 45, 640, 19);
+        CHECK(cv::norm(actual(row), expected(row), cv::NORM_INF) == 0.0);
+    }
+    return 0;
+}
+}  // namespace
 
 int main() {
     using namespace mosas;
@@ -49,6 +83,8 @@ int main() {
     overlay.attitude_roll = {-0.5};
     overlay.launch_phase = domain::LaunchPhase::launched;
     overlay.processing_fps = 123.0;
+    overlay.lever_arm_distance_valid = true;
+    overlay.lever_arm_distance_m = 12.346;
 
     domain::FlightStateSnapshot state{};
     state.attitude = test::vector_test_attitude(0.25, -0.5, 0.35);
@@ -75,6 +111,11 @@ int main() {
     CHECK_NEAR(mapped_overlay.attitude_yaw_rad, 0.35, 1e-12);
     CHECK(mapped_overlay.launched);
     CHECK_NEAR(mapped_overlay.processing_fps, 123.0, 1e-12);
+    CHECK(mapped_overlay.lever_arm_distance_valid);
+    CHECK_NEAR(mapped_overlay.lever_arm_distance_m, 12.346, 1e-12);
+    const auto empty_overlay = output::detail::make_legacy_overlay({}, state);
+    CHECK(!empty_overlay.lever_arm_distance_valid);
+    CHECK_NEAR(empty_overlay.lever_arm_distance_m, 0.0, 1e-12);
 
     VisionResult expected_vision{};
     expected_vision.found = true;
@@ -97,6 +138,8 @@ int main() {
     expected_overlay.attitude_yaw_rad = 0.35;
     expected_overlay.launched = true;
     expected_overlay.processing_fps = 123.0;
+    expected_overlay.lever_arm_distance_valid = true;
+    expected_overlay.lever_arm_distance_m = 12.346;
 
     cv::Mat mapped_frame(120, 160, CV_8UC3, cv::Scalar(25, 40, 60));
     cv::Mat expected_frame = mapped_frame.clone();
@@ -198,5 +241,6 @@ int main() {
     state.attitude.navigation_from_dart =
         domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>(invalid_matrix);
     CHECK(!output::detail::make_attitude_angles(state.attitude).valid);
+    CHECK(verify_distance_overlay() == 0);
     return 0;
 }

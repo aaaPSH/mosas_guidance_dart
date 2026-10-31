@@ -54,12 +54,14 @@ struct VectorLosEstimate {
     DirectionRateNavigationPerSec inertial_direction_rate{};
 };
 
-/** @brief 镖体系单位视线及同帧曝光姿态；首帧仅建立基准，不传播 dt。 */
+/** @brief 镖体系单位视线及同帧曝光姿态、速度；首帧仅建立基准，不传播 dt。 */
 struct LosRateFilterInput {
     DartLineOfSight line_of_sight{};
     AttitudeState attitude{};
     double dt_seconds = 0.0;
     std::uint64_t generation = 0;
+    /** @brief 曝光时刻纵向速度，m/s；启用杆臂补偿时须为有限非负数。 */
+    Quantity<MetersPerSecond> speed_mps{};
 };
 
 /** @brief 导航系制导状态及速率诊断；角度滤波在方位极点拒绝输出。 */
@@ -69,11 +71,14 @@ struct LosRateEstimate {
     VectorLosEstimate vector{};
 };
 
-/** @brief 最近镖体系单位观测、补偿后惯性角度差分及滤波角速率诊断。 */
+/** @brief 最近镖体系单位观测、补偿后惯性角速率及同帧杆臂补偿距离诊断。 */
 struct LineOfSightRateSample {
     DartLineOfSight line_of_sight{};
     LineOfSightAngularVelocity raw_angular_velocity{};
     LineOfSightAngularVelocity filtered_angular_velocity{};
+    /** @brief 本帧补偿距离有效位；首帧建基准后可有效，关闭补偿或重置后无效。 */
+    bool lever_arm_distance_valid = false;
+    double lever_arm_distance_m = 0.0; ///< 实际用于杆臂补偿的距离，m；有效时不小于 1。
 };
 
 struct GuidanceInput {
@@ -116,6 +121,9 @@ struct GuidanceOverlay {
     Quantity<Radian> output_attitude_roll{};
     LaunchPhase launch_phase = LaunchPhase::unknown;
     double processing_fps = 0.0;
+    /** @brief 来自同帧滤波诊断的补偿距离有效位，与角速率有效位独立。 */
+    bool lever_arm_distance_valid = false;
+    double lever_arm_distance_m = 0.0; ///< 实际用于杆臂补偿的距离，m；无效时画面显示 N/A。
 };
 
 }  // namespace mosas::domain

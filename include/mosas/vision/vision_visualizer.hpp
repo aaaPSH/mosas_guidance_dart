@@ -17,7 +17,7 @@ public:
     /**
      * @brief 在左上角绘制白色引导数据，并按 roll 在画面中心绘制姿态十字。
      * @param frame 原地绘制的 BGR 图像；无效图像保持不变。
-     * @param data 当前帧的引导和姿态显示快照。
+     * @param data 当前帧的引导、姿态和杆臂补偿距离快照；距离单位 m，显示两位小数或 N/A。
      */
     static void draw_guidance_overlay(cv::Mat& frame,
                                       const VisionOverlayData& data);

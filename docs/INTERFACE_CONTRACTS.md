@@ -262,6 +262,7 @@ struct LosRateFilterInput {
     AttitudeState attitude;
     double dt_seconds;
     std::uint64_t generation;
+    Quantity<MetersPerSecond> speed_mps; // 曝光同步纵向速度；启用杆臂补偿时须有限且非负
 };
 
 struct LosRateEstimate {
@@ -274,6 +275,8 @@ struct LineOfSightRateSample {
     DartLineOfSight line_of_sight;
     LineOfSightAngularVelocity raw_angular_velocity;
     LineOfSightAngularVelocity filtered_angular_velocity;
+    bool lever_arm_distance_valid; // 与角速率有效位独立；首帧距离可有效
+    double lever_arm_distance_m;   // 本帧实际用于杆臂补偿的距离，m
 };
 
 struct GuidanceInput {
@@ -474,27 +477,30 @@ n_z = N_z * V_actual * q_dot_z_effective / g0
 
 ### 6.3 补偿后的惯性系双通道视线角滤波
 
-默认工厂只装配 `PinholeLosEstimator`、`InertialAngleLosFilter` 和 `BallisticPngGuidance`。观测端保留向量接口，先完成安装旋转、曝光姿态转换和相对首帧的杆臂补偿，再按原始 `atan2` 公式计算仰角、方位角：
+默认工厂只装配 `PinholeLosEstimator`、`InertialAngleLosFilter` 和 `BallisticPngGuidance`。观测端保留向量接口，先完成安装旋转、曝光姿态转换和可选绝对杆臂补偿，再按原始 `atan2` 公式计算仰角、方位角：
 
 ```text
 v_C = [1, -(v-cy)/fy, (u-cx)/fx]
 l_D = normalize(R_D_from_C * v_C)
 l_N_cam = R_N_from_D(t_exposure) * l_D
 r_cam_N = R_N_from_D(t_exposure) * [L_x, 0, 0]
-z_N = normalize(l_N_cam + (r_cam_N-r_cam_N_reference) / R_estimated)
+R_hat(first) = max(los_estimated_target_distance, 1.0)
+R_hat(k) = max(1.0, R_hat(k-1) - (V_exposure(k-1)/2 + V_exposure(k)/2) * dt)
+z_N = normalize(l_N_cam + r_cam_N / R_hat(k))  // 杆臂补偿开启
+z_N = l_N_cam                                // 杆臂补偿关闭
 q_y = atan2(z_N.y, hypot(z_N.x, z_N.z))
 q_z = atan2(z_N.z, z_N.x)
 ```
 
-`PinholeLosEstimator` 检查目标、有限内参、正焦距和 SO(3) 安装旋转。`InertialAngleLosFilter` 防御性单位化输入方向，拒绝非有限、模长小于 1e-12 或溢出的方向；相机起点和既有相对基准帧视差公式不变。
+`PinholeLosEstimator` 检查目标、有限内参、正焦距和 SO(3) 安装旋转。`InertialAngleLosFilter` 防御性单位化输入方向，拒绝非有限、模长小于 1e-12 或溢出的方向。`los_enable_lever_arm_compensation=true` 默认启用绝对杆臂补偿，使用相机相对质心的位置修正视线起点。当前识别结果不含测距，连续段首个有效识别帧使用 `los_estimated_target_distance` 初始化距离；后续按相邻曝光时刻的动态纵向速度梯形积分递减，距离始终不小于 1 m。启用时拒绝负数、非有限速度及积分溢出；关闭时不使用速度和距离，仅跳过杆臂修正，曝光姿态转换及角度滤波保持不变。
 
 俯仰、方位各使用一个独立的二状态 Kalman：`x=[q,dq/dt]`，`F=[1,dt;0,1]`，`H=[1,0]`，`Q=sigma_a_channel²*[dt⁴/4,dt³/2;dt³/2,dt²]`，`R=sigma_q²`。首帧以当前角度、零速率、`P=diag(R,initial_covariance)` 初始化；后续帧直接更新角度观测，不再使用机体角速度前馈。协方差以与原二状态更新等价的 Joseph 形式计算；方位差分、创新和状态正确处理 ±π 跨界。
 
-恢复的 `[guidance]` 参数为 `los_kalman_sigma_a=8`、`los_kalman_sigma_a_pitch=10`、`los_kalman_sigma_a_yaw=3.5`、`los_kalman_sigma_q=0.0035`、`los_initial_covariance=1`、`los_enable_filter=true`。噪声为标准差；通道噪声设为 0 时使用公共值，初始速率方差可为 0。关闭滤波时仍先补偿惯性向量，再计算角度及帧间差分。
+恢复的 `[guidance]` 参数为 `los_kalman_sigma_a=8`、`los_kalman_sigma_a_pitch=10`、`los_kalman_sigma_a_yaw=3.5`、`los_kalman_sigma_q=0.0035`、`los_initial_covariance=1`、`los_enable_filter=true`。噪声为标准差；通道噪声设为 0 时使用公共值，初始速率方差可为 0。关闭滤波时仍先执行姿态转换和由独立开关控制的杆臂补偿，再计算角度及帧间差分。
 
 下游 `VectorLosEstimate` 不再是六维滤波状态，而是由滤波角度解析生成：`l_N=[cos(q_y)cos(q_z),sin(q_y),cos(q_y)sin(q_z)]`，`u_N` 为该式对时间的导数，天然满足单位长度和切向约束。公共角速率诊断保持 `dq_y/dt`、`cos(q_y)*dq_z/dt` 的定义，不能将未经投影的方位角导数送给 PNG。
 
-首帧不传播占位间隔。丢目标、姿态匹配失败、时间异常或 generation 切换后清除连续段；超过 `los_maximum_gap_ms` 时重建角度和杆臂基准，不盲目外推制导。`los_camera_lever_arm_x` 和 `los_estimated_target_distance` 保留原补偿几何。方位极点（单位方向水平投影小于 1e-6）无法支持角度状态，滤波器重置并返回无效结果。显示与 CSV 从同一滤波状态生成惯性角度和速率；首帧及滤波不可用时仅显示曝光姿态旋转后的当前观测。六维矢量滤波器、球面投影、各向同性协方差及 `inertial_los_*` 配置均已删除，不保留兼容入口。
+首帧不传播或积分占位间隔，只建立角度、距离和速度基准。丢目标、姿态匹配失败、时间异常或 generation 切换后清除连续段；超过 `los_maximum_gap_ms` 时同样重建角度和速度基准，并恢复配置初始距离，不盲目外推制导。`los_camera_lever_arm_x` 仍定义相机相对质心的镖体系 X 轴杆臂；`los_estimated_target_distance` 为每个连续段首帧距离初值，不再固定用于后续帧。方位极点（单位方向水平投影小于 1e-6）无法支持角度状态，滤波器重置并返回无效结果。显示与 CSV 从同一滤波状态生成惯性角度和速率；首帧及滤波不可用时仅显示曝光姿态旋转后的当前观测。六维矢量滤波器、球面投影、各向同性协方差及 `inertial_los_*` 配置均已删除，不保留兼容入口。
 
 ### 6.4 镖体系控制通道选择
 
@@ -567,6 +573,8 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，速率有效位为 0；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
 
 逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。本次 CSV 字段结构不保留旧别名，读取方须按表头取列；全量原始 IMU CSV 的三轴角速度及其字段结构保持不变。
+
+录像与 RTSP 在左上角共用 `Lever-arm distance: 12.34 m` 距离展示，位于两行 LOS 数据之后，保留两位小数。距离直接来自滤波器 `sample()` 的本帧实际补偿距离，经 `GuidanceOverlay` 和显示映射传递，不在可视化端重新积分，也不依赖角速率有效位：首帧建基准后即可显示配置初值，后续显示积分后的距离，下限为 `1.00 m`；关闭杆臂补偿、尚未初始化、丢失目标或输入异常导致状态重置时显示 `N/A`，不沿用上一帧距离。读取诊断快照不推进时间、不改变补偿或滤波行为。
 
 录像与 RTSP 使用同一绘图实现：保留搜索 ROI 的红色边框、目标蓝色边框和中央姿态十字；左上角数据及底部目标状态文字统一为白色，不再绘制参考圆或目标中心红色标记。目标中心坐标仍用于 LOS 计算和 CSV 记录；识别面积阈值仍用于检测，但不再通过结果结构传递参考圆的绘图参数。
 

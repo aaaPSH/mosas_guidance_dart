@@ -28,7 +28,7 @@ int main() {
     meta.source_config = "/config/actual.conf";
     meta.width=640; meta.height=480; meta.camera_hz=120; meta.imu_hz=1000;
     meta.launch_speed_mps=16; meta.cap_g=0;
-    meta.parameters={3,4,8,10,3.5,0.0035,1,0.2,0.18,15,1};
+    meta.parameters={3,4,8,10,3.5,0.0035,1,0.2,0.18,15,1,0};
     meta.maximum_command_acceleration=std::numeric_limits<double>::infinity();
     {
         adapters::SimulationAudit audit(options, 42, meta, 64);
@@ -73,7 +73,8 @@ int main() {
     CHECK(metadata.find("\"schema_version\":2")!=std::string::npos);
     CHECK(metadata.find("\"maximum_command_acceleration_mps2\":null")!=std::string::npos);
     CHECK(metadata.find("\"sigma_a_pitch\",\"sigma_a_yaw\",\"sigma_q\"")!=std::string::npos);
-    CHECK(metadata.find("\"camera_lever_arm_x\",\"estimated_target_distance\",\"enable_filter\"")!=std::string::npos);
+    CHECK(metadata.find("\"camera_lever_arm_x\",\"estimated_target_distance\",\"enable_filter\",\"enable_lever_arm_compensation\"")!=std::string::npos);
+    CHECK(metadata.find(",15,1,0]")!=std::string::npos);
     CHECK(metadata.find("\"sigma_l\"")==std::string::npos);
     CHECK(events.find("\"kind\":\"request\"")!=std::string::npos);
     CHECK(events.find("\"target_found\":true")!=std::string::npos);

@@ -13,6 +13,7 @@
 #include <deque>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace mosas::test {
 
@@ -214,6 +215,7 @@ public:
         sample_.line_of_sight = input.line_of_sight;
         sample_.filtered_angular_velocity = result_.angular_velocity;
         last_input_ = input;
+        inputs_.push_back(input);
         return result_;
     }
 
@@ -224,6 +226,7 @@ public:
         sample_ = {};
         last_thread_id_ = {};
         last_input_ = {};
+        inputs_.clear();
     }
 
     void set_result(domain::LosRateEstimate result) noexcept {
@@ -238,12 +241,17 @@ public:
     const domain::LosRateFilterInput& last_input() const noexcept {
         return last_input_;
     }
+    /** @return 最近一次 reset 后收到的逐帧输入，用于核对曝光同步速度及时间。 */
+    const std::vector<domain::LosRateFilterInput>& inputs() const noexcept {
+        return inputs_;
+    }
     std::thread::id last_thread_id() const noexcept { return last_thread_id_; }
 
 private:
     domain::LosRateEstimate result_{};
     domain::LineOfSightRateSample sample_{};
     domain::LosRateFilterInput last_input_{};
+    std::vector<domain::LosRateFilterInput> inputs_;
     std::size_t call_count_ = 0;
     std::thread::id last_thread_id_{};
 };

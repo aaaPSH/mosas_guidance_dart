@@ -497,6 +497,10 @@ void FramePipeline::processing_worker() noexcept {
             }
             const auto enqueue_processed_frame =
                 [this, &result, &enqueue_result, processing_started] {
+                    // 距离独立于角速率有效位：建基准帧也显示初值，重置后的帧不残留旧值。
+                    const auto rate_sample = los_rate_filter_->sample();
+                    result.overlay.lever_arm_distance_valid = rate_sample.lever_arm_distance_valid;
+                    result.overlay.lever_arm_distance_m = rate_sample.lever_arm_distance_m;
                     const auto emitted = command_sink_.latest_emission();
                     if (emitted && emitted->mapping.command.source_frame_id == result.frame.source_frame_id &&
                         emitted->mapping.command.generation == result.flight_state.launch.generation &&
@@ -785,10 +789,10 @@ void FramePipeline::processing_worker() noexcept {
 
             if (!has_frame_timestamp) {
                 los_rate_filter_->reset();
-                // 首帧仅建立角度和杆臂基准，不按占位 dt 传播滤波状态。
+                // 首帧仅建立角度、距离和速度基准，不按占位 dt 传播或积分。
                 const auto initial_rate = los_rate_filter_->update(
                     {line_of_sight, result.flight_state.attitude, 1.0,
-                     attitude_lookup->launch_generation});
+                     attitude_lookup->launch_generation, result.flight_state.speed_mps});
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::invalid_rate);
                 if (!initial_rate.valid) {
@@ -840,7 +844,7 @@ void FramePipeline::processing_worker() noexcept {
 
             const auto rate = los_rate_filter_->update(
                 {line_of_sight, result.flight_state.attitude, dt_seconds,
-                 attitude_lookup->launch_generation});
+                 attitude_lookup->launch_generation, result.flight_state.speed_mps});
             if (!rate.valid) {
                 mark_guidance_invalid(
                     domain::GuidanceInvalidReason::invalid_rate);

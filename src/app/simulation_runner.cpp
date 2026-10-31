@@ -139,7 +139,8 @@ void SimulationRunner::step() {
                                      los.sigma_a,los.sigma_a_pitch,los.sigma_a_yaw,los.sigma_q,
                                      los.initial_covariance,los.maximum_gap_seconds,
                                      los.camera_lever_arm_x,los.estimated_target_distance,
-                                     los.enable_filter ? 1.0 : 0.0};
+                                     los.enable_filter ? 1.0 : 0.0,
+                                     los.enable_lever_arm_compensation ? 1.0 : 0.0};
                 audit_=std::make_shared<adapters::SimulationAudit>(*audit_options_,meta.session_id,observed);
             }
             guidance::PngTraceObserver observer;

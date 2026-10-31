@@ -14,10 +14,39 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace {
+
+/** @brief 捕获录像端收到的逐帧叠加快照，验证距离与当前观测同步且不会残留。 */
+class CapturingVideoRecorder final : public mosas::runtime::IVideoRecorder {
+public:
+    bool start() override { return true; }
+    void reset() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        overlays_.clear();
+    }
+    bool record(const mosas::runtime::ProcessedFrame& frame) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        overlays_.push_back(frame.overlay);
+        return true;
+    }
+    void cancel() noexcept override {}
+    void stop() noexcept override {}
+    std::string last_error() const override { return {}; }
+
+    /** @return 按输出顺序复制已收到的叠加快照；可与录像 worker 并发调用。 */
+    std::vector<mosas::domain::GuidanceOverlay> overlays() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return overlays_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::vector<mosas::domain::GuidanceOverlay> overlays_;
+};
 
 /** @brief 创建有效的拥有型测试帧，不依赖 OpenCV 或相机 SDK。 */
 mosas::runtime::CameraFrame make_frame(std::int64_t timestamp) {
@@ -126,6 +155,14 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
     // 触发前的图像不能建立飞行速率基准或下发；触发后的首帧仅发送零过载。
     CHECK(!output[0].valid);
     CHECK(rate_control->call_count() == command_times.size());
+    const auto& rate_inputs = rate_control->inputs();
+    CHECK(rate_inputs.size() == command_times.size());
+    for (std::size_t i = 0; i < rate_inputs.size(); ++i) {
+        const double speed = i == 0 ? (two_stage ? 16.02 : 16.01) : guidance_speeds[i - 1];
+        CHECK_NEAR(rate_inputs[i].speed_mps.value, speed, 1e-12);
+        CHECK_NEAR(rate_inputs[i].dt_seconds,
+                   i == 0 ? 1.0 : (command_times[i] - command_times[i - 1]) * 1e-9, 1e-12);
+    }
     CHECK(runtime.timing().vision.samples == 5);
     CHECK(runtime.timing().guidance.samples == guidance_speeds.size());
     for (std::size_t i = 0; i < output.size(); ++i) {
@@ -177,14 +214,22 @@ int main() {
     dependencies.flight_state_estimator = std::move(flight);
     dependencies.vision_detector = std::move(vision);
     dependencies.los_estimator = std::move(los);
-    dependencies.los_rate_filter = std::make_unique<guidance::InertialAngleLosFilter>();
+    guidance::InertialAngleLosFilterConfig filter_config;
+    filter_config.camera_lever_arm_x = 0.18;
+    filter_config.estimated_target_distance = 1.1;
+    dependencies.los_rate_filter = std::make_unique<guidance::InertialAngleLosFilter>(filter_config);
     dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
     dependencies.monotonic_clock = std::make_unique<test::FakeClock>(1'100'000'000);
     runtime::RuntimeSupervisorConfig config;
     config.capture_queue_capacity = 16;
+    config.output_queue_capacity = 16;
     config.history_capacity = 32;
+    auto video = std::make_unique<CapturingVideoRecorder>();
+    auto* video_control = video.get();
+    runtime::RuntimeOutputPorts outputs;
+    outputs.video = std::move(video);
     runtime::RuntimeSupervisor runtime(std::move(imu), std::move(camera), std::move(commands),
-                                       config, std::move(dependencies), {});
+                                       config, std::move(dependencies), std::move(outputs));
     CHECK(runtime.start());
     domain::FlightStateSnapshot state;
     state.speed_mps.value = 13.0;
@@ -209,7 +254,8 @@ int main() {
     CHECK(runtime.latest_state().has_value());
     CHECK(runtime.latest_state()->time.monotonic_ns == 1'100'000'000);
     camera_control->release();
-    while (std::chrono::steady_clock::now() < deadline && command_control->commands().size() < 7) {
+    while (std::chrono::steady_clock::now() < deadline &&
+           (command_control->commands().size() < 7 || video_control->overlays().size() < timestamps.size())) {
         CHECK(!runtime.faulted());
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -217,6 +263,14 @@ int main() {
     CHECK(!runtime.faulted());
     const auto output = command_control->commands();
     CHECK(output.size() == 7);
+    const auto overlays = video_control->overlays();
+    CHECK(overlays.size() == timestamps.size());
+    for (std::size_t i = 0; i < overlays.size(); ++i) {
+        const bool distance_valid = i != 2 && i != 5;
+        CHECK(overlays[i].lever_arm_distance_valid == distance_valid);
+        const double distance = distance_valid ? (i == 1 || i == 4 || i == 7 ? 1.0 : 1.1) : 0.0;
+        CHECK_NEAR(overlays[i].lever_arm_distance_m, distance, 1e-12);
+    }
     const std::array<std::size_t, 7> submitted_frames{0,1,3,4,5,6,7};
     for (std::size_t i = 0; i < output.size(); ++i) {
         const auto frame_index = submitted_frames[i];
