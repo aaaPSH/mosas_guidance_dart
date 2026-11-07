@@ -26,7 +26,7 @@ public:
     /**
      * @brief 创建串口 IMU 适配器并配置原始块/解码样本队列。
      * @param port 已配置的串口对象；必须保持共享所有权并在启动前打开。
-     * @param enable_interval_statistics 是否累计成功交付样本的时间间隔。
+     * @param enable_interval_statistics 是否累计按 imu_index 重建的成功交付样本间隔。
      * @param measurement_latency_ns IMU 测量到串口接收时间的延迟补偿（ns），不得为负。
      * @param receive_config 原始接收线程的块大小和调度策略。
      * @param timing 实际采样频率与同步窗口。
@@ -71,9 +71,10 @@ public:
     void stop() noexcept override;
 
     /**
-     * @brief 获取成功交付样本之间的时间间隔统计。
+     * @brief 获取成功交付样本之间的设备采样时间间隔统计。
      * @return 间隔次数、总时长及最小/最大间隔；未启用统计时计数为零。
-     * @note 调用方应确保样本读取线程已停止。
+     * @note 间隔来自 imu_index 序号差和固定周期，不是主机接收抖动；包含中间丢失帧的时间。
+     *       调用方应确保样本读取线程已停止。
      */
     SerialImuIntervalStatistics interval_statistics() const noexcept;
 

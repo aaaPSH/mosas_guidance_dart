@@ -19,7 +19,7 @@ int main() {
     auto frame = test::kValidImuFrame;
     CHECK(::write(master, frame.data(), frame.size()) == static_cast<ssize_t>(frame.size()));
     // Old kernel bytes must be flushed, not used to establish the first-frame baseline.
-    app::SerialImuSource source(port, false, 1'000'000, {256, 0, false},
+    app::SerialImuSource source(port, true, 1'000'000, {256, 0, false},
                                {200, 30'000'000, 20'000'000, 50'000'000, 1'000'000'000});
     auto sync = std::make_shared<domain::AcquisitionSync>(2);
     source.bind_acquisition_sync(sync);
@@ -35,13 +35,16 @@ int main() {
     auto deadline = std::chrono::steady_clock::now();
     for (unsigned i = 0; i < 40; ++i) {
         deadline += 5ms;
-        const auto& bytes = test::kValidImuFrame;
+        const auto bytes = test::make_imu_frame(1000 + i + (i >= 25 ? 2 : 0));
         CHECK(::write(master, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()));
         std::this_thread::sleep_until(deadline);
         while (source.try_pop(&sample)) {
             if (have_sample) CHECK(sample.timestamp_ns - previous_time ==
                 static_cast<std::int64_t>(sample.sample_sequence - previous_sequence) * 5'000'000);
             else CHECK(sync->latch_launch(sample.acquisition_epoch));
+            CHECK(sample.imu_index.has_value());
+            CHECK_NEAR(sample.outer_loop_y_rad_s, -1.234, 1e-12);
+            CHECK_NEAR(sample.outer_loop_p_rad_s, 2.345, 1e-12);
             have_sample = true; ++delivered;
             previous_time = sample.timestamp_ns; previous_sequence = sample.sample_sequence;
         }
@@ -50,6 +53,11 @@ int main() {
     CHECK(have_sample && delivered > 10);
     CHECK(source.diagnostics().timing.baselines == 1);
     CHECK(source.diagnostics().timing.warmup_discarded > 0);
+    CHECK(source.diagnostics().timing.known_missing == 2);
+    const auto intervals = source.interval_statistics();
+    CHECK(intervals.interval_count == delivered - 1);
+    CHECK(intervals.minimum_interval_ns == 5'000'000);
+    CHECK(intervals.maximum_interval_ns == 15'000'000);
     port->close(); ::close(master);
     return 0;
 }

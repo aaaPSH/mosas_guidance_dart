@@ -1,49 +1,26 @@
 # AGENTS.md
 
-## Testing
+## 测试
+- 只运行直接验证改动功能或关键行为的必要测试，避免重复、无关或低价值测试。
+- 临时测试代码、脚本和产物用完即删，不得残留在项目中。
 
-Only perform necessary and meaningful tests that directly verify the modified functionality or critical behavior.
+## 规划文档
+- 临时计划、实施笔记和任务拆分不得加入 Git 或提交。
+- 工作完成后立即删除。
 
-Do not run redundant, low-value, repetitive, or unrelated tests merely for completeness.
+## 代码修改
+- 改动应完整、简洁、逻辑一致，优先采用满足当前需求的直接实现。
+- 无明确需求时，不添加兼容层、通用抽象、备用路径或针对假设场景的防御代码。
+- 在外部输入和信任边界保留必要校验；内部代码遵循已定义的契约，避免重复检查。
+- 错误应明确暴露，不用静默捕获或默认值掩盖问题。
+- 删除被替代的接口、实现、调用方及相关死代码，不保留冗余逻辑。
 
-Any temporary test program or test code created solely for functional verification must be deleted immediately after the test is completed.
+## 注释与文档
+- 关键函数、公共接口和复杂算法使用 Doxygen 风格注释，说明用途，以及适用的 `@param`、`@return`、约束和副作用。
+- 仅为非显然的逻辑、设计决策和复杂计算添加解释，避免复述代码。
+- 修改代码时同步更新或删除过时注释。
 
-Do not leave temporary test files, scripts, debug code, or test-only artifacts in the project.
-
-## Planning Documents
-
-Temporary planning documents must not be added to Git or committed to the repository.
-
-Planning documents may be created when needed during implementation, but they must be deleted immediately after the planned work is completed.
-
-Do not leave temporary plans, implementation notes, task breakdown files, or similar planning artifacts in the project.
-
-## Code Modification
-
-When modifying code, make the change completely and keep the final logic clean and coherent.
-
-Do not preserve obsolete interfaces, compatibility layers, deprecated logic, or unused code unless they are explicitly required.
-
-If old interfaces or implementations are no longer needed, remove them together with their callers and related dead code.
-
-Avoid redundancy, duplicate implementations, compatibility hacks, and zombie code.
-
-## Code Comments & Documentation
-
-Key functions, public interfaces, and complex algorithms must have Doxygen-style documentation comments.
-
-Doxygen comments should clearly describe the function's purpose, parameters (`@param`), return value (`@return`), and important constraints or side effects when applicable.
-
-Add concise comments for non-obvious logic, important design decisions, and complex calculations.
-
-Do not add redundant comments that merely repeat what the code already expresses.
-
-When modifying code, update or remove outdated comments to ensure documentation remains accurate and consistent with the implementation.
-
-## Git Commit Messages
-
-Match the existing commit history exactly: `type(scope): <Chinese summary>`.
-
-Use a lowercase English type and scope, followed by a colon, one space, and a concise Chinese summary.
-
-Keep each commit message to a single subject line. Do not include a body, bullet points, testing notes, or additional paragraphs.
+## Git 提交
+- 与现有历史保持一致，格式为：`type(scope): 中文摘要`。
+- type 和 scope 使用小写英文，冒号后一个空格，摘要简洁。
+- 仅保留单行标题，不添加正文、列表或测试说明。

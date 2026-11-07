@@ -122,7 +122,7 @@ bool encode_control_frame(
 
 std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept {
-    return calculate_crc16_ccitt_false(frame.data() + 2, 14);
+    return calculate_crc16_ccitt_false(frame.data() + 2, 23);
 }
 
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
@@ -149,10 +149,10 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
         set_error(message.str(), error);
         return false;
     }
-    if (data[18] != 0x0D || data[19] != 0x0A) {
+    if (data[27] != 0x0D || data[28] != 0x0A) {
         std::ostringstream message;
-        message << "IMU 帧尾错误: received=" << hex_byte(data[18]) << ' '
-                << hex_byte(data[19]) << ", expected=0x0D 0x0A";
+        message << "IMU 帧尾错误: received=" << hex_byte(data[27]) << ' '
+                << hex_byte(data[28]) << ", expected=0x0D 0x0A";
         set_error(message.str(), error);
         return false;
     }
@@ -161,8 +161,8 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
     std::copy(data, data + kImuFrameSize, frame.begin());
     const std::uint16_t expected_crc = calculate_imu_frame_crc(frame);
     const std::uint16_t received_crc =
-        static_cast<std::uint16_t>(data[16]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[17]) << 8u);
+        static_cast<std::uint16_t>(data[25]) |
+        static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[26]) << 8u);
     if (received_crc != expected_crc) {
         std::ostringstream message;
         message << "IMU CRC 错误: received=" << hex_word(received_crc)
@@ -193,6 +193,15 @@ bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
         static_cast<double>(data[14]) * (2.0 / 255.0) - 1.0;
     decoded.servo_control_y_normalized =
         static_cast<double>(data[15]) * (2.0 / 255.0) - 1.0;
+    decoded.outer_loop_y_rad_s =
+        static_cast<double>(read_int16_le(data + 16)) * 0.001;
+    decoded.outer_loop_p_rad_s =
+        static_cast<double>(read_int16_le(data + 18)) * 0.001;
+    decoded.imu_index = static_cast<std::uint32_t>(data[20]) |
+                        (static_cast<std::uint32_t>(data[21]) << 8u) |
+                        (static_cast<std::uint32_t>(data[22]) << 16u) |
+                        (static_cast<std::uint32_t>(data[23]) << 24u);
+    decoded.trigger_flag = data[24];
     decoded.crc = received_crc;
     *values = decoded;
     if (error != nullptr) {

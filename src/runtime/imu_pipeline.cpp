@@ -176,7 +176,9 @@ void ImuPipeline::worker_loop() noexcept {
             if (sample.timestamp_ns < 0 || !is_finite(sample.acceleration) ||
                 !is_finite(sample.angular_velocity) ||
                 !std::isfinite(sample.servo_control_p_normalized) ||
-                !std::isfinite(sample.servo_control_y_normalized)) {
+                !std::isfinite(sample.servo_control_y_normalized) ||
+                !std::isfinite(sample.outer_loop_y_rad_s) ||
+                !std::isfinite(sample.outer_loop_p_rad_s)) {
                 report_fault("imu source returned an invalid kinematic sample");
                 return;
             }
@@ -193,6 +195,10 @@ void ImuPipeline::worker_loop() noexcept {
                 sample.servo_control_p_normalized;
             domain_sample.servo_control_y_normalized =
                 sample.servo_control_y_normalized;
+            domain_sample.outer_loop_y_rad_s = sample.outer_loop_y_rad_s;
+            domain_sample.outer_loop_p_rad_s = sample.outer_loop_p_rad_s;
+            domain_sample.imu_index = sample.imu_index;
+            domain_sample.trigger_flag = sample.trigger_flag;
             domain::FlightStateSnapshot snapshot{};
             const char* history_error = nullptr;
             generation_coordinator_.with_generation(
@@ -205,17 +211,11 @@ void ImuPipeline::worker_loop() noexcept {
                     if (snapshot.launch.phase == domain::LaunchPhase::launched && callbacks_.acquisition_sync &&
                         !callbacks_.acquisition_sync->latch_launch(sync.epoch)) return;
                     snapshot.time = domain_sample.time;
-                    snapshot.imu_sample.time = domain_sample.time;
+                    snapshot.imu_sample = domain_sample;
                     snapshot.attitude.time = domain_sample.time;
                     snapshot.launch.generation = estimator_generation;
-                    snapshot.imu_sample.acceleration =
-                        domain_sample.acceleration;
                     snapshot.imu_sample.angular_velocity =
                         snapshot.attitude.corrected_angular_velocity;
-                    snapshot.imu_sample.servo_control_p_normalized =
-                        domain_sample.servo_control_p_normalized;
-                    snapshot.imu_sample.servo_control_y_normalized =
-                        domain_sample.servo_control_y_normalized;
 
                     const ImuAngularVelocitySample corrected_sample{
                         sample.timestamp_ns, sample.acceleration,

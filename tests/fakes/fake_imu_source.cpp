@@ -56,6 +56,12 @@ void FakeImuSource::release() noexcept {
     condition_.notify_all();
 }
 
+void FakeImuSource::push(runtime::ImuAngularVelocitySample sample) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    samples_.push_back(std::move(sample));
+    condition_.notify_all();
+}
+
 std::size_t FakeImuSource::wait_count() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return wait_count_;

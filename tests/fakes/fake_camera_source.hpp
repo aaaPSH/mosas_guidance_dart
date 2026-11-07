@@ -20,6 +20,11 @@ public:
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;
     void cancel() noexcept override;
     void release() noexcept;
+    /**
+     * @brief 追加一帧并唤醒已释放的采集器，允许测试逐帧验证状态变化。
+     * @param frame 待追加的拥有型相机帧。
+     */
+    void push(runtime::CameraFrame frame);
     bool wait_until_capture_waiting(std::chrono::milliseconds timeout);
     void defer_capture_return_after_cancel() noexcept;
     void release_cancelled_capture() noexcept;

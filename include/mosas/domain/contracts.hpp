@@ -5,6 +5,7 @@
 #include <mosas/domain/time.hpp>
 
 #include <cstdint>
+#include <optional>
 
 namespace mosas::domain {
 
@@ -15,12 +16,18 @@ struct PixelPoint {
 
 enum class ObservationReason { found, not_found, invalid_frame, stale_frame };
 
+/** @brief 带时间的 IMU 运动样本及仅供内录的飞控元数据；外环输出单位 rad/s。 */
 struct ImuKinematicSample {
     SensorTime time{};
     AccelerationDartMps2 acceleration{};
     AngularVelocityDartRadPerSec angular_velocity{};
     double servo_control_p_normalized = 0.0;
     double servo_control_y_normalized = 0.0;
+    double outer_loop_y_rad_s = 0.0;
+    double outer_loop_p_rad_s = 0.0;
+    /** @brief 原始设备帧号；不提供帧号的模拟源保持为空。 */
+    std::optional<std::uint32_t> imu_index = std::nullopt;
+    std::uint8_t trigger_flag = 0;
 };
 
 struct TargetObservation {

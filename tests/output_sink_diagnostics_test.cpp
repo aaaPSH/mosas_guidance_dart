@@ -115,6 +115,10 @@ mosas::domain::ImuKinematicSample make_imu_sample(std::int64_t timestamp) {
     sample.angular_velocity = {0.1, 0.2, 0.3};
     sample.servo_control_p_normalized = 0.25;
     sample.servo_control_y_normalized = -0.25;
+    sample.outer_loop_y_rad_s = -1.234;
+    sample.outer_loop_p_rad_s = 2.345;
+    sample.imu_index = UINT32_MAX;
+    sample.trigger_flag = 1;
     return sample;
 }
 
@@ -178,6 +182,9 @@ int main() {
         CHECK(std::getline(csv, row));
         CHECK(header.find("sample_index,timestamp_ns,") == 0);
         CHECK(row.find("0,100,") == 0);
+        CHECK(header.find(
+            "outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag") != std::string::npos);
+        CHECK(row.find(",0.25,-0.25,-1.234,2.345,4294967295,1") != std::string::npos);
 
         CHECK(recorder.start());
         diagnostics = recorder.diagnostics();
@@ -185,10 +192,21 @@ int main() {
         CHECK(diagnostics.accepted_count == 0);
         CHECK(diagnostics.dropped_count == 0);
         CHECK(diagnostics.failure_count == 0);
-        CHECK(recorder.try_record(make_imu_sample(200)));
+        auto simulated = make_imu_sample(200);
+        simulated.imu_index.reset();
+        simulated.trigger_flag = 0;
+        CHECK(recorder.try_record(simulated));
         recorder.stop();
         CHECK(recorder.diagnostics().accepted_count == 1);
         CHECK(recorder.diagnostics().healthy);
+        const auto restarted_files = find_csv_files(temporary_directory.path());
+        CHECK(restarted_files.size() == 2);
+        const auto restarted_path = restarted_files[0] == files.front()
+            ? restarted_files[1] : restarted_files[0];
+        std::ifstream restarted_csv(restarted_path);
+        CHECK(std::getline(restarted_csv, header));
+        CHECK(std::getline(restarted_csv, row));
+        CHECK(row.find(",-1.234,2.345,,0") != std::string::npos);
     }
 
     {

@@ -385,6 +385,8 @@ void FramePipeline::processing_worker() noexcept {
         std::chrono::steady_clock::time_point next_imu_match_log{};
         std::uint64_t output_diagnostic_count = 0;
         std::chrono::steady_clock::time_point next_output_diagnostic_log{};
+        std::optional<std::uint64_t> initialized_generation;
+        std::chrono::steady_clock::time_point next_initialization_log{};
 
         const auto log_output_diagnostic =
             [this, &output_diagnostic_count, &next_output_diagnostic_log](
@@ -560,6 +562,36 @@ void FramePipeline::processing_worker() noexcept {
                 }
                 result = ProcessedFrame{};
                 continue;
+            }
+
+            // 首次静止确认前没有姿态历史是预期状态，不计为时间匹配失败。
+            const auto latest_state = imu_pipeline_.latest_state();
+            if (!latest_state.has_value() || !latest_state->attitude.valid) {
+                initialized_generation.reset();
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= next_initialization_log) {
+                    log(latest_state.has_value()
+                            ? "等待 IMU 静止初始化，请保持设备静止；视觉/引导输出暂为 N/A"
+                            : "等待 IMU 静止初始化：尚未收到 IMU 状态，请保持设备静止");
+                    next_initialization_log = now + std::chrono::seconds(1);
+                }
+                reset_rate_segment();
+                mark_guidance_invalid(
+                    domain::GuidanceInvalidReason::invalid_attitude);
+                if (!submit_neutral_command(timestamp_ns)) {
+                    return;
+                }
+                if (!enqueue_processed_frame()) {
+                    return;
+                }
+                result = ProcessedFrame{};
+                continue;
+            }
+            if (!initialized_generation.has_value() ||
+                *initialized_generation != latest_state->launch.generation) {
+                log("IMU 静止初始化完成: imu_timestamp_ns=" +
+                    std::to_string(latest_state->time.monotonic_ns));
+                initialized_generation = latest_state->launch.generation;
             }
 
             const auto angular_velocity_lookup =

@@ -25,8 +25,10 @@ runtime::SourceResult FakeCameraSource::capture(runtime::CameraFrame* frame) {
     std::unique_lock<std::mutex> lock(mutex_);
     capture_waiting_ = true;
     condition_.notify_all();
-    condition_.wait(
-        lock, [this] { return cancelled_ || (configured_ && released_); });
+    condition_.wait(lock, [this] {
+        return cancelled_ ||
+               (configured_ && released_ && next_frame_ < frames_.size());
+    });
     capture_waiting_ = false;
     if (cancelled_) {
         condition_.wait(lock, [this] {
@@ -35,18 +37,8 @@ runtime::SourceResult FakeCameraSource::capture(runtime::CameraFrame* frame) {
         });
         return {runtime::SourceStatus::cancelled, {}};
     }
-    if (next_frame_ < frames_.size()) {
-        *frame = frames_[next_frame_++];
-        return {runtime::SourceStatus::ok, {}};
-    }
-    capture_waiting_ = true;
-    condition_.notify_all();
-    condition_.wait(lock, [this] { return cancelled_; });
-    condition_.wait(lock, [this] {
-        return !defer_cancelled_capture_return_ || cancelled_capture_released_;
-    });
-    capture_waiting_ = false;
-    return {runtime::SourceStatus::cancelled, {}};
+    *frame = frames_[next_frame_++];
+    return {runtime::SourceStatus::ok, {}};
 }
 
 void FakeCameraSource::cancel() noexcept {
@@ -58,6 +50,12 @@ void FakeCameraSource::cancel() noexcept {
 void FakeCameraSource::release() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     released_ = true;
+    condition_.notify_all();
+}
+
+void FakeCameraSource::push(runtime::CameraFrame frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    frames_.push_back(std::move(frame));
     condition_.notify_all();
 }
 

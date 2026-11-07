@@ -355,9 +355,29 @@ public:
 
 - 回调入口尽早采样主机单调接收时间；只复制/取得拥有型帧缓冲并入有界队列，不做解码、识别、日志或串口操作。
 - SDK capture time 与 callback receive time 是不同字段。SDK 时间域未知时不得悄悄回退成 capture time=receive time。
-- 当前 `ImuSource` 适配器保留 20-byte 协议和 CRC/字段转换；协议 parser 不拥有 UART fd。
-- IMU 200 Hz 表示配置/实测速率；由于线格式无 MCU 序号，统计中的 chunk id 不能当作样本号。
-- 未来硬触发可新增 `ISyncEventSource`（触发 id、观测时间、边沿/质量）；本阶段不要求提供实际硬触发实现。触发必须能进入相机和下位机/IMU 时间模型，是否能在冻结 UART 外增加 GPIO/公共脉冲需要实机阶段确认。
+- `ImuSource` 仅接受下述 29-byte 上行协议；协议 parser 不拥有 UART fd，不兼容旧 20-byte 帧。
+- `imu_index` 为每个 IMU 上行帧递增的 uint32 设备计数器，不是图像序号。解回绕后的序号差用于丢帧、频率统计及固定周期时间戳重建；周期由 `[imu].sample_rate_hz` 提供（当前默认 1000 Hz，即 1 ms）。串口 chunk id 只统计原始接收块缺失，不能当作样本号。
+- 重复、回退或不小于半个 uint32 序号空间的跳变被丢弃并计入 `sequence_errors`；正常回绕保持连续。CRC 错误、字节失步及接收缺块后，由下一有效 `imu_index` 确认 `known_missing`，不按坏帧次数或主机接收间隔猜号，也不因单纯重新找帧头而重建基线。设备计数器重启后须重启采集。
+- `trigger_flag` 仅作记录，不触发相机、不建立图像/IMU 硬同步关系，也不参与控制。未来真正硬同步仍需触发事件/相位进入双方时间模型并完成实机验证。
+
+### IMU 上行协议
+
+多字节整数均为小端，CRC 使用 CRC-16/CCITT-FALSE（初值 0xFFFF，多项式 0x1021）。
+
+| 偏移 | 字节数 | 字段 | 编码 |
+|---|---|---|---|
+| 0 | 2 | 帧头 | `55 AA` |
+| 2 / 4 / 6 | 各 2 | AccX / AccY / AccZ | int16，0.01 m/s²/LSB |
+| 8 / 10 / 12 | 各 2 | GyroX / GyroY / GyroZ | int16，0.1 deg/s/LSB，解码后转为 rad/s |
+| 14 / 15 | 各 1 | P / Y instruction | uint8，0..255 映射到 [-1, 1] |
+| 16 | 2 | 外环 Y 输出 | int16，0.001 rad/s/LSB |
+| 18 | 2 | 外环 P 输出 | int16，0.001 rad/s/LSB |
+| 20 | 4 | `imu_index` | uint32，每个 IMU 上行帧递增 |
+| 24 | 1 | `trigger_flag` | uint8，0 未触发 / 1 已触发；当前仅记录 |
+| 25 | 2 | CRC-16 | 覆盖字节 2..24（共 23 字节） |
+| 27 | 2 | 帧尾 | `0D 0A` |
+
+外环两个字段均为实际角速度乘以 1000 后的整数，范围 -32.768..32.767 rad/s；不采用加速度或 deg/s 标度。
 
 ## 6. 算法接口
 
@@ -451,6 +471,8 @@ V_k = V_(k-1) + (ax_imu_k - gravity_mps2 * sin(pitch_k)) * dt
 2. 两种模式共用 `launch_ax_threshold_mps2`（默认 14.709975 m/s²）和 `launch_confirm_ms`（默认 20 ms）。加速确认后，`acceleration` 立即触发并锁存；`two_stage` 仅进入待离架状态，冻结校准结果但不启用制导。
 3. 仅 `two_stage` 在待离架阶段使用 `launch_release_acceleration_max_mps2`（默认 3 m/s²）及 `launch_release_confirm_ms`（默认 10 ms），低比力连续确认后才触发。比力阈值必须严格低于静止校准区间，单独失重或短冲击不能绕过加速确认。
 4. 仅 `two_stage` 使用 `launch_release_timeout_ms`（默认 500 ms）：加速确认后超时未确认离架，取消候选并要求重新静止校准；超时必须大于低比力确认时长，允许恰在边界完成确认。两种模式均在触发前遇到新的无效样本或超过 `attitude_maximum_gap_ms` 的断流时取消候选并要求重校准，不把不连续时长算作有效证据。重复和回退的非负时间戳优先忽略，即使载荷无效也不能清除当前检测证据或打断后续积分。
+
+运行时在首次姿态有效前按初始化等待处理相机帧：每秒最多提示一次“等待 IMU 静止初始化”，不将尚未建立的 IMU／姿态历史计为时间匹配错误；仍输出无效帧供录像／显示使用，且不生成非零制导请求。首次姿态有效及代际重置后的重新初始化各提示一次“IMU 静止初始化完成”。初始化完成后，曝光时刻缺少角速度或姿态插值区间仍按原规则报警，不放宽历史覆盖和年龄校验。
 
 所有模式都校验完整配置，包括当前模式未使用的三项离架参数，避免切换后出现潜伏的无效配置。
 
@@ -558,7 +580,7 @@ q_z = atan2(z_N.z, z_N.x)
 | 10..11 | CRC-16/CCITT-FALSE，小端，覆盖 bytes 2..9（含发射标志和识别位） |
 | 12..13 | 帧尾 `0D 0A` |
 
-正常制导的状态位行为如下。发射标志采用 `launch_detection_mode` 所选判据：`acceleration` 加速确认即置 `1`，`two_stage` 还须离架确认；触发后本周期保持为 `1`，复位后为 `0`。目标丢失、制导失效或故障清零均不清除已触发状态。触发后的首个有效图像仅建立速率基准，即使识别成功也发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。触发前不提交制导命令，但串口发送线程仍周期发送发射标志 `0` 和零过载的控制帧；曝光时刻早于确认的历史图像，包括插值区间跨触发边界的图像，不得借用最新 IMU 的已触发状态更新命令。周期帧的发射标志来自最近提交的当前代际命令，不因没有新图像而自行推断 IMU 状态。运行时故障清零时识别位为 `0`。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。20-byte IMU 上行帧及字段转换不变。
+正常制导的状态位行为如下。发射标志采用 `launch_detection_mode` 所选判据：`acceleration` 加速确认即置 `1`，`two_stage` 还须离架确认；触发后本周期保持为 `1`，复位后为 `0`。目标丢失、制导失效或故障清零均不清除已触发状态。触发后的首个有效图像仅建立速率基准，即使识别成功也发送识别位 `1` 和零过载；后续目标丢失时识别位恢复为 `0`。触发前不提交制导命令，但串口发送线程仍周期发送发射标志 `0` 和零过载的控制帧；曝光时刻早于确认的历史图像，包括插值区间跨触发边界的图像，不得借用最新 IMU 的已触发状态更新命令。周期帧的发射标志来自最近提交的当前代际命令，不因没有新图像而自行推断 IMU 状态。运行时故障清零时识别位为 `0`。下位机须按此布局解析，不再将 bytes 2..3 解释为双字节 Roll 过载。IMU 上行帧采用第 5 节定义的 29-byte 布局，下行控制帧不受此次上行扩展影响。
 
 ## 8. 运行时组装和输出模式
 
@@ -574,7 +596,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，速率有效位为 0；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
 
-逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。本次 CSV 字段结构不保留旧别名，读取方须按表头取列；全量原始 IMU CSV 的三轴角速度及其字段结构保持不变。
+逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。本次 CSV 字段结构不保留旧别名，读取方须按表头取列；全量原始 IMU CSV 保留三轴角速度及舵机 P/Y 参数，追加 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。
 
 录像与 RTSP 在左上角共用 `Lever-arm distance: 12.34 m` 距离展示，位于两行 LOS 数据之后，保留两位小数。距离直接来自滤波器 `sample()` 的本帧实际补偿距离，经 `GuidanceOverlay` 和显示映射传递，不在可视化端重新积分，也不依赖角速率有效位：首帧建基准后即可显示配置初值，后续显示积分后的距离，下限为 `1.00 m`；关闭杆臂补偿、尚未初始化、丢失目标或输入异常导致状态重置时显示 `N/A`，不沿用上一帧距离。读取诊断快照不推进时间、不改变补偿或滤波行为。
 
@@ -599,7 +621,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
 - **发射触发**：`launch_detection_test`、`attitude_adapter_test` 验证默认加速触发、可选两阶段确认、误触发拒绝、超时边界、断流/异常样本及复位重校准；`body_vector_runtime_test` 在两种模式及两种 PN 下验证触发前不建立飞行滤波状态、跨触发边界不下发、使用触发后的动态速度；默认算法和仿真测试覆盖参数解析、缺省/非法模式、确认时刻元数据及两种模式下真实 Socket 录制链路。
 - **控制通道**：`guidance_adapter_test`、`body_vector_pn_guidance_test` 验证滚转后的单通道选择、关闭轴精确置零、正负指令、两级限幅及诊断一致性；`default_guidance_algorithms_test` 验证 `both/pitch/yaw` 解析、缺省、非法值和两种算法的工厂输出；`png_calculation_trace_test` 验证各通道下只读追踪不改变计算结果。
-- **协议回归**：串口协议测试验证固定帧长、过载量化、两个标志独立为 0/1 且都参与 CRC；命令适配器和运行时测试验证正常制导、首帧速率不可用、目标丢失及故障清零的状态标志，并保持所选判据触发前不提交制导命令。`serial_command_sink_test` 使用 Linux 伪终端验证启动零帧、120 Hz 结果按 100 Hz 采样、慢更新时重发、按提交时刻超时、失效归零、代际隔离、重启和可中断停止；触发前的周期串口帧始终为零过载。
+- **协议回归**：串口协议测试验证 29-byte 上行帧、外环 Y/P 三位量化及边界、完整数据区 CRC 覆盖、旧帧拒绝；时间模型和伪终端测试验证设备序号驱动的丢帧、重复/回退拒绝、uint32 回绕、拆粘包及固定周期时间重建。下行测试继续验证固定帧长、过载量化、两个标志独立为 0/1 且都参与 CRC；命令适配器和运行时测试验证正常制导、首帧速率不可用、目标丢失及故障清零的状态标志，并保持所选判据触发前不提交制导命令。`serial_command_sink_test` 使用 Linux 伪终端验证启动零帧、120 Hz 结果按 100 Hz 采样、慢更新时重发、按提交时刻超时、失效归零、代际隔离、重启和可中断停止；触发前的周期串口帧始终为零过载。
 
 设置 `MOSAS_BUILD_APPLICATION=OFF`、`MOSAS_BUILD_OPENCV_ADAPTERS=ON`、`BUILD_TESTING=ON` 可构建本地输出及模式组合测试，无需配置 Nori SDK；`MOSAS_BUILD_WIRELESS` 控制是否构建 RTSP 适配器及链接 FFmpeg。纯 runtime 测试不需要 OpenCV。
 

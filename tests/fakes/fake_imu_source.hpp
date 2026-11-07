@@ -22,6 +22,11 @@ public:
     void stop() noexcept override;
 
     void release() noexcept;
+    /**
+     * @brief 追加一个样本并唤醒已释放的数据源，允许测试分阶段推进初始化。
+     * @param sample 待追加的 IMU 样本。
+     */
+    void push(runtime::ImuAngularVelocitySample sample);
     std::size_t wait_count() const noexcept;
 
 private:

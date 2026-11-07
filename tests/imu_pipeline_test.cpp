@@ -138,15 +138,26 @@ int main() {
         fault_message.clear();
     }
     stop_requested.store(false);
+    runtime::ImuAngularVelocitySample recording_sample{
+        1, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}, 0.0, 0.0};
+    recording_sample.outer_loop_y_rad_s = -1.234;
+    recording_sample.outer_loop_p_rad_s = 2.345;
+    recording_sample.imu_index = UINT32_MAX;
+    recording_sample.trigger_flag = 1;
     auto recording_failure_source = std::make_unique<test::FakeImuSource>(
-        std::vector<runtime::ImuAngularVelocitySample>{
-            {1, {0.0, 0.0, 9.80665}, {0.0, 0.0, 0.0}, 0.0, 0.0}});
+        std::vector<runtime::ImuAngularVelocitySample>{recording_sample});
     auto* recording_failure_source_control = recording_failure_source.get();
     runtime::ImuPipelineCallbacks recording_failure_callbacks;
     recording_failure_callbacks.stop_requested =
         [&] { return stop_requested.load(); };
+    bool recording_metadata_preserved = false;
     recording_failure_callbacks.try_record_sample =
-        [](const domain::ImuKinematicSample&) { return false; };
+        [&](const domain::ImuKinematicSample& sample) {
+            recording_metadata_preserved = sample.imu_index == UINT32_MAX &&
+                sample.trigger_flag == 1 && sample.outer_loop_y_rad_s == -1.234 &&
+                sample.outer_loop_p_rad_s == 2.345;
+            return false;
+        };
     recording_failure_callbacks.report_fault = [&](std::string message) {
         {
             std::lock_guard<std::mutex> lock(fault_mutex);
@@ -172,6 +183,13 @@ int main() {
     recording_failure_pipeline.cancel_source();
     recording_failure_pipeline.join_worker();
     recording_failure_pipeline.stop_source();
+    CHECK(recording_metadata_preserved);
+    const auto recorded_state = recording_failure_pipeline.latest_state();
+    CHECK(recorded_state.has_value());
+    CHECK(recorded_state->imu_sample.imu_index == UINT32_MAX);
+    CHECK(recorded_state->imu_sample.trigger_flag == 1);
+    CHECK_NEAR(recorded_state->imu_sample.outer_loop_y_rad_s, -1.234, 1e-12);
+    CHECK_NEAR(recorded_state->imu_sample.outer_loop_p_rad_s, 2.345, 1e-12);
 
     stop_requested.store(false);
     auto blocked_source = std::make_unique<test::FakeImuSource>(

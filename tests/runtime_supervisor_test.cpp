@@ -1,4 +1,5 @@
 #include <mosas/runtime/runtime_supervisor.hpp>
+#include <mosas/runtime/legacy_flight_state_adapter.hpp>
 
 #include "body_vector_test_support.hpp"
 #include "fakes/fake_algorithm_ports.hpp"
@@ -15,6 +16,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -70,11 +72,15 @@ private:
 class CapturingAsyncLogger final : public mosas::runtime::IAsyncLogger {
 public:
     bool start() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        messages_.clear();
         started_ = true;
         return true;
     }
     bool try_submit(
-        const mosas::runtime::RuntimeLogEvent&) noexcept override {
+        const mosas::runtime::RuntimeLogEvent& event) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        messages_.emplace_back(event.text.data());
         accepted_count_.fetch_add(1);
         return started_.load();
     }
@@ -88,7 +94,15 @@ public:
     }
     void stop_and_flush() noexcept override { started_ = false; }
 
+    /** @return 可与运行时并发读取的日志文本快照。 */
+    std::vector<std::string> messages() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return messages_;
+    }
+
 private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> messages_;
     std::atomic<bool> started_{false};
     std::atomic<std::uint64_t> accepted_count_{0};
 };
@@ -129,10 +143,116 @@ private:
     std::vector<PublishedFrame> frames_;
 };
 
+/** @brief 验证初始化等待不误报匹配错误、完成提示唯一且真实失配仍可见。 @return 通过时为 0。 */
+int verify_initialization_logging() {
+    using namespace mosas;
+    constexpr runtime::TimestampNs kStartNs = 1'000'000'000;
+    constexpr runtime::TimestampNs kMs = 1'000'000;
+    auto imu = std::make_unique<test::FakeImuSource>(
+        std::vector<runtime::ImuAngularVelocitySample>{});
+    auto* imu_control = imu.get();
+    auto camera = std::make_unique<test::FakeCameraSource>(
+        std::vector<runtime::CameraFrame>{make_frame(kStartNs + 50 * kMs, 0)});
+    auto* camera_control = camera.get();
+    auto commands = std::make_unique<test::FakeCommandSink>();
+    auto* command_control = commands.get();
+    auto video = std::make_unique<CapturingVideoRecorder>();
+    auto* video_control = video.get();
+    auto logger = std::make_unique<CapturingAsyncLogger>();
+    auto* logger_control = logger.get();
+    runtime::RuntimeOutputPorts outputs;
+    outputs.video = std::move(video);
+    outputs.logger = std::move(logger);
+    auto dependencies = test::mapped_dependencies();
+    dependencies.flight_state_estimator =
+        std::make_unique<runtime::LegacyFlightStateEstimatorAdapter>();
+    dependencies.vision_detector = std::make_unique<test::FakeVisionDetector>();
+    dependencies.los_estimator = std::make_unique<test::FakeLosEstimator>();
+    dependencies.los_rate_filter = std::make_unique<test::FakeLosRateFilter>();
+    dependencies.guidance_law = std::make_unique<test::FakeGuidanceLaw>();
+    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(kStartNs);
+    runtime::RuntimeSupervisorConfig config;
+    config.history_capacity = 32;
+    config.capture_queue_capacity = 4;
+    config.output_queue_capacity = 4;
+    runtime::RuntimeSupervisor supervisor(
+        std::move(imu), std::move(camera), std::move(commands), config,
+        std::move(dependencies), std::move(outputs));
+    const auto wait_for_frames = [&](std::size_t count) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (video_control->frames().size() >= count) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    };
+    const auto wait_for_state = [&](runtime::TimestampNs timestamp) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto state = supervisor.latest_state();
+            if (state && state->time.monotonic_ns == timestamp) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    };
+    const auto message_count = [&](const std::string& text) {
+        const auto messages = logger_control->messages();
+        return std::count_if(messages.begin(), messages.end(), [&](const std::string& message) {
+            return message.find(text) != std::string::npos;
+        });
+    };
+    CHECK(supervisor.start());
+    camera_control->release();
+    CHECK(wait_for_frames(1));
+    CHECK(message_count("等待 IMU 静止初始化") == 1);
+    CHECK(message_count("无法匹配") == 0);
+    CHECK(video_control->frames()[0].guidance.invalid_reason ==
+          domain::GuidanceInvalidReason::invalid_attitude);
+
+    // 原始 IMU 历史已经覆盖曝光时刻，但连续静止尚不足 200 ms。
+    for (int ms = 0; ms <= 190; ms += 10) {
+        imu_control->push({kStartNs + ms * kMs, {0.0, 9.80665, 0.0}, {}, 0.0, 0.0});
+    }
+    imu_control->release();
+    CHECK(wait_for_state(kStartNs + 190 * kMs));
+    CHECK(!supervisor.latest_state()->attitude.valid);
+    camera_control->push(make_frame(kStartNs + 150 * kMs, 0));
+    CHECK(wait_for_frames(2));
+    CHECK(message_count("无法匹配") == 0);
+    CHECK(message_count("IMU 静止初始化完成") == 0);
+    CHECK(!video_control->frames()[1].overlay.attitude_valid);
+    CHECK(command_control->commands().empty());
+
+    imu_control->push({kStartNs + 200 * kMs, {0.0, 9.80665, 0.0}, {}, 0.0, 0.0});
+    imu_control->push({kStartNs + 210 * kMs, {0.0, 9.80665, 0.0}, {}, 0.0, 0.0});
+    CHECK(wait_for_state(kStartNs + 210 * kMs));
+    CHECK(supervisor.latest_state()->attitude.valid);
+    camera_control->push(make_frame(kStartNs + 205 * kMs, 0));
+    camera_control->push(make_frame(kStartNs + 207 * kMs, 0));
+    CHECK(wait_for_frames(4));
+    CHECK(message_count("IMU 静止初始化完成") == 1);
+    CHECK(video_control->frames()[2].overlay.attitude_valid);
+    CHECK(video_control->frames()[3].overlay.attitude_valid);
+
+    // 初始化后的真实缺历史不能被初始化提示掩盖。
+    camera_control->push(make_frame(kStartNs + 150 * kMs, 0));
+    CHECK(wait_for_frames(5));
+    CHECK(message_count("姿态历史无法匹配相机曝光时刻") == 1);
+    camera_control->push(make_frame(kStartNs + 500 * kMs, 0));
+    CHECK(wait_for_frames(6));
+    CHECK(message_count("相机帧无法匹配可用 IMU 状态") == 1);
+    CHECK(message_count("IMU 静止初始化完成") == 1);
+    CHECK(command_control->commands().empty());
+    supervisor.stop();
+    CHECK(!supervisor.faulted());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     using namespace mosas;
+    CHECK(verify_initialization_logging() == 0);
 
     constexpr runtime::TimestampNs kImuFirstNs = 1'000'000'000;
     constexpr runtime::TimestampNs kFrameFirstNs = 1'010'000'000;

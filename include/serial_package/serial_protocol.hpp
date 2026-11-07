@@ -9,7 +9,7 @@
 namespace serial_package {
 
 constexpr std::size_t kControlFrameSize = 14;
-constexpr std::size_t kImuFrameSize = 20;
+constexpr std::size_t kImuFrameSize = 29;
 
 struct ControlFrameValues {
     bool launched = false;
@@ -18,6 +18,7 @@ struct ControlFrameValues {
     double pitch_overload_g = 0.0;
 };
 
+/** @brief 29 字节 IMU 上行帧的物理量及设备元数据；多字节整数均为小端。 */
 struct ImuFrameValues {
     double acceleration_x_mps2 = 0.0;
     double acceleration_y_mps2 = 0.0;
@@ -28,6 +29,10 @@ struct ImuFrameValues {
     // 舵机 P/Y 控制参数，已从单字节 [0, 255] 归一化到 [-1, 1]。
     double servo_control_p_normalized = 0.0;
     double servo_control_y_normalized = 0.0;
+    double outer_loop_y_rad_s = 0.0;  ///< 字节 16..17，int16 × 0.001 rad/s。
+    double outer_loop_p_rad_s = 0.0;  ///< 字节 18..19，int16 × 0.001 rad/s。
+    std::uint32_t imu_index = 0;       ///< 字节 20..23，每个 IMU 上行帧递增，允许回绕。
+    std::uint8_t trigger_flag = 0;      ///< 字节 24，相机触发标志；仅记录，不参与控制。
     std::uint16_t crc = 0;
 };
 
@@ -49,8 +54,8 @@ bool encode_control_frame(
 
 /**
  * @brief 计算 IMU 上行帧数据区的 CRC-16/CCITT-FALSE。
- * @param frame 完整 20 字节 IMU 上行帧。
- * @return 覆盖字节 2 至 15 的 CRC 值。
+ * @param frame 完整 29 字节 IMU 上行帧。
+ * @return 覆盖字节 2 至 24 的 CRC 值。
  */
 std::uint16_t calculate_imu_frame_crc(
     const std::array<std::uint8_t, kImuFrameSize>& frame) noexcept;
@@ -62,7 +67,8 @@ std::uint16_t calculate_imu_frame_crc(
  * @param values 非空输出指针；仅在帧头、帧尾和 CRC 全部有效时写入。
  * @param error 可选错误输出；失败时写入原因，成功时清空。
  * @return 帧结构和 CRC 均有效时为 true。
- * @note 加速度输出 m/s^2，角速度输出 rad/s；舵机 P/Y 字节归一化到 [-1, 1]。
+ * @note 加速度输出 m/s^2，角速度和外环 Y/P 输出 rad/s；舵机 P/Y 字节归一化到 [-1, 1]。
+ *       字节 25..26 为小端 CRC，字节 27..28 为帧尾 0D 0A；不兼容旧 20 字节帧。
  */
 bool decode_imu_frame(const std::uint8_t* data, std::size_t size,
                       ImuFrameValues* values,

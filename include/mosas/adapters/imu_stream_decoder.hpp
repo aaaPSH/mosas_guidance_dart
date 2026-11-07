@@ -13,7 +13,7 @@
 
 namespace mosas::app {
 
-/** @brief 将串口帧解码为固定逻辑采样序号时间轴；接收时间只用于基线和诊断。 */
+/** @brief 按设备 imu_index 解码固定周期时间轴；接收时间只用于基线和诊断。 */
 class ImuStreamDecoder final {
 public:
     /**
@@ -34,7 +34,8 @@ public:
      * @brief 将一个接收块追加到解析缓冲并解码其中完整的 IMU 协议帧。
      * @param chunk 带首字节单调接收时刻和接收序号的原始串口块。
      * @param now_ns 当前单调时间，用于识别应用缓冲积压。
-     * @note 仅由 IMU 消费线程调用；坏帧和未知失步分别统计，不按CRC失败次数猜号。
+     * @note 仅由 IMU 消费线程调用；仅使用 CRC 有效的 imu_index 确认丢帧，不猜测补号。
+     *       uint32 正常回绕保持连续；重复、回退及不小于半个序号空间的跳变被拒绝并计数。
      */
     void consume(const runtime::RawSerialChunk& chunk, runtime::TimestampNs now_ns) noexcept;
 
@@ -75,7 +76,6 @@ private:
     void clear_buffer() noexcept;
     void discard_prefix(std::size_t count) noexcept;
     void align_buffer() noexcept;
-    void lose_alignment() noexcept;
     bool append(const runtime::RawSerialChunk& chunk) noexcept;
     bool publish(const runtime::ImuAngularVelocitySample& sample) noexcept;
 
@@ -87,13 +87,11 @@ private:
     std::array<std::uint8_t, kRawBufferSize> buffer_{};
     std::size_t buffered_size_ = 0;
     runtime::TimestampNs buffer_first_timestamp_ns_ = -1;
-    bool has_sequence_ = false;
-    std::uint64_t expected_sequence_ = 0;
+    bool has_chunk_sequence_ = false;
+    std::uint64_t expected_chunk_sequence_ = 0;
     domain::SequenceTime timeline_;
-    std::uint64_t sample_sequence_ = 0;
-    std::uint64_t pending_bad_frames_ = 0;
-    bool boundary_trusted_ = false;
-    bool seeking_ = false;
+    domain::AcquisitionSequence imu_sequence_;
+    std::optional<std::uint64_t> previous_sample_sequence_;
     std::atomic<std::uint64_t> parse_error_count_{0};
     std::atomic<std::uint64_t> sequence_gap_count_{0};
     std::atomic<std::uint64_t> crc_error_count_{0};

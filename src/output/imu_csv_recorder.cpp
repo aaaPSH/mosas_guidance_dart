@@ -20,7 +20,8 @@ constexpr char kImuCsvHeader[] =
     "sample_index,timestamp_ns,acceleration_x_mps2,acceleration_y_mps2,"
     "acceleration_z_mps2,angular_velocity_x_rad_s,"
     "angular_velocity_y_rad_s,angular_velocity_z_rad_s,"
-    "servo_control_p_normalized,servo_control_y_normalized\n";
+    "servo_control_p_normalized,servo_control_y_normalized,"
+    "outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag\n";
 
 std::filesystem::path make_imu_csv_path(const std::string& base_path) {
     std::filesystem::path configured_path(base_path);
@@ -238,7 +239,12 @@ void ImuCsvRecorder::worker_loop() noexcept {
                     << sample.angular_velocity.y << ','
                     << sample.angular_velocity.z << ','
                     << sample.servo_control_p_normalized << ','
-                    << sample.servo_control_y_normalized << '\n';
+                    << sample.servo_control_y_normalized << ','
+                    << std::fixed << std::setprecision(3)
+                    << sample.outer_loop_y_rad_s << ','
+                    << sample.outer_loop_p_rad_s << ',';
+                if (sample.imu_index) row << *sample.imu_index;
+                row << ',' << static_cast<unsigned>(sample.trigger_flag) << '\n';
                 batch += row.str();
                 ++batch_sample_count;
 
