@@ -191,15 +191,17 @@ int verify_dynamic_speed(mosas::runtime::LaunchDetectionMode mode) {
 int main() {
     using namespace mosas;
     std::vector<runtime::ImuAngularVelocitySample> samples;
-    for (int i = 0; i <= 10; ++i)
+    for (int i = 0; i <= 80; ++i)
         samples.push_back(
             {1'000'000'000 + i * 10'000'000, {0.0, 9.80665, 0.0}, {0.0, 0.0, 0.0}, 0.0, 0.0});
     auto imu = std::make_unique<test::FakeImuSource>(samples);
     auto *imu_control = imu.get();
-    // 缺目标和无法匹配 IMU 后，恢复首帧必须重新建立速率基准。
+    // 缺目标和无法匹配 IMU 后仍重建速率基准，但距离不重置；长丢目标与长帧间隔同样覆盖。
     const std::vector<std::int64_t> timestamps{1'010'000'000, 1'020'000'000, 1'030'000'000,
-                                               1'040'000'000, 1'050'000'000, 1'200'000'000,
-                                               1'060'000'000, 1'070'000'000};
+                                               1'040'000'000, 1'050'000'000, 2'000'000'000,
+                                               1'060'000'000, 1'070'000'000, 1'080'000'000,
+                                               1'400'000'000, 1'410'000'000, 1'420'000'000,
+                                               1'700'000'000, 1'710'000'000};
     std::vector<runtime::CameraFrame> frames;
     for (auto timestamp : timestamps)
         frames.push_back(make_frame(timestamp));
@@ -219,14 +221,15 @@ int main() {
     dependencies.los_estimator = std::move(los);
     guidance::InertialAngleLosFilterConfig filter_config;
     filter_config.camera_lever_arm_x = 0.18;
-    filter_config.estimated_target_distance = 1.1;
+    filter_config.estimated_target_distance = 15.0;
+    filter_config.maximum_gap_seconds = 0.2;
     dependencies.los_rate_filter = std::make_unique<guidance::InertialAngleLosFilter>(filter_config);
     dependencies.guidance_law = std::make_unique<guidance::BallisticPngGuidance>();
-    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(1'100'000'000);
+    dependencies.monotonic_clock = std::make_unique<test::FakeClock>(1'800'000'000);
     runtime::RuntimeSupervisorConfig config;
     config.capture_queue_capacity = 16;
     config.output_queue_capacity = 16;
-    config.history_capacity = 32;
+    config.history_capacity = 128;
     auto video = std::make_unique<CapturingVideoRecorder>();
     auto* video_control = video.get();
     runtime::RuntimeOutputPorts outputs;
@@ -241,44 +244,50 @@ int main() {
     state.launch.transition_time.monotonic_ns = 900'000'000;
     flight_control->set_result(state);
     los_control->set_result({true, {1.0, 0.0, 0.0}});
-    for (int i = 0; i < 7; ++i) {
+    for (std::size_t i = 0; i < timestamps.size(); ++i) {
+        if (i == 5) continue; // 无 IMU 匹配的帧不调用识别器。
         domain::VisionDetection detection;
-        detection.observation.valid = i != 2;
+        detection.observation.valid = i != 2 && i != 8 && i != 9;
         vision_control->push(detection);
     }
     imu_control->release();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < deadline) {
         const auto latest = runtime.latest_state();
-        if (latest && latest->time.monotonic_ns == 1'100'000'000)
+        if (latest && latest->time.monotonic_ns == 1'800'000'000)
             break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     CHECK(runtime.latest_state().has_value());
-    CHECK(runtime.latest_state()->time.monotonic_ns == 1'100'000'000);
+    CHECK(runtime.latest_state()->time.monotonic_ns == 1'800'000'000);
     camera_control->release();
     while (std::chrono::steady_clock::now() < deadline &&
-           (command_control->commands().size() < 7 || video_control->overlays().size() < timestamps.size())) {
+           (command_control->commands().size() < 11 || video_control->overlays().size() < timestamps.size())) {
         CHECK(!runtime.faulted());
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     runtime.stop();
     CHECK(!runtime.faulted());
     const auto output = command_control->commands();
-    CHECK(output.size() == 7);
+    CHECK(output.size() == 11);
     const auto overlays = video_control->overlays();
     CHECK(overlays.size() == timestamps.size());
     for (std::size_t i = 0; i < overlays.size(); ++i) {
-        const bool distance_valid = i != 2 && i != 5;
+        const bool distance_valid = i != 2 && i != 5 && i != 8 && i != 9;
         CHECK(overlays[i].lever_arm_distance_valid == distance_valid);
-        const double distance = distance_valid ? (i == 1 || i == 4 || i == 7 ? 1.0 : 1.1) : 0.0;
+        const double distance = distance_valid ? 15.0 - 13.0 * (timestamps[i] - timestamps[0]) * 1e-9 : 0.0;
         CHECK_NEAR(overlays[i].lever_arm_distance_m, distance, 1e-12);
+        if (!distance_valid) {
+            CHECK(!overlays[i].line_of_sight_valid);
+            CHECK(!overlays[i].line_of_sight_rate_valid);
+        }
     }
-    const std::array<std::size_t, 7> submitted_frames{0,1,3,4,5,6,7};
+    const std::array<std::size_t, 11> submitted_frames{0,1,3,4,5,6,7,10,11,12,13};
     for (std::size_t i = 0; i < output.size(); ++i) {
         const auto frame_index = submitted_frames[i];
         CHECK(output[i].source_time.monotonic_ns == timestamps[frame_index]);
-        const bool should_be_valid = frame_index == 1 || frame_index == 4 || frame_index == 7;
+        const bool should_be_valid = frame_index == 1 || frame_index == 4 || frame_index == 7 ||
+                                     frame_index == 11 || frame_index == 13;
         CHECK(output[i].valid == should_be_valid);
         if (should_be_valid) {
             CHECK(output[i].source_frame_id == frame_index);

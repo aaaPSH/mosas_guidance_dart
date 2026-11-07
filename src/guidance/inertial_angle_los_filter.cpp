@@ -31,6 +31,7 @@ bool valid_noise(double sigma) noexcept {
 InertialAngleLosFilter::InertialAngleLosFilter(const InertialAngleLosFilterConfig& config)
     : config_(config) {
     if (!valid_config(config)) throw std::invalid_argument("惯性 LOS 角度滤波配置无效");
+    reset();
 }
 
 bool InertialAngleLosFilter::valid_config(const InertialAngleLosFilterConfig& config) noexcept {
@@ -44,13 +45,20 @@ bool InertialAngleLosFilter::valid_config(const InertialAngleLosFilterConfig& co
 }
 
 void InertialAngleLosFilter::reset() noexcept {
+    reset_angles();
+    distance_initialized_ = false;
+    distance_generation_ = 0;
+    previous_exposure_timestamp_ns_ = 0;
+    estimated_target_distance_ = std::max(config_.estimated_target_distance, kMinEstimatedDistance);
+    previous_speed_mps_ = 0.0;
+}
+
+void InertialAngleLosFilter::reset_angles() noexcept {
     pitch_ = {};
     yaw_ = {};
     initialized_ = false;
     generation_ = 0;
     previous_pitch_ = previous_yaw_ = 0.0;
-    estimated_target_distance_ = std::max(config_.estimated_target_distance, kMinEstimatedDistance);
-    previous_speed_mps_ = 0.0;
     sample_ = {};
 }
 
@@ -106,16 +114,17 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         !std::isfinite(input.dt_seconds) || input.dt_seconds < 0.0 ||
         (initialized_ && input.dt_seconds == 0.0) ||
         (config_.enable_lever_arm_compensation &&
-         (!std::isfinite(input.speed_mps.value) || input.speed_mps.value < 0.0)) ||
+         (!std::isfinite(input.speed_mps.value) || input.speed_mps.value < 0.0 ||
+          input.attitude.time.monotonic_ns < 0)) ||
         !detail::valid_rotation(input.attitude.navigation_from_dart.matrix())) {
-        reset();
+        reset_angles();
         return {};
     }
 
     const auto& direction = input.line_of_sight.direction;
     const double norm = std::hypot(std::hypot(direction.x, direction.y), direction.z);
     if (!std::isfinite(norm) || norm < kEpsilon) {
-        reset();
+        reset_angles();
         return {};
     }
     const domain::DartLineOfSight normalized_los{
@@ -124,23 +133,34 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const bool new_segment = !initialized_ || input.generation != generation_ ||
                              input.dt_seconds > config_.maximum_gap_seconds;
     if (new_segment) {
-        reset();
+        reset_angles();
     }
 
     double x = navigation_direction.x;
     double y = navigation_direction.y;
     double z = navigation_direction.z;
     if (config_.enable_lever_arm_compensation) {
-        if (!new_segment) {
-            // 首帧只建立距离/速度基准；后续按相邻曝光速度梯形积分，避免固定距离视差误差。
+        const auto exposure_timestamp_ns = input.attitude.time.monotonic_ns;
+        if (!distance_initialized_ || input.generation != distance_generation_) {
+            estimated_target_distance_ = std::max(config_.estimated_target_distance, kMinEstimatedDistance);
+            distance_initialized_ = true;
+            distance_generation_ = input.generation;
+        } else {
+            if (exposure_timestamp_ns <= previous_exposure_timestamp_ns_) {
+                reset_angles();
+                return {};
+            }
+            // 距离时间轴独立于 LOS 连续段，重捕获时仍计入缺失区间的飞行路程。
+            const double distance_dt = static_cast<double>(exposure_timestamp_ns - previous_exposure_timestamp_ns_) * 1e-9;
             const double average_speed = 0.5 * previous_speed_mps_ + 0.5 * input.speed_mps.value;
-            const double travelled = average_speed * input.dt_seconds;
+            const double travelled = average_speed * distance_dt;
             if (!std::isfinite(travelled)) {
-                reset();
+                reset_angles();
                 return {};
             }
             estimated_target_distance_ = std::max(kMinEstimatedDistance, estimated_target_distance_ - travelled);
         }
+        previous_exposure_timestamp_ns_ = exposure_timestamp_ns;
         previous_speed_mps_ = input.speed_mps.value;
         // 绝对杆臂补偿将视线起点移至质心；1 m 距离下限限制近距离视差放大。
         const auto& m = input.attitude.navigation_from_dart.matrix();
@@ -150,7 +170,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     }
     const double corrected_norm = std::hypot(std::hypot(x, y), z);
     if (!std::isfinite(corrected_norm) || corrected_norm < kEpsilon) {
-        reset();
+        reset_angles();
         return {};
     }
     x /= corrected_norm;
@@ -158,7 +178,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     z /= corrected_norm;
     const double horizontal = std::hypot(x, z);
     if (horizontal < kPoleThreshold) {
-        reset();
+        reset_angles();
         return {};
     }
     const double measured_pitch = std::atan2(y, horizontal);
@@ -180,7 +200,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     previous_pitch_ = measured_pitch;
     previous_yaw_ = measured_yaw;
     if (!std::isfinite(raw_pitch_rate) || !std::isfinite(raw_yaw_rate)) {
-        reset();
+        reset_angles();
         return {};
     }
     sample_.raw_angular_velocity = {true, {raw_pitch_rate}, {horizontal * raw_yaw_rate}};
@@ -191,7 +211,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         const double yaw_noise = config_.sigma_a_yaw > 0.0 ? config_.sigma_a_yaw : config_.sigma_a;
         if (!pitch_.update(measured_pitch, input.dt_seconds, pitch_noise, variance, false) ||
             !yaw_.update(measured_yaw, input.dt_seconds, yaw_noise, variance, true)) {
-            reset();
+            reset_angles();
             return {};
         }
     } else {
@@ -204,7 +224,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const double cy = std::cos(pitch_.angle), sy = std::sin(pitch_.angle);
     const double cz = std::cos(yaw_.angle), sz = std::sin(yaw_.angle);
     if (std::abs(pitch_.angle) >= kPi / 2.0 || cy < kPoleThreshold) {
-        reset();
+        reset_angles();
         return {};
     }
 
@@ -221,7 +241,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         -sy * sz * pitch_.rate + cy * cz * yaw_.rate};
     const auto& rate = estimate.vector.inertial_direction_rate;
     if (!std::isfinite(rate.x) || !std::isfinite(rate.y) || !std::isfinite(rate.z)) {
-        reset();
+        reset_angles();
         return {};
     }
     sample_.filtered_angular_velocity = estimate.angular_velocity;

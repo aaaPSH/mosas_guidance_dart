@@ -440,7 +440,7 @@ public:
 
 - 识别只输出 observation，不更新全局状态、不提交命令。
 - Attitude 与 Launch 作为不同概念供下游使用。运行时先依赖 `IFlightStateEstimator`，由现有 `AttitudeEstimator` 适配器一次更新并返回姿态、起飞状态和纵向速度，避免重复消费 IMU；在行为回归通过后，内部实现才可组合独立 `IAttitudeEstimator` 和 `ILaunchDetector`。
-- LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新起飞 generation、长丢帧或时间异常时显式 reset。所选发射判据触发前可识别目标和计算 LOS，但不更新飞行 LOS 速率滤波器、不计算制导或下发制导指令；触发后的首个有效图像仅建立新的速率基准。
+- LOS/filter/guidance 的有状态实例固定由 FramePipeline 单线程调用；新会话显式 reset 清除全部状态，新起飞 generation 由 update 重新初始化。丢目标、长丢帧或时间异常只中断 LOS 角状态，不清除独立的距离积分状态。所选发射判据触发前可识别目标和计算 LOS，但不更新飞行 LOS 速率滤波器、不计算制导或下发制导指令；触发后的首个有效图像仅建立新的速率基准。
 - `GuidanceCommand` 的过载坐标固定为 Dart；输出与串口编码分离。
 - 对无效状态返回原因，不用“零向量”代表 invalid。由 Runtime 的基线兼容策略决定是否提交/不提交；不得由单个算法隐式发安全命令。
 
@@ -507,14 +507,15 @@ l_D = normalize(R_D_from_C * v_C)
 l_N_cam = R_N_from_D(t_exposure) * l_D
 r_cam_N = R_N_from_D(t_exposure) * [L_x, 0, 0]
 R_hat(first) = max(los_estimated_target_distance, 1.0)
-R_hat(k) = max(1.0, R_hat(k-1) - (V_exposure(k-1)/2 + V_exposure(k)/2) * dt)
+dt_exposure = t_exposure(k) - t_exposure(k-1)  // 距离有效输入的实际曝光间隔，跨越 LOS 连续段
+R_hat(k) = max(1.0, R_hat(k-1) - (V_exposure(k-1)/2 + V_exposure(k)/2) * dt_exposure)
 z_N = normalize(l_N_cam + r_cam_N / R_hat(k))  // 杆臂补偿开启
 z_N = l_N_cam                                // 杆臂补偿关闭
 q_y = atan2(z_N.y, hypot(z_N.x, z_N.z))
 q_z = atan2(z_N.z, z_N.x)
 ```
 
-`PinholeLosEstimator` 检查目标、有限内参、正焦距和 SO(3) 安装旋转。`InertialAngleLosFilter` 防御性单位化输入方向，拒绝非有限、模长小于 1e-12 或溢出的方向。`los_enable_lever_arm_compensation=true` 默认启用绝对杆臂补偿，使用相机相对质心的位置修正视线起点。当前识别结果不含测距，连续段首个有效识别帧使用 `los_estimated_target_distance` 初始化距离；后续按相邻曝光时刻的动态纵向速度梯形积分递减，距离始终不小于 1 m。启用时拒绝负数、非有限速度及积分溢出；关闭时不使用速度和距离，仅跳过杆臂修正，曝光姿态转换及角度滤波保持不变。
+`PinholeLosEstimator` 检查目标、有限内参、正焦距和 SO(3) 安装旋转。`InertialAngleLosFilter` 防御性单位化输入方向，拒绝非有限、模长小于 1e-12 或溢出的方向。`los_enable_lever_arm_compensation=true` 默认启用绝对杆臂补偿，使用相机相对质心的位置修正视线起点。当前识别结果不含测距，新会话或新发射代际首个有效识别帧使用 `los_estimated_target_distance` 初始化距离；后续按有效输入的实际曝光间隔与动态纵向速度梯形积分递减，跨越丢帧和丢目标区间，距离始终不小于 1 m。启用时拒绝负数、非有限速度、负曝光时间、同代际曝光时间不递增及积分溢出，不推进被拒绝输入的距离基准；关闭时不使用速度和距离，仅跳过杆臂修正，曝光姿态转换及角度滤波保持不变。
 
 俯仰、方位各使用一个独立的二状态 Kalman：`x=[q,dq/dt]`，`F=[1,dt;0,1]`，`H=[1,0]`，`Q=sigma_a_channel²*[dt⁴/4,dt³/2;dt³/2,dt²]`，`R=sigma_q²`。首帧以当前角度、零速率、`P=diag(R,initial_covariance)` 初始化；后续帧直接更新角度观测，不再使用机体角速度前馈。协方差以与原二状态更新等价的 Joseph 形式计算；方位差分、创新和状态正确处理 ±π 跨界。
 
@@ -522,7 +523,7 @@ q_z = atan2(z_N.z, z_N.x)
 
 下游 `VectorLosEstimate` 不再是六维滤波状态，而是由滤波角度解析生成：`l_N=[cos(q_y)cos(q_z),sin(q_y),cos(q_y)sin(q_z)]`，`u_N` 为该式对时间的导数，天然满足单位长度和切向约束。公共角速率诊断保持 `dq_y/dt`、`cos(q_y)*dq_z/dt` 的定义，不能将未经投影的方位角导数送给 PNG。
 
-首帧不传播或积分占位间隔，只建立角度、距离和速度基准。丢目标、姿态匹配失败、时间异常或 generation 切换后清除连续段；超过 `los_maximum_gap_ms` 时同样重建角度和速度基准，并恢复配置初始距离，不盲目外推制导。`los_camera_lever_arm_x` 仍定义相机相对质心的镖体系 X 轴杆臂；`los_estimated_target_distance` 为每个连续段首帧距离初值，不再固定用于后续帧。方位极点（单位方向水平投影小于 1e-6）无法支持角度状态，滤波器重置并返回无效结果。显示与 CSV 从同一滤波状态生成惯性角度和速率；首帧及滤波不可用时仅显示曝光姿态旋转后的当前观测。六维矢量滤波器、球面投影、各向同性协方差及 `inertial_los_*` 配置均已删除，不保留兼容入口。
+新会话或新发射代际首帧只建立角度、距离和速度基准，不传播或积分占位间隔。丢目标、姿态匹配失败、时间异常或超过 `los_maximum_gap_ms` 仅清除 LOS 角度及速率连续段；恢复首帧重建零速率基准，距离仍从最近一次有效曝光的时间和速度继续梯形积分，计入缺失区间的估计路程，不将 LOS 的占位 dt 用于距离计算。仅新会话的显式 `reset()` 或发射 generation 切换恢复配置初始距离；没有当前有效观测时不使用旧 LOS 计算制导，原有命令重发和超时策略不变。`los_camera_lever_arm_x` 仍定义相机相对质心的镖体系 X 轴杆臂；`los_estimated_target_distance` 为会话/代际首帧距离初值，不再固定用于后续帧。方位极点（单位方向水平投影小于 1e-6）无法支持角度状态，清除角状态并返回无效结果，但不重置距离。显示与 CSV 从同一滤波状态生成惯性角度和速率；首帧及滤波不可用时仅显示曝光姿态旋转后的当前观测。六维矢量滤波器、球面投影、各向同性协方差及 `inertial_los_*` 配置均已删除，不保留兼容入口。
 
 ### 6.4 镖体系控制通道选择
 
@@ -607,7 +608,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 全量原始 IMU CSV 不变，保留三轴加速度、三轴角速度及舵机 P/Y 参数，以及 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。
 
-录像与 RTSP 在左上角共用 `Lever-arm distance: 12.34 m` 距离展示，位于两行 LOS 数据之后，保留两位小数。距离直接来自滤波器 `sample()` 的本帧实际补偿距离，经 `GuidanceOverlay` 和显示映射传递，不在可视化端重新积分，也不依赖角速率有效位：首帧建基准后即可显示配置初值，后续显示积分后的距离，下限为 `1.00 m`；关闭杆臂补偿、尚未初始化、丢失目标或输入异常导致状态重置时显示 `N/A`，不沿用上一帧距离。读取诊断快照不推进时间、不改变补偿或滤波行为。
+录像与 RTSP 在左上角共用 `Lever-arm distance: 12.34 m` 距离展示，位于两行 LOS 数据之后，保留两位小数。距离直接来自滤波器 `sample()` 的本帧实际补偿距离，经 `GuidanceOverlay` 和显示映射传递，不在可视化端重新积分，也不依赖角速率有效位：首帧建基准后即可显示配置初值，后续显示积分后的距离，下限为 `1.00 m`；关闭杆臂补偿、尚未初始化、丢失目标或输入异常导致角状态无效时显示 `N/A`，不沿用上一帧显示值；内部距离仍保留，恢复角度基准帧即可显示跨缺失区间积分后的距离，不回到初值。读取诊断快照不推进时间、不改变补偿或滤波行为。
 
 录像与 RTSP 使用同一绘图实现：保留搜索 ROI 的红色边框、目标蓝色边框和中央姿态十字；左上角数据及底部目标状态文字统一为白色，不再绘制参考圆或目标中心红色标记。目标中心坐标仍用于 LOS 计算和 CSV 记录；识别面积阈值仍用于检测，但不再通过结果结构传递参考圆的绘图参数。
 

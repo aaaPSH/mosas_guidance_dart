@@ -377,7 +377,8 @@ void FramePipeline::processing_worker() noexcept {
         TimestampNs previous_frame_timestamp_ns = 0;
         std::optional<std::uint64_t> rate_generation;
         const auto reset_rate_segment = [this, &has_frame_timestamp] {
-            los_rate_filter_->reset();
+            // 无有效观测时只中断 LOS 角状态；完整 reset 留给新会话，避免距离回跳。
+            los_rate_filter_->update({});
             has_frame_timestamp = false;
         };
         std::uint64_t imu_match_failure_count = 0;
@@ -500,7 +501,7 @@ void FramePipeline::processing_worker() noexcept {
             }
             const auto enqueue_processed_frame =
                 [this, &result, &enqueue_result, processing_started] {
-                    // 距离独立于角速率有效位：建基准帧也显示初值，重置后的帧不残留旧值。
+                    // 距离独立于角速率有效位：角度建基准帧也显示当前补偿距离，无效观测不残留旧值。
                     const auto rate_sample = los_rate_filter_->sample();
                     result.overlay.lever_arm_distance_valid = rate_sample.lever_arm_distance_valid;
                     result.overlay.lever_arm_distance_m = rate_sample.lever_arm_distance_m;
@@ -810,8 +811,7 @@ void FramePipeline::processing_worker() noexcept {
             }
 
             if (!has_frame_timestamp) {
-                los_rate_filter_->reset();
-                // 首帧仅建立角度、距离和速度基准，不按占位 dt 传播或积分。
+                // 只重建角度基准；距离使用实际曝光时间，跨越丢帧继续积分，不使用占位 dt。
                 const auto initial_rate = los_rate_filter_->update(
                     {line_of_sight, result.flight_state.attitude, 1.0,
                      attitude_lookup->launch_generation, result.flight_state.speed_mps});

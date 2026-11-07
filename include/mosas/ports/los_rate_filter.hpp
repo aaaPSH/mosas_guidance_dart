@@ -13,10 +13,11 @@ public:
 
     /**
      * @brief 使用镖体系视线向量和曝光姿态更新导航系惯性视线估计。
-     * @param input 镖体系单位 LOS、曝光同步姿态与速度、帧间隔和起飞代际。
+     * @param input 镖体系单位 LOS、带曝光时间的同步姿态与速度、LOS 帧间隔和起飞代际。
      * @return 共同有效性、导航系角速率诊断及导航系矢量估计。
      * @note 首帧只建立基准；方向和惯性导数均以导航系表达，不能重复补偿机体转动。
      *       默认实现先补偿向量，再滤波仰角/方位角；q_z 诊断为 cos(q_y)*dq_z/dt。
+     *       无效输入中断 LOS 连续段并清空当前诊断，但保留距离积分状态；距离跨段使用实际曝光间隔。
      */
     virtual domain::LosRateEstimate update(
         const domain::LosRateFilterInput& input) = 0;
@@ -28,7 +29,7 @@ public:
     virtual domain::LineOfSightRateSample sample() const = 0;
 
     /**
-     * @brief 清除滤波器状态；时间异常或运行代际切换后应调用。
+     * @brief 新会话时清除全部滤波和距离积分状态；发射代际切换由 update 处理。
      */
     virtual void reset() noexcept = 0;
 };

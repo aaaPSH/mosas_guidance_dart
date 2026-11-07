@@ -55,6 +55,7 @@ int verify_kalman_reference() {
         domain::LosRateFilterInput input;
         input.attitude = test::vector_test_attitude();
         input.line_of_sight = test::test_dart_los_from_angles(0.2, -0.3);
+        input.attitude.time.monotonic_ns = 0;
         input.dt_seconds = 1.0; // 首帧不传播这个超过 maximum_gap 的占位时间。
         CHECK(!filter.update(input).valid);
         CHECK(!filter.sample().raw_angular_velocity.valid);
@@ -67,6 +68,7 @@ int verify_kalman_reference() {
         for (int step = 1; step <= 80; ++step) {
             const double dt = intervals[step % intervals.size()];
             input.dt_seconds = dt;
+            input.attitude.time.monotonic_ns += static_cast<std::int64_t>(std::llround(dt * 1e9));
             const double measured_pitch = 0.2 + 0.15 * std::sin(step * 0.1);
             const double measured_yaw = -0.3 + 0.12 * std::sin(step * 0.13);
             input.line_of_sight = test::test_dart_los_from_angles(measured_pitch, measured_yaw);
@@ -111,6 +113,7 @@ int verify_inertial_rotation() {
     input.dt_seconds = 0.01;
     for (int step = 0; step < 100; ++step) {
         input.attitude = test::vector_test_attitude(0.2 * std::sin(step * 0.05), step * 0.1, -step * 0.03);
+        input.attitude.time.monotonic_ns = step * 10'000'000LL;
         const auto body = test::to_test_dart(input.attitude, fixed);
         input.line_of_sight = {true, {2.0 * body[0], 2.0 * body[1], 2.0 * body[2]}};
         const auto estimate = filter.update(input);
@@ -137,10 +140,13 @@ int verify_compensated_angles() {
     domain::LosRateFilterInput input;
     input.dt_seconds = 0.01;
     double previous_pitch = 0.0, previous_yaw = 0.0;
+    std::int64_t timestamp_ns = 0;
     for (int step = 0; step < 30; ++step) {
         const bool baseline = step == 0 || step == 15;
         input.dt_seconds = step == 15 ? 0.1 : 0.01;
         input.attitude = test::vector_test_attitude(0.3 * std::sin(step * 0.2), step * 0.05, step * 0.07);
+        timestamp_ns += static_cast<std::int64_t>(std::llround(input.dt_seconds * 1e9));
+        input.attitude.time.monotonic_ns = timestamp_ns;
         const auto& m = input.attitude.navigation_from_dart.matrix();
         const std::array<double, 3> position{m[0] * 0.18, m[3] * 0.18, m[6] * 0.18};
         std::array<double, 3> camera_to_target{};
@@ -179,12 +185,14 @@ int verify_compensated_angles() {
         domain::LosRateFilterInput test_input;
         test_input.dt_seconds = 0.01;
         test_input.attitude = test::vector_test_attitude(0.1, 0.0, 0.0);
+        test_input.attitude.time.monotonic_ns = 0;
         const auto& m = test_input.attitude.navigation_from_dart.matrix();
         const std::array<double, 3> position{m[0] * 0.18, m[3] * 0.18, m[6] * 0.18};
         const std::array<double, 3> cam_to_tgt{10.0 - position[0], -position[1], -position[2]};
         const double d = std::hypot(std::hypot(cam_to_tgt[0], cam_to_tgt[1]), cam_to_tgt[2]);
         test_input.line_of_sight = test::test_dart_los(test::to_test_dart(test_input.attitude, cam_to_tgt));
         CHECK(!small_dist_filter.update(test_input).valid); // 首帧仅建基准
+        test_input.attitude.time.monotonic_ns += 10'000'000;
         const auto est = small_dist_filter.update(test_input);
         CHECK(est.valid);
         const std::array<double, 3> expected_corrected{
@@ -225,6 +233,7 @@ int verify_oscillation_suppression() {
         const double t = i * input.dt_seconds;
         const double pitch = 0.05 * std::sin(2.0 * M_PI * 10.0 * t);
         input.attitude = test::vector_test_attitude(pitch, 0.0, 0.0);
+        input.attitude.time.monotonic_ns = i * 10'000'000LL;
 
         const auto& m = input.attitude.navigation_from_dart.matrix();
         const std::array<double, 3> p_cam_N{m[0] * lever_arm, m[3] * lever_arm, m[6] * lever_arm};
@@ -261,6 +270,7 @@ int verify_distance_integration() {
         guidance::InertialAngleLosFilter filter(config);
         domain::LosRateFilterInput input;
         input.attitude = test::vector_test_attitude(0.3, -0.1, 0.15);
+        input.attitude.time.monotonic_ns = 0;
         input.line_of_sight = test::test_dart_los_from_angles(0.15, -0.2);
         const auto navigation = input.attitude.navigation_from_dart.apply(input.line_of_sight.direction);
         const auto& m = input.attitude.navigation_from_dart.matrix();
@@ -272,6 +282,7 @@ int verify_distance_integration() {
         double previous_pitch = 0.0, previous_yaw = 0.0;
         for (std::size_t i = 0; i < intervals.size(); ++i) {
             input.dt_seconds = intervals[i];
+            input.attitude.time.monotonic_ns += static_cast<std::int64_t>(std::llround(intervals[i] * 1e9));
             input.speed_mps.value = speeds[i];
             const double x = navigation.x + m[0] * config.camera_lever_arm_x / distances[i];
             const double y = navigation.y + m[3] * config.camera_lever_arm_x / distances[i];
@@ -304,54 +315,130 @@ int verify_distance_integration() {
     return 0;
 }
 
-/** @return 连续段重建时恢复初始距离，非法速度重置状态而非增大距离时为 0。 */
+/** @return 丢目标和长间隔只重建角状态，距离跨越缺失时段继续积分；新会话/代际才恢复初值。 */
+int verify_distance_continuity() {
+    for (bool enabled : {false, true}) {
+        guidance::InertialAngleLosFilterConfig config;
+        config.enable_filter = enabled;
+        config.maximum_gap_seconds = 0.2;
+        config.camera_lever_arm_x = 0.18;
+        guidance::InertialAngleLosFilter filter(config);
+        domain::LosRateFilterInput input;
+        input.attitude = test::vector_test_attitude();
+        input.line_of_sight = test::test_dart_los_from_angles(0.3, 0.2);
+        input.attitude.time.monotonic_ns = 1'000'000'000;
+        input.dt_seconds = 1.0;
+        input.speed_mps.value = 10.0;
+        CHECK(!filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 15.0, 1e-12);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        input.dt_seconds = 0.01;
+        input.speed_mps.value = 14.0;
+        CHECK(filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 14.88, 1e-12);
+
+        input.line_of_sight.valid = false;
+        input.attitude.time.monotonic_ns += 10'000'000;
+        CHECK(!filter.update(input).valid);
+        CHECK(!filter.sample().lever_arm_distance_valid);
+        input.line_of_sight.valid = true;
+        input.attitude.time.monotonic_ns = 1'060'000'000;
+        input.dt_seconds = 1.0; // LOS 重建的占位间隔不能用于距离积分。
+        input.speed_mps.value = 6.0;
+        CHECK(!filter.update(input).valid);
+        CHECK(filter.sample().lever_arm_distance_valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 14.38, 1e-12);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        input.dt_seconds = 0.01;
+        CHECK(filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 14.32, 1e-12);
+
+        input.attitude.time.monotonic_ns += 500'000'000;
+        input.dt_seconds = 0.5;
+        input.speed_mps.value = 2.0;
+        CHECK(!filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 12.32, 1e-12);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        input.dt_seconds = 0.01;
+        CHECK(filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 12.30, 1e-12);
+
+        filter.reset();
+        CHECK(!filter.sample().lever_arm_distance_valid);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        CHECK(!filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 15.0, 1e-12);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        CHECK(filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 14.98, 1e-12);
+        ++input.generation;
+        input.attitude.time.monotonic_ns += 10'000'000;
+        CHECK(!filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 15.0, 1e-12);
+    }
+    return 0;
+}
+
+/** @return 显式重置和新代际恢复距离，异常输入拒绝更新时为 0。 */
 int verify_distance_reset() {
     guidance::InertialAngleLosFilterConfig config;
     config.enable_filter = false;
     config.camera_lever_arm_x = 0.18;
-    config.estimated_target_distance = 2.0;
-    guidance::InertialAngleLosFilter filter(config);
-    domain::LosRateFilterInput input;
-    input.attitude = test::vector_test_attitude();
-    input.line_of_sight = test::test_dart_los_from_angles(0.3, 0.2);
-    input.dt_seconds = 0.01;
-    const auto& d = input.line_of_sight.direction;
-    const double initial_pitch = std::atan2(d.y, std::hypot(d.x + 0.09, d.z));
-    const double minimum_pitch = std::atan2(d.y, std::hypot(d.x + 0.18, d.z));
-    for (int reason = 0; reason < 6; ++reason) {
-        input.speed_mps.value = 100.0;
+    config.maximum_gap_seconds = 0.2;
+    for (int reason = 0; reason < 10; ++reason) {
+        guidance::InertialAngleLosFilter filter(config);
+        domain::LosRateFilterInput input;
+        input.attitude = test::vector_test_attitude();
+        input.line_of_sight = test::test_dart_los_from_angles(0.3, 0.2);
+        input.dt_seconds = 0.01;
+        input.attitude.time.monotonic_ns = 1'000'000'000;
+        input.speed_mps.value = 10.0;
         CHECK(!filter.update(input).valid);
-        const auto approaching = filter.update(input);
-        CHECK(approaching.valid);
-        CHECK_NEAR(std::atan2(approaching.vector.direction.y,
-                             std::hypot(approaching.vector.direction.x, approaching.vector.direction.z)),
-                   minimum_pitch, 1e-12);
+        input.attitude.time.monotonic_ns += 10'000'000;
+        CHECK(filter.update(input).valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, 14.9, 1e-12);
+
         input.speed_mps.value = 0.0;
+        input.attitude.time.monotonic_ns += 10'000'000;
         if (reason == 0) {
             filter.reset();
         } else {
             if (reason == 1) ++input.generation;
-            if (reason == 2) input.dt_seconds = 0.1;
+            if (reason == 2) {
+                input.dt_seconds = 0.3;
+                input.attitude.time.monotonic_ns = 1'310'000'000;
+            }
             if (reason == 3) input.speed_mps.value = -1.0;
             if (reason == 4) input.speed_mps.value = std::numeric_limits<double>::quiet_NaN();
             if (reason == 5) input.speed_mps.value = std::numeric_limits<double>::infinity();
+            if (reason == 6) input.attitude.time.monotonic_ns = -1;
+            if (reason == 7) input.attitude.time.monotonic_ns = 1'010'000'000;
+            if (reason == 8) input.attitude.time.monotonic_ns = 1'000'000'000;
+            if (reason == 9) {
+                input.attitude.time.monotonic_ns = std::numeric_limits<std::int64_t>::max();
+                input.speed_mps.value = std::numeric_limits<double>::max();
+            }
             CHECK(!filter.update(input).valid);
         }
         CHECK(filter.sample().lever_arm_distance_valid == (reason == 1 || reason == 2));
         input.dt_seconds = 0.01;
-        // 代际和超时帧已经建好基准；其他重置原因需再用首帧建基准。
         input.speed_mps.value = 0.0;
-        if (reason != 1 && reason != 2) CHECK(!filter.update(input).valid);
+        input.attitude.time.monotonic_ns = reason == 2 ? 1'320'000'000 : 1'030'000'000;
+        // 代际和超时帧已建好角度基准；其他异常恢复首帧只重建角状态。
+        if (reason != 1 && reason != 2) {
+            CHECK(!filter.update(input).valid);
+            input.attitude.time.monotonic_ns += 10'000'000;
+        }
         const auto restored = filter.update(input);
         CHECK(restored.valid);
+        const double distance = reason < 2 ? 15.0 : (reason == 2 ? 13.4 : 14.8);
+        CHECK(filter.sample().lever_arm_distance_valid);
+        CHECK_NEAR(filter.sample().lever_arm_distance_m, distance, 1e-12);
+        const auto& d = input.line_of_sight.direction;
+        const double pitch = std::atan2(d.y, std::hypot(d.x + config.camera_lever_arm_x / distance, d.z));
         CHECK_NEAR(std::atan2(restored.vector.direction.y,
                              std::hypot(restored.vector.direction.x, restored.vector.direction.z)),
-                   initial_pitch, 1e-12);
-        CHECK(filter.sample().lever_arm_distance_valid);
-        CHECK_NEAR(filter.sample().lever_arm_distance_m, config.estimated_target_distance, 1e-12);
-        filter.reset();
-        CHECK(!filter.sample().lever_arm_distance_valid);
-        CHECK_NEAR(filter.sample().lever_arm_distance_m, 0.0, 1e-12);
+                   pitch, 1e-12);
     }
     return 0;
 }
@@ -370,6 +457,7 @@ int verify_compensation_switch() {
         input.dt_seconds = 0.01;
         for (int step = 0; step < 20; ++step) {
             input.attitude = test::vector_test_attitude(step * 0.01, step * 0.03, -step * 0.02);
+            input.attitude.time.monotonic_ns = step * 10'000'000LL;
             input.line_of_sight = test::test_dart_los_from_angles(0.2 + step * 0.002, -0.3 + step * 0.003);
             input.speed_mps.value = 0.0;
             const auto expected = reference.update(input);
@@ -403,6 +491,7 @@ int verify_azimuth_wrap() {
         domain::LosRateEstimate estimate;
         for (int step = 0; step <= 100; ++step) {
             input.line_of_sight = test::test_dart_los_from_angles(0.4, kPi - 0.004 + step * 0.008);
+            input.attitude.time.monotonic_ns = step * 10'000'000LL;
             estimate = filter.update(input);
             if (step == 0) { CHECK(!estimate.valid); continue; }
             CHECK(estimate.valid);
@@ -416,7 +505,9 @@ int verify_azimuth_wrap() {
 
 /** @return 非法输入、方位极点、时间异常、代际切换均清除连续段而非外推时为 0。 */
 int verify_reset_paths() {
-    guidance::InertialAngleLosFilter filter;
+    guidance::InertialAngleLosFilterConfig config;
+    config.enable_lever_arm_compensation = false;
+    guidance::InertialAngleLosFilter filter(config);
     domain::LosRateFilterInput input;
     input.attitude = test::vector_test_attitude();
     input.line_of_sight = {true, {1, 0, 0}};
@@ -518,6 +609,7 @@ int main() {
     CHECK(verify_compensated_angles() == 0);
     CHECK(verify_oscillation_suppression() == 0);
     CHECK(verify_distance_integration() == 0);
+    CHECK(verify_distance_continuity() == 0);
     CHECK(verify_distance_reset() == 0);
     CHECK(verify_compensation_switch() == 0);
     CHECK(verify_azimuth_wrap() == 0);

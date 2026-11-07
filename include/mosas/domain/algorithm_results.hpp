@@ -54,11 +54,11 @@ struct VectorLosEstimate {
     DirectionRateNavigationPerSec inertial_direction_rate{};
 };
 
-/** @brief 镖体系单位视线及同帧曝光姿态、速度；首帧仅建立基准，不传播 dt。 */
+/** @brief 镖体系单位视线及带曝光时间的同步姿态、速度；首帧不传播 LOS 占位 dt。 */
 struct LosRateFilterInput {
     DartLineOfSight line_of_sight{};
     AttitudeState attitude{};
-    double dt_seconds = 0.0;
+    double dt_seconds = 0.0; ///< LOS 更新间隔，s；距离独立使用 attitude.time 的实际曝光间隔。
     std::uint64_t generation = 0;
     /** @brief 曝光时刻纵向速度，m/s；启用杆臂补偿时须为有限非负数。 */
     Quantity<MetersPerSecond> speed_mps{};

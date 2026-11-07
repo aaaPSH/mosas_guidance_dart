@@ -15,10 +15,10 @@ struct InertialAngleLosFilterConfig {
     double sigma_q = 0.0035;              ///< 视线角测量噪声标准差，rad。
     double initial_covariance = 1.0;       ///< 初始角速度方差，(rad/s)²，可为 0。
     bool enable_filter = true;            ///< false 时输出补偿后角度的帧间差分。
-    double maximum_gap_seconds = 0.05;    ///< 超过此帧间隔重新建立基准，s。
+    double maximum_gap_seconds = 0.05;    ///< 超过此帧间隔重建角度/角速率基准，不重置距离，s。
     bool enable_lever_arm_compensation = true; ///< false 时仅做姿态转换，不进行杆臂补偿。
     double camera_lever_arm_x = 0.0;       ///< 相机相对质心的镖体系 X 轴杆臂，m。
-    double estimated_target_distance = 15.0; ///< 连续段首帧弹目距离初值，m；后续速度积分递减，最低 1 m。
+    double estimated_target_distance = 15.0; ///< 会话/发射代际首帧弹目距离初值，m；速度积分递减，最低 1 m。
 };
 
 /**
@@ -37,10 +37,12 @@ public:
 
     /**
      * @brief 更新补偿后的惯性系角度和角速度。
-     * @param input 镖体系方向、曝光姿态与速度、帧间隔和代际；方向会防御性单位化。
+     * @param input 镖体系方向、曝光姿态与速度、LOS 帧间隔和代际；方向会防御性单位化。
+     *              姿态时间为本帧曝光时间，启用补偿时须非负且在同代际有效输入间递增。
      * @return 导航系状态及角速率；首帧、极点和非法输入返回无效结果。
-     * @note 首帧不传播占位 dt；启用补偿后按相邻曝光速度梯形积分距离，最低 1 m。
-     *       断流或代际变化重建零速率及初始距离基准，数值异常清空状态。
+     * @note 距离按有效输入的实际曝光间隔和速度梯形积分，最低 1 m；不使用 LOS 占位 dt。
+     *       丢观测、断流或数值异常只清除角状态及当前诊断，保留距离积分基准。
+     *       仅显式 reset 或发射代际变化重新初始化距离。
      */
     domain::LosRateEstimate update(const domain::LosRateFilterInput& input) override;
 
@@ -50,10 +52,13 @@ public:
      */
     domain::LineOfSightRateSample sample() const override;
 
-    /** @brief 清除角度、差分和速度积分基准，恢复初始距离并等待新连续段。 */
+    /** @brief 新会话时清除全部状态，包括距离及速度积分基准；等待首个有效输入。 */
     void reset() noexcept override;
 
 private:
+    /** @brief 清除 LOS 角度、差分及诊断，不改变独立的距离积分状态。 */
+    void reset_angles() noexcept;
+
     /** @brief 单个角度通道的常角速度、白噪声角加速度 Kalman 状态。 */
     struct AngleState {
         double angle = 0.0;
@@ -85,6 +90,9 @@ private:
     std::uint64_t generation_ = 0;
     double previous_pitch_ = 0.0;
     double previous_yaw_ = 0.0;
+    bool distance_initialized_ = false;
+    std::uint64_t distance_generation_ = 0;
+    std::int64_t previous_exposure_timestamp_ns_ = 0;
     double estimated_target_distance_ = 0.0;
     double previous_speed_mps_ = 0.0;
     domain::LineOfSightRateSample sample_{};

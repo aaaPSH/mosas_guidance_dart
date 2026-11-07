@@ -210,6 +210,10 @@ class FakeLosRateFilter final : public ports::ILosRateFilter {
 public:
     domain::LosRateEstimate update(
         const domain::LosRateFilterInput& input) override {
+        if (!input.line_of_sight.valid) {
+            sample_ = {};
+            return {};
+        }
         ++call_count_;
         last_thread_id_ = std::this_thread::get_id();
         sample_.line_of_sight = input.line_of_sight;
