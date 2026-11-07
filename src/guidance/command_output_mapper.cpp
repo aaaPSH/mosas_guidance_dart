@@ -1,6 +1,8 @@
 #include <mosas/guidance/command_output_mapper.hpp>
 #include "rotation_validation.hpp"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace mosas::guidance {
 namespace {
@@ -15,6 +17,62 @@ bool matching_time(const domain::SensorTime& time, domain::ClockDomain domain) n
            time.source_domain == domain::ClockDomain::simulation &&
            time.quality == domain::TimestampQuality::simulation &&
            time.source_time_ns == time.monotonic_ns;
+}
+
+/**
+ * @brief 在离散过载网格上选择满足物理上限、最接近连续指令的向内量化结果。
+ * @param y 镖体系 Y 指令，成功时写回量化值。
+ * @param z 镖体系 Z 指令，成功时写回量化值。
+ * @param step 量化步长，单位 g；0 表示不量化。
+ * @param config 两级物理上限和重力配置。
+ * @param trace 保留连续限幅标志，并记录量化导致的限幅。
+ * @return 步长合法且存在满足上限的有限量化值时为 true。
+ * @note 最近舍入超限时，每轴最多向零减一个 LSB 即覆盖必要的向内候选，工作量固定。
+ */
+bool quantize_overload(double& y, double& z, double step,
+    const CommandMappingConfig& config, domain::CommandMappingTrace& trace) noexcept {
+    if (step == 0.0) return true;
+    if (step < 0.0 || !std::isfinite(step)) return false;
+    const double scale = 1.0 / step;
+    const double scaled_y = std::abs(y) * scale, scaled_z = std::abs(z) * scale;
+    if (!std::isfinite(scale) || !std::isfinite(scaled_y) || !std::isfinite(scaled_z))
+        return false;
+    const double rounded_y = std::round(scaled_y), rounded_z = std::round(scaled_z);
+    const auto signed_value = [scale](double index, double original) {
+        return index == 0.0 ? 0.0 : std::copysign(index / scale, original); // 协议整数没有负零。
+    };
+    const double nearest_magnitude = std::hypot(rounded_y / scale, rounded_z / scale);
+    const bool overload_limited = nearest_magnitude > config.maximum_command_overload;
+    const bool acceleration_limited = nearest_magnitude * config.gravity > config.maximum_command_acceleration;
+    trace.overload_limited |= overload_limited;
+    trace.acceleration_limited |= acceleration_limited;
+    if (!overload_limited && !acceleration_limited) {
+        // 保留协议的半 LSB 舍入语义，不让浮点误差在等距候选间改选。
+        y = signed_value(rounded_y, y);
+        z = signed_value(rounded_z, z);
+        return true;
+    }
+    double best_error = std::numeric_limits<double>::infinity();
+    double best_y = 0.0, best_z = 0.0;
+    for (int inward_y = 0; inward_y <= 1; ++inward_y) {
+        for (int inward_z = 0; inward_z <= 1; ++inward_z) {
+            const double candidate_y = signed_value(std::max(0.0, rounded_y - inward_y), y);
+            const double candidate_z = signed_value(std::max(0.0, rounded_z - inward_z), z);
+            const double magnitude = std::hypot(candidate_y, candidate_z);
+            if (magnitude > config.maximum_command_overload ||
+                magnitude * config.gravity > config.maximum_command_acceleration) continue;
+            const double error = std::hypot(candidate_y - y, candidate_z - z);
+            if (error < best_error) {
+                best_error = error;
+                best_y = candidate_y;
+                best_z = candidate_z;
+            }
+        }
+    }
+    if (!std::isfinite(best_error)) return false;
+    y = best_y;
+    z = best_z;
+    return true;
 }
 }
 
@@ -46,12 +104,11 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     const bool debug = config_.debug.mode != GuidanceDebugMode::disabled;
     const bool launch_delay = config_.debug.mode == GuidanceDebugMode::launch_delay;
     command.source_time = launch_delay && c.latest_state ? c.latest_state->time : c.source_time;
-    // 固定模式即使没有视觉命令，也要向下位机发布 IMU 确认的上升状态。
-    const bool launched = debug
-        ? c.latest_state && c.latest_state->launch.phase == domain::LaunchPhase::launched
-        : c.launched;
-    command.launched = launched && c.generation == c.active_generation;
-    command.target_found = !debug && c.target_found && !c.expired;
+    // 发射位独立于视觉邮箱；正常模式的识别和过载仍须来自发射后图像。
+    command.launched = c.latest_state &&
+        c.latest_state->launch.phase == domain::LaunchPhase::launched &&
+        c.generation == c.active_generation;
+    command.target_found = !debug && c.launched && c.target_found && !c.expired;
     trace.emit_time_ns = c.emit_time_ns;
     const auto reject = [&](Reason reason) {
         command.valid = false;
@@ -152,6 +209,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
 
         trace.overload_limited = limit(config_.maximum_command_overload);
         trace.acceleration_limited = limit(config_.maximum_command_acceleration / config_.gravity);
+        if (!quantize_overload(y, z, c.overload_step_g, config_, trace)) return reject(Reason::algorithm_rejected);
         trace.body_overload = {0, y, z};
         trace.body_acceleration = {0, y * config_.gravity, z * config_.gravity};
         trace.command_overload.value = std::hypot(y, z);
@@ -165,7 +223,14 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     // ==========================================
     // 正常 PNG 制导分支
     // ==========================================
+    if (!c.launched) return reject(Reason::launch_not_confirmed);
     if (c.expired) return reject(Reason::stale_input);
+    // 提交时间只检测生产断流，不能为曝光后排队或识别耗时重新授予有效期。
+    if (!matching_time(c.source_time, c.clock_domain) || c.emit_time_ns < c.source_time.monotonic_ns ||
+        c.maximum_source_age_ns <= 0 || c.emit_time_ns - c.source_time.monotonic_ns > c.maximum_source_age_ns) {
+        command.target_found = false;
+        return reject(Reason::stale_input);
+    }
     if (!c.request_valid) return reject(c.invalid_reason == Reason::none ? Reason::algorithm_rejected : c.invalid_reason);
     if (request.x != 0 || !std::isfinite(request.y) || !std::isfinite(request.z))
         return reject(Reason::algorithm_rejected);
@@ -173,7 +238,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     if (!c.latest_state || !c.latest_state->attitude.valid) return reject(Reason::invalid_attitude);
     trace.attitude = c.latest_state->attitude;
     const auto& time = trace.attitude.time;
-    if (!matching_time(c.source_time, c.clock_domain) || !matching_time(time, c.clock_domain) ||
+    if (!matching_time(time, c.clock_domain) ||
         !matching_time(c.latest_state->time, c.clock_domain) ||
         c.latest_state->time.monotonic_ns != time.monotonic_ns || c.emit_time_ns < time.monotonic_ns ||
         c.maximum_attitude_age_ns <= 0 || c.emit_time_ns - time.monotonic_ns > c.maximum_attitude_age_ns)
@@ -197,6 +262,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     trace.overload_limited = limit(config_.maximum_command_overload);
     trace.after_overload_limit = {0, cosine * y - sine * z, sine * y + cosine * z};
     trace.acceleration_limited = limit(config_.maximum_command_acceleration / config_.gravity);
+    if (!quantize_overload(y, z, c.overload_step_g, config_, trace)) return reject(Reason::algorithm_rejected);
     trace.body_overload = {0, y, z};
     trace.body_acceleration = {0, y * config_.gravity, z * config_.gravity};
     const double by = cosine * y - sine * z;

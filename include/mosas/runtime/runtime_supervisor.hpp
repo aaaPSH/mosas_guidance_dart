@@ -57,7 +57,7 @@ struct RuntimeSupervisorConfig {
     std::size_t history_capacity = 256;
     TimestampNs max_imu_age_ns = 50000000;
     TimestampNs max_camera_future_ns = 50000000;
-    TimestampNs max_camera_age_ns = 2000000000;
+    TimestampNs max_camera_age_ns = 2000000000; ///< 相机接收年龄及正常 PNG 曝光到发送总年龄上限。
     domain::CameraIntrinsics camera_intrinsics{1.0, 1.0, 0.0, 0.0};
     domain::Rotation3<domain::DartFrameTag, domain::CameraFrameTag>
         dart_from_camera{};

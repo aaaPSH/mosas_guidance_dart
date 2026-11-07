@@ -22,6 +22,7 @@ int debug_session_lifecycle() {
     binding.output_enabled = [] { return true; };
     binding.clock_domain = domain::ClockDomain::monotonic;
     binding.maximum_attitude_age_ns = 50'000'000;
+    binding.maximum_source_age_ns = 2'000'000'000;
     runtime::CommandOutputProcessor processor;
     CHECK(processor.bind(std::move(binding)));
     domain::GuidanceCommand request;
@@ -76,17 +77,22 @@ int main() {
     binding.output_enabled = [] { return true; };
     binding.clock_domain = domain::ClockDomain::monotonic;
     binding.maximum_attitude_age_ns = 50'000;
+    binding.maximum_source_age_ns = 2'000'000'000;
     CHECK(processor.bind(std::move(binding)));
     domain::GuidanceCommand command;
     command.source_frame_id = 5; command.source_time = state.time;
     command.valid = command.launched = command.target_found = true;
     command.overload_g = {0, 0.5, 0};
+    const auto receipt = processor.track_emission(command, std::chrono::milliseconds(100));
     auto first = processor.prepare(command, 0, false);
+    CHECK(receipt->result().wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
     CHECK(reads == "SC");
     CHECK(first.mapping.command.valid);
     CHECK(!processor.latest_emission()); // prepare 不冒充写出成功。
     processor.complete(first, domain::CommandEmissionDisposition::serial_written);
     CHECK(processor.latest_emission()->attempt_id == first.attempt_id);
+    CHECK(receipt->result().get()->attempt_id == first.attempt_id);
+    CHECK(receipt->result().get()->disposition == domain::CommandEmissionDisposition::serial_written);
     state.attitude = test::vector_test_attitude(0,std::acos(-1.0)/2);
     state.attitude.time = state.time;
     const auto second = processor.prepare(command, 0, false);
@@ -95,7 +101,30 @@ int main() {
     CHECK_NEAR(second.mapping.command.overload_g.y, 0, 1e-12);
     CHECK(!processor.prepare(command,0,true).mapping.command.target_found);
     CHECK(!processor.prepare(command,1,false).mapping.command.valid);
+    processor.complete(second, domain::CommandEmissionDisposition::serial_written);
+    CHECK(receipt->result().get()->attempt_id == first.attempt_id); // 重发不改写首个输出。
+
+    const auto overwritten = processor.track_emission(command, std::chrono::milliseconds(100));
+    ++command.source_frame_id;
+    ++command.source_time.monotonic_ns;
+    const auto next = processor.track_emission(command, std::chrono::milliseconds(100));
+    auto wrong_time = processor.prepare(command, 0, false);
+    --wrong_time.mapping.command.source_time.monotonic_ns;
+    processor.complete(wrong_time, domain::CommandEmissionDisposition::serial_written);
+    CHECK(next->result().wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    processor.complete(processor.prepare(command, 0, false), domain::CommandEmissionDisposition::serial_written);
+    CHECK(!overwritten->result().get()); // 被新请求跳过的来源帧不是零输出。
+    CHECK(next->result().get()->mapping.command.source_frame_id == command.source_frame_id);
+
+    const auto reset_receipt = processor.track_emission(command, std::chrono::milliseconds(100));
+    processor.invalidate();
+    CHECK(!reset_receipt->result().get());
+    ++command.generation;
+    const auto new_generation = processor.track_emission(command, std::chrono::milliseconds(100));
+    processor.complete(second, domain::CommandEmissionDisposition::serial_written);
+    CHECK(new_generation->result().wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
     processor.reset();
+    CHECK(!new_generation->result().get());
     CHECK(!processor.latest_emission());
     CHECK(debug_session_lifecycle() == 0);
     return 0;

@@ -83,11 +83,17 @@ public:
      *       只有新提交会更新有效期，周期重发不会延长有效期。
      */
     bool try_submit(const runtime::GuidanceCommand& command) noexcept override;
+    /** @brief 登记首次发送凭据；观测最多等待一个发送周期及在途、本次两次写超时。
+     * @param command 即将提交的来源请求；须在 start() 成功后调用。
+     * @return 不阻塞发送和制导路径的同帧凭据。
+     */
+    std::shared_ptr<runtime::CommandEmissionReceipt> track_emission(
+        const runtime::GuidanceCommand& command) override;
     /**
      * @brief 更新允许发送的起飞代际并同步串口发送临界区。
      * @param generation 新的有效代际。
      * @note 可能等待当前串口写操作完成；返回后旧代际在途写入已结束。
-     *       新代际在收到新命令前周期发送零过载和零状态标志。
+     *       正常制导在收到新命令前周期发送零过载和零识别位，发射位跟随当前代际最新 IMU。
      */
     void set_active_generation(std::uint64_t generation) noexcept override;
     /** @brief 拒绝新命令并唤醒发送线程退出；不会继续周期重发。 */
@@ -108,15 +114,16 @@ private:
 
     /**
      * @brief 按单调时钟周期采样最新指令，检查代际、发射门槛和提交超时。
-     * @note 正常制导无新指令时以最新姿态重新映射最近弹道请求；超时清零过载和识别位，但保留发射标志。
-     *       两种固定模式均独立使用当前 IMU 发射状态；空 mailbox 不阻止发布上升状态。
+     * @note 正常制导每次发送均检查提交超时和曝光总年龄，再以最新姿态映射最近弹道请求；
+     *       超限清零过载和识别位，但保留发射标志。量化后的命令和诊断共用协议精度及物理限幅。
+     *       所有模式的发射位均来自当前代际最新 IMU；空 mailbox 不阻止发布上升状态。
      *       launch_delay 不要求视觉请求；target_detected 仅由未过期的发射后识别结果首次触发。
      *       调度或写入超时后跳过错过的周期，不突发补发积压指令。
      */
     void worker_loop() noexcept;
     /**
      * @brief 编码并写出一帧，保留发送失败计数和错误说明。
-     * @param command 已通过代际、发射门槛及有效期检查的待发送指令。
+     * @param command 已通过代际、发射门槛和有效期检查，并按协议精度量化及限幅的指令。
      * @note 仅由发送线程在持有 send_mutex_ 时调用。
      */
     bool send_command(const domain::MappedGuidanceCommand& command) noexcept;

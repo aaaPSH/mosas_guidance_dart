@@ -1,5 +1,8 @@
 #include "output_dispatcher.hpp"
 
+#include <mosas/runtime/command_output.hpp>
+
+#include <algorithm>
 #include <atomic>
 #include <exception>
 #include <mutex>
@@ -45,6 +48,7 @@ public:
 
     void reset() noexcept {
         queue_.reset();
+        cancelled_.store(false, std::memory_order_release);
         accepted_count_.store(0, std::memory_order_relaxed);
         failure_count_.store(0, std::memory_order_relaxed);
         healthy_.store(true, std::memory_order_release);
@@ -86,6 +90,7 @@ public:
     }
 
     void cancel() noexcept {
+        cancelled_.store(true, std::memory_order_release);
         try {
             if (handlers_.cancel) {
                 handlers_.cancel();
@@ -181,6 +186,39 @@ private:
         }
     }
 
+    bool stopping() const {
+        return cancelled_.load(std::memory_order_acquire) ||
+               (callbacks_.stop_requested && callbacks_.stop_requested());
+    }
+
+    bool current_generation(const ProcessedFrame& frame) const {
+        return !callbacks_.active_generation ||
+               frame.flight_state.launch.generation == callbacks_.active_generation();
+    }
+
+    /** @brief 只在观测线程等待同帧首次发送，截止或取消时保留缺失，不借用其他帧的结果。 */
+    void resolve_emission(ProcessedFrame& frame) {
+        const auto receipt = std::move(frame.pending_command_emission);
+        if (!receipt) return;
+        const auto result = receipt->result();
+        while (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+            if (stopping() || !current_generation(frame)) return;
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= receipt->deadline()) return;
+            result.wait_until(std::min(receipt->deadline(), now + std::chrono::milliseconds(1)));
+        }
+        const auto& emitted = result.get();
+        if (!emitted || emitted->mapping.command.source_frame_id != frame.frame.source_frame_id ||
+            emitted->mapping.command.generation != frame.flight_state.launch.generation ||
+            emitted->mapping.command.source_time.monotonic_ns != frame.frame.timestamp_ns) return;
+        frame.command_emission = emitted;
+        frame.overlay.body_overload_valid = emitted->mapping.command.valid;
+        frame.overlay.body_overload = emitted->mapping.command.overload_g;
+        frame.overlay.output_attitude_valid = emitted->mapping.trace.attitude.valid;
+        frame.overlay.output_attitude_pitch = emitted->mapping.trace.attitude.pitch_rad;
+        frame.overlay.output_attitude_roll = emitted->mapping.trace.attitude.roll_rad;
+    }
+
     /**
      * @brief 消费本 sink 的帧队列并执行阻塞式发布/记录操作。
      * @note 队列和 worker 按 sink 独立；代际不匹配的帧被忽略，处理失败会上报运行时故障。
@@ -199,12 +237,14 @@ private:
                               dequeued_at - queue_wait_started);
                 record_timing(OutputDispatchTimingStage::queue_delay,
                               dequeued_at - queued.enqueued_at);
-                if (callbacks_.stop_requested && callbacks_.stop_requested()) {
-                    break;
+                if (stopping()) break;
+                if (!current_generation(queued.frame)) {
+                    queued = QueuedProcessedFrame{};
+                    continue;
                 }
-                if (callbacks_.active_generation &&
-                    queued.frame.flight_state.launch.generation !=
-                        callbacks_.active_generation()) {
+                resolve_emission(queued.frame);
+                if (stopping()) break;
+                if (!current_generation(queued.frame)) {
                     queued = QueuedProcessedFrame{};
                     continue;
                 }
@@ -242,6 +282,7 @@ private:
     FrameOutputHandlers handlers_;
     OutputDispatcherCallbacks callbacks_;
     std::thread worker_;
+    std::atomic<bool> cancelled_{false};
     std::atomic<std::uint64_t> accepted_count_{0};
     std::atomic<std::uint64_t> failure_count_{0};
     std::atomic<bool> healthy_{true};

@@ -77,12 +77,14 @@ std::optional<domain::CommandEmissionSnapshot> wait_for_emission(runtime::Comman
 struct LiveOutputState {
     std::atomic<std::uint64_t> generation{0}, reads{0};
     std::atomic<double> roll{0};
-    std::atomic<bool> available{true},valid{true};
+    std::atomic<bool> available{true},valid{true},launched{true};
     std::atomic<std::int64_t> offset_ns{-1'000'000};
     std::optional<domain::FlightStateSnapshot> snapshot(){
         ++reads;if(!available)return {};
         auto state=command_test_state(runtime::monotonic_timestamp_ns()+offset_ns.load(),generation.load(),roll.load());
-        state.attitude.valid=valid.load();return state;
+        state.attitude.valid=valid.load();
+        state.launch.phase=launched?domain::LaunchPhase::launched:domain::LaunchPhase::pre_launch;
+        return state;
     }
 };
 /** @return 带真实映射、同轴当前时钟的输出绑定。 */

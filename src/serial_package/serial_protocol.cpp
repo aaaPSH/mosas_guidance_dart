@@ -10,7 +10,6 @@
 namespace serial_package {
 namespace {
 
-constexpr double kOverloadScale = 100.0;
 constexpr double kDegreesToRadians = 0.017453292519943295;
 
 void set_error(const std::string& message, std::string* error) {
@@ -72,7 +71,7 @@ bool encode_overload(double value, std::uint8_t* destination,
         return false;
     }
 
-    const double scaled = std::round(value * kOverloadScale);
+    const double scaled = std::round(value * kControlOverloadScale);
     if (!std::isfinite(scaled) ||
         scaled < static_cast<double>(std::numeric_limits<std::int16_t>::min()) ||
         scaled > static_cast<double>(std::numeric_limits<std::int16_t>::max())) {

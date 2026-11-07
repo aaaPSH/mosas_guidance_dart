@@ -178,7 +178,7 @@ Nori SDK 有外部硬件触发模式入口。保留 `ISyncProvider`/`ITriggerEve
 - roll 正方向按绕 `+X` 的右手规则；坐标变换用带方向的 `R_target_from_source`，满足 `v_target = R_target_from_source * v_source`。
 - `CameraFrame C` 到 `D` 保留静态旋转外参，默认单位矩阵；`D_from_C` 是唯一外参方向命名。坐标轴相同不等同于未经标定的内参正确。
 - LOS 角/角速度统一用 rad、rad/s；加速度用 m/s²；过载用以 `g` 为单位的无量纲数值。结构字段名中携带单位和坐标系。
-- 当前下行控制帧布局与 `main` 对齐：原双字节 roll 槽拆为 byte 2 的发射标志和 byte 3 的识别位（当前帧识别到目标为 1，否则为 0，独立于制导有效性）。发射标志按 `launch_detection_mode` 所选判据置 1：默认 `acceleration` 持续加速确认即触发，可选 `two_stage` 还须低比力离架确认；复位后为 0。body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。14-byte 帧长和 CRC 覆盖范围不变，具体判据及布局见 `INTERFACE_CONTRACTS.md`；下位机须同步采用此布局。
+- 当前下行控制帧布局与 `main` 对齐：原双字节 roll 槽拆为 byte 2 的发射标志和 byte 3 的识别位（正常制导取有效期内最近发射后视觉命令的识别结果，独立于制导有效性；固定模式按触发契约）。发射标志按 `launch_detection_mode` 所选判据置 1：默认 `acceleration` 持续加速确认即触发，可选 `two_stage` 还须低比力离架确认；复位后为 0。所有制导模式的周期发射位均跟随当前代际最新 IMU，正常 PNG 不再等待视觉命令提交才置位；正常模式的识别位和非零过载仍由发射后视觉请求驱动。body-z 映射 yaw、body-y 映射 pitch，过载按 0.01 g 量化。14-byte 帧长和 CRC 覆盖范围不变，具体判据及布局见 `INTERFACE_CONTRACTS.md`；下位机须同步采用此布局。
 
 ## 8. 故障与兼容边界
 

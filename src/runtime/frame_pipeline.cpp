@@ -438,6 +438,7 @@ void FramePipeline::processing_worker() noexcept {
                                 *launch_generation, true, result.vision_detection.observation.valid);
                             neutral.source_frame_id = result.frame.source_frame_id;
                             neutral.invalid_reason = result.guidance.invalid_reason;
+                            result.pending_command_emission = command_sink_.track_emission(neutral);
                             sent = command_sink_.try_submit(neutral);
                         }
                     });
@@ -503,17 +504,6 @@ void FramePipeline::processing_worker() noexcept {
                     const auto rate_sample = los_rate_filter_->sample();
                     result.overlay.lever_arm_distance_valid = rate_sample.lever_arm_distance_valid;
                     result.overlay.lever_arm_distance_m = rate_sample.lever_arm_distance_m;
-                    const auto emitted = command_sink_.latest_emission();
-                    if (emitted && emitted->mapping.command.source_frame_id == result.frame.source_frame_id &&
-                        emitted->mapping.command.generation == result.flight_state.launch.generation &&
-                        emitted->mapping.command.source_time.monotonic_ns == result.frame.timestamp_ns) {
-                        result.command_emission = emitted;
-                        result.overlay.body_overload_valid = emitted->mapping.command.valid;
-                        result.overlay.body_overload = emitted->mapping.command.overload_g;
-                        result.overlay.output_attitude_valid = emitted->mapping.trace.attitude.valid;
-                        result.overlay.output_attitude_pitch = emitted->mapping.trace.attitude.pitch_rad;
-                        result.overlay.output_attitude_roll = emitted->mapping.trace.attitude.roll_rad;
-                    }
                     processing_fps_meter_.record();
                     record_timing(TimingStage::processing_total,
                                   std::chrono::steady_clock::now() -
@@ -958,6 +948,7 @@ void FramePipeline::processing_worker() noexcept {
                             attitude_lookup->launch_generation;
                         if (generation_is_current &&
                             !callbacks_.stop_requested()) {
+                            result.pending_command_emission = command_sink_.track_emission(result.guidance.command);
                             sent = command_sink_.try_submit(
                                 result.guidance.command);
                         }

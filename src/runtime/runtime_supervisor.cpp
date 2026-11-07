@@ -178,6 +178,7 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
         binding.output_enabled = [this] { return !stop_requested_.load() && !faulted_.load(); };
         binding.clock_domain = monotonic_clock_->clock_domain();
         binding.maximum_attitude_age_ns = config_.max_imu_age_ns;
+        binding.maximum_source_age_ns = config_.max_camera_age_ns;
         output_bound_ = command_sink_->bind_output(std::move(binding));
     }
 

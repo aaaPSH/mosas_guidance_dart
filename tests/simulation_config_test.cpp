@@ -75,6 +75,7 @@ int main() {
     context.source_time=test::command_test_time(1'000);
     context.latest_state=test::command_test_state(2'000,0,0.7);
     context.emit_time_ns=2'001;context.maximum_attitude_age_ns=50'000'000;context.clock_domain=domain::ClockDomain::monotonic;
+    context.maximum_source_age_ns=cfg.app.guidance.max_camera_age_ns;
     const auto mapped=algorithms.command_mapper->map(command.command.overload_g,context);
     CHECK(mapped.command.valid);
     CHECK_NEAR(mapped.trace.command_overload.value,0.3,1e-12);

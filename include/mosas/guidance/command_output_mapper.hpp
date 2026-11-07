@@ -66,9 +66,12 @@ public:
     /**
      * @brief 映射正常制导请求，或在固定模式触发后生成镖体系调试指令。
      * @param request 弹道系 Y/Z 请求；固定模式不使用其过载值。
-     * @param context 本次发送状态；两种固定模式均使用当前代际的 IMU 发射状态。
-     *        launch_delay 从发射确认时间计时；target_detected 仅由未过期的发射后识别结果首次触发。
-     * @return 精确限幅后的 body 命令；固定模式触发前发送零过载、零识别位并保留 IMU 发射标志。
+     * @param context 本次发送状态；所有模式的发射位均使用当前代际最新 IMU 状态，不依赖视觉请求。
+     *        正常模式仅接受曝光到发送总年龄不超限的发射后视觉请求；
+     *        launch_delay 从发射确认时间计时，target_detected 沿用提交有效期触发，不增加曝光年龄门控。
+     *        overload_step_g 为正时，在两级限幅后量化并向内修正，最终诊断与命令共用同一值。
+     * @return 满足物理上限及输出精度的 body 命令；正常模式无新鲜视觉请求或固定模式未触发时，
+     *         发送零过载和零识别位，发射位跟随 IMU。
      */
     domain::CommandMappingResult map(const domain::BallisticOverloadG& request,
         const domain::CommandOutputContext& context) const noexcept override;

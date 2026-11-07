@@ -13,11 +13,9 @@ namespace {
 
 constexpr char kFlightDataHeader[] =
     "frame_index,frame_timestamp_ns,frame_received_timestamp_ns,"
-    "imu_timestamp_ns,vision_found,target_x,target_y,target_width,"
+    "vision_found,target_x,target_y,target_width,"
     "target_height,target_area,target_center_x,target_center_y,"
-    "imu_acceleration_x_mps2,imu_acceleration_y_mps2,"
-    "imu_acceleration_z_mps2,imu_roll_rad,imu_pitch_rad,imu_yaw_rad,"
-    "servo_control_p_normalized,servo_control_y_normalized,"
+    "imu_roll_rad,imu_pitch_rad,imu_yaw_rad,"
     "imu_attitude_valid,imu_launched,los_inertial_valid,"
     "los_inertial_q_y_rad,los_inertial_q_z_rad,los_inertial_rate_valid,"
     "los_inertial_rate_q_y_rad_s,los_inertial_rate_q_z_rad_s,guidance_valid,"
@@ -142,29 +140,23 @@ std::string TelemetryCsvRecorder::make_csv_row(
     const auto& guidance = frame.guidance;
     const auto& overlay = frame.overlay;
     const auto& box = vision_detection.diagnostics.bounding_box;
-    const auto& sample = flight_state.imu_sample;
     const auto attitude = detail::make_attitude_angles(flight_state.attitude);
     const auto& launch = flight_state.launch;
     const auto* emitted = frame.command_emission ? &*frame.command_emission : nullptr;
     std::ostringstream row;
     row << frame_index << ',' << frame.frame.timestamp_ns << ','
         << frame.frame.received_timestamp_ns << ','
-        << flight_state.time.monotonic_ns << ','
         << (vision_detection.observation.valid ? 1 : 0) << ',' << box.x << ','
         << box.y << ',' << box.width << ',' << box.height << ','
         << vision_detection.diagnostics.area_pixels << ','
         << vision_detection.observation.center.u << ','
-        << vision_detection.observation.center.v << ','
-        << sample.acceleration.x << ',' << sample.acceleration.y << ','
-        << sample.acceleration.z << ',';
+        << vision_detection.observation.center.v << ',';
     if (attitude.valid) {
         row << attitude.roll_rad << ',' << attitude.pitch_rad << ',' << attitude.yaw_rad << ',';
     } else {
         row << ",,,";
     }
-    row << sample.servo_control_p_normalized << ','
-        << sample.servo_control_y_normalized << ','
-        << (attitude.valid ? 1 : 0) << ','
+    row << (attitude.valid ? 1 : 0) << ','
         << (launch.phase == domain::LaunchPhase::launched ? 1 : 0) << ','
         << (overlay.line_of_sight_valid ? 1 : 0) << ','
         << overlay.line_of_sight_q_y.value << ','

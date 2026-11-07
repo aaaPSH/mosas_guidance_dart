@@ -8,6 +8,8 @@
 
 namespace serial_package {
 
+/** @brief 下行过载编码倍率，100 LSB/g；输出映射和编码共用此精度。 */
+constexpr double kControlOverloadScale = 100.0;
 constexpr std::size_t kControlFrameSize = 14;
 constexpr std::size_t kImuFrameSize = 29;
 

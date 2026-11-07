@@ -11,7 +11,7 @@ int lifecycle(){
     app::SerialCommandSink sink(serial.port,{},errors);
     CHECK(!sink.start()); // 未绑定不能启用旧 body 命令路径。
     CHECK(bind_live_output(sink,state));CHECK(sink.start());
-    ControlFrame frame{};CHECK(serial.read_frame(frame));CHECK(frame==encoded(false,false));
+    ControlFrame frame{};CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,false));
     auto command=fresh_command();const auto submitted=SerialClock::now();
     CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(true,true,-0.11,0.23)));
     for(int i=0;i<2;++i){CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,true,-0.11,0.23));}
@@ -19,14 +19,14 @@ int lifecycle(){
     command.valid=false;command.invalid_reason=domain::GuidanceInvalidReason::invalid_rate;
     CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(true,true)));
     command.valid=true;CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(true,true,-0.11,0.23)));
-    state.generation=1;sink.set_active_generation(1);serial.drain();CHECK(serial.read_frame(frame));CHECK(frame==encoded(false,false));
+    state.generation=1;sink.set_active_generation(1);serial.drain();CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,false));
     CHECK(!sink.try_submit(command));
     command.generation=1;command.launched=false;
-    CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(false,false)));
+    CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(true,false)));
     command.launched=true;CHECK(sink.try_submit(command));CHECK(serial.wait_for(encoded(true,true,-0.11,0.23)));
     sink.cancel();CHECK(!sink.try_submit(command));sink.stop();serial.drain();
     const auto reads=state.reads.load();CHECK(!serial.read_frame(frame,30ms));CHECK(state.reads==reads);
-    CHECK(sink.start());CHECK(serial.read_frame(frame));CHECK(frame==encoded(false,false));sink.stop();
+    CHECK(sink.start());CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,false));sink.stop();
     CHECK(sink.diagnostics().send_failure_count==0);
     return 0;
 }
@@ -42,7 +42,7 @@ int sampling(){
     sink.stop();const auto frames=serial.drain();CHECK(frames.size()>=20&&frames.size()<=34);
     bool skipped=false;int previous=0;
     for(const auto& frame:frames){
-        if(frame==encoded(false,false))continue;
+        if(frame==encoded(true,false))continue;
         const int sequence=frame[6]|(static_cast<int>(frame[7])<<8);
         CHECK(sequence>=previous&&sequence>=1&&sequence<=36);
         CHECK(frame==encoded(true,true,0,sequence*0.01));
@@ -50,6 +50,43 @@ int sampling(){
     }
     CHECK(skipped&&previous>=33);CHECK(errors.str().empty());return 0;
 }
+/** @return 正常模式无需视觉命令即可发布发射位，识别后按制导有效性输出并保持原超时时返回 0。 */
+int normal_ascent_without_visual_commands() {
+    SerialFixture serial;
+    CHECK(serial.open());
+    LiveOutputState state;
+    state.launched = false;
+    std::ostringstream errors;
+    app::SerialCommandSink sink(serial.port, {}, errors);
+    CHECK(bind_live_output(sink, state));
+    CHECK(sink.start());
+    CHECK(serial.wait_for(encoded(false, false)));
+    state.launched = true;
+    CHECK(serial.wait_for(encoded(true, false)));
+    for (int i = 0; i < 2; ++i) {
+        ControlFrame frame{};
+        CHECK(serial.read_frame(frame));
+        CHECK(frame == encoded(true, false));
+    }
+    CHECK(sink.diagnostics().submitted_count == 0);
+
+    auto command = fresh_command();
+    command.valid = false;
+    command.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
+    CHECK(sink.try_submit(command));
+    CHECK(serial.wait_for(encoded(true, true)));
+    command = fresh_command();
+    CHECK(sink.try_submit(command));
+    CHECK(serial.wait_for(encoded(true, true, -0.11, 0.23)));
+    CHECK(serial.wait_for(encoded(true, false), 250ms));
+    state.launched = false;
+    CHECK(serial.wait_for(encoded(false, false)));
+    sink.stop();
+    CHECK(sink.diagnostics().send_failure_count == 0);
+    CHECK(errors.str().empty());
+    return 0;
+}
+
 /** @return 串口空邮箱下从实际发射确认计时，且发射前等待不消耗延迟时返回 0。 */
 int launch_delay_without_visual_commands() {
     SerialFixture serial;
@@ -76,6 +113,7 @@ int launch_delay_without_visual_commands() {
     binding.output_enabled = [&] { return enabled.load(); };
     binding.clock_domain = domain::ClockDomain::monotonic;
     binding.maximum_attitude_age_ns = 50'000'000;
+    binding.maximum_source_age_ns = 2'000'000'000;
     CHECK(sink.bind_output(std::move(binding)));
     CHECK(sink.start());
     CHECK(serial.wait_for(encoded(false, false)));
@@ -162,7 +200,7 @@ int cadence(){
     SerialFixture serial;CHECK(serial.open());LiveOutputState state;std::ostringstream errors;
     app::CommandAppConfig config;config.send_rate_hz=10;config.command_timeout_ms=1;
     app::SerialCommandSink sink(serial.port,config,errors);CHECK(bind_live_output(sink,state));CHECK(sink.start());
-    ControlFrame frame{};CHECK(serial.read_frame(frame));CHECK(frame==encoded(false,false));
+    ControlFrame frame{};CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,false));
     const auto submitted=SerialClock::now();CHECK(sink.try_submit(fresh_command()));
     CHECK(serial.read_frame(frame));CHECK(frame==encoded(true,false));CHECK(SerialClock::now()-submitted>=60ms);
     sink.stop();serial.drain();
@@ -174,4 +212,4 @@ int cadence(){
     return 0;
 }
 }
-int main(){CHECK(lifecycle()==0);CHECK(sampling()==0);CHECK(cadence()==0);CHECK(launch_delay_without_visual_commands()==0);CHECK(target_trigger_restart()==0);return 0;}
+int main(){CHECK(lifecycle()==0);CHECK(sampling()==0);CHECK(cadence()==0);CHECK(normal_ascent_without_visual_commands()==0);CHECK(launch_delay_without_visual_commands()==0);CHECK(target_trigger_restart()==0);return 0;}

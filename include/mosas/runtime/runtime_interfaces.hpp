@@ -186,6 +186,14 @@ public:
         return command_output_.latest_emission();
     }
 
+    /** @brief 在 try_submit() 前登记同帧首次输出凭据，不等待实际 I/O。
+     * @param command 即将提交的来源请求；调用方须在同一代际屏障内提交。
+     * @return 处理帧共享的观测凭据；异步 sink 须覆盖此方法设置等待期限。
+     */
+    virtual std::shared_ptr<CommandEmissionReceipt> track_emission(const GuidanceCommand& command) {
+        return command_output_.track_emission(command, std::chrono::steady_clock::duration::zero());
+    }
+
     /**
      * @brief 启动命令输出资源。
      * @return 成功启动时为 true。

@@ -101,6 +101,31 @@ public:
         return true;
     }
 
+    std::shared_ptr<mosas::runtime::CommandEmissionReceipt> track_emission(
+        const mosas::runtime::GuidanceCommand& command) override {
+        return command_output_.track_emission(command, 1s);
+    }
+
+    /** @brief 在测试线程完成已提交请求，模拟处理线程之外的真实异步发送。 */
+    void finish_command(std::size_t index) {
+        mosas::runtime::GuidanceCommand request;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            request = commands_.at(index);
+        }
+        mosas::domain::CommandEmissionSnapshot emission;
+        emission.attempt_id = index + 1;
+        auto& mapped = emission.mapping.command;
+        mapped.source_frame_id = request.source_frame_id;
+        mapped.source_time = request.source_time;
+        mapped.generation = request.generation;
+        mapped.valid = request.valid;
+        mapped.overload_g = {0, 0.25, -0.5};
+        emission.mapping.trace.attitude.valid = true;
+        emission.mapping.trace.attitude.roll_rad.value = 0.3;
+        command_output_.complete(emission, mosas::domain::CommandEmissionDisposition::serial_written);
+    }
+
     void set_active_generation(std::uint64_t generation) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         active_generation_ = generation;
@@ -240,8 +265,9 @@ public:
     bool start() override { return true; }
     void reset() noexcept override {}
 
-    bool record(const mosas::runtime::ProcessedFrame&) override {
+    bool record(const mosas::runtime::ProcessedFrame& frame) override {
         std::lock_guard<std::mutex> lock(mutex_);
+        frames_.push_back(frame);
         ++recorded_count_;
         condition_.notify_all();
         return true;
@@ -259,10 +285,16 @@ public:
                                    });
     }
 
+    mosas::runtime::ProcessedFrame last_frame() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_.back();
+    }
+
 private:
     std::mutex mutex_;
     std::condition_variable condition_;
     std::size_t recorded_count_ = 0;
+    std::vector<mosas::runtime::ProcessedFrame> frames_;
 };
 
 int test_imu_recording_failure_faults_runtime() {
@@ -460,6 +492,7 @@ int main() {
 
     camera_source_control->push(make_frame(1'002'000'000));
     CHECK(command_sink_control->wait_for_count(1));
+    command_sink_control->finish_command(0);
     CHECK(video_control->wait_until_entered());
     CHECK(video_control->still_blocked());
 
@@ -470,8 +503,17 @@ int main() {
                 1'000'000;
         camera_source_control->push(make_frame(frame_timestamp));
         CHECK(command_sink_control->wait_for_count(index + 1));
+        command_sink_control->finish_command(index);
     }
     CHECK(telemetry_control->wait_for_count(5));
+    const auto recorded = telemetry_control->last_frame();
+    CHECK(recorded.command_emission);
+    CHECK(recorded.command_emission->attempt_id == 5);
+    CHECK(recorded.command_emission->mapping.command.source_frame_id == recorded.frame.source_frame_id);
+    CHECK(recorded.command_emission->mapping.command.source_time.monotonic_ns == recorded.frame.timestamp_ns);
+    CHECK(recorded.overlay.body_overload_valid);
+    CHECK_NEAR(recorded.overlay.body_overload.y, 0.25, 1e-12);
+    CHECK_NEAR(recorded.overlay.output_attitude_roll.value, 0.3, 1e-12);
     CHECK(video_control->still_blocked());
     CHECK(!runtime.faulted());
     CHECK(command_sink_control->count() >= 5);

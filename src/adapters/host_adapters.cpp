@@ -184,6 +184,14 @@ bool SerialCommandSink::try_submit(
     return true;
 }
 
+std::shared_ptr<runtime::CommandEmissionReceipt> SerialCommandSink::track_emission(
+    const runtime::GuidanceCommand& command) {
+    const auto period = std::chrono::nanoseconds(1'000'000'000 / config_.send_rate_hz);
+    // 提交可能撞上旧帧的在途写入；为旧写入和本次写入各留一个写超时。
+    const auto write_timeout = std::chrono::milliseconds(port_->config().write_timeout_ms);
+    return command_output_.track_emission(command, period + 2 * write_timeout);
+}
+
 void SerialCommandSink::set_active_generation(
     std::uint64_t generation) noexcept {
     // 与串口写入共用屏障，返回后旧周期的在途写入也已结束。
@@ -256,7 +264,8 @@ void SerialCommandSink::worker_loop() noexcept {
 
             const bool expired = latest.submitted_at == Clock::time_point{} ||
                                  Clock::now() - latest.submitted_at >= timeout;
-            auto attempt = command_output_.prepare(latest.command, generation, expired);
+            auto attempt = command_output_.prepare(
+                latest.command, generation, expired, 1.0 / serial_package::kControlOverloadScale);
             if (cancelled()) return;
             const bool written = send_command(attempt.mapping.command);
             command_output_.complete(std::move(attempt), written ? domain::CommandEmissionDisposition::serial_written

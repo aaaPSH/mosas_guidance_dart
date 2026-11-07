@@ -543,6 +543,9 @@ if(BUILD_TESTING)
 
         add_executable(local_recorders_test tests/local_recorders_test.cpp)
         configure_mosas_target(local_recorders_test)
+        target_include_directories(local_recorders_test PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/runtime
+        )
         target_link_libraries(local_recorders_test PRIVATE mosas_output)
         add_test(NAME local_recorders_test COMMAND local_recorders_test)
 
@@ -600,6 +603,17 @@ if(BUILD_TESTING)
         configure_mosas_target(serial_command_sink_test)
         target_link_libraries(serial_command_sink_test PRIVATE mosas_app)
         add_test(NAME serial_command_sink_test COMMAND serial_command_sink_test)
+
+        add_executable(serial_output_consistency_test
+            tests/serial_output_consistency_test.cpp
+            tests/fakes/fake_camera_source.cpp
+            tests/fakes/fake_imu_source.cpp
+        )
+        configure_mosas_target(serial_output_consistency_test)
+        target_include_directories(serial_output_consistency_test PRIVATE ${PROJECT_SOURCE_DIR}/src/runtime)
+        target_link_libraries(serial_output_consistency_test PRIVATE mosas_app)
+        add_test(NAME serial_output_consistency_test COMMAND serial_output_consistency_test)
+        set_tests_properties(serial_output_consistency_test PROPERTIES TIMEOUT 10)
     endif()
 
     if(TARGET mosas_app_core)

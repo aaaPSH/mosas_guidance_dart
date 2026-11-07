@@ -42,6 +42,7 @@ inline bool bind_test_output(runtime::CommandSink& sink,
     binding.latest_state = std::move(state); binding.now_ns = std::move(clock);
     binding.output_enabled = [] { return true; };
     binding.clock_domain = domain; binding.maximum_attitude_age_ns = 50'000'000;
+    binding.maximum_source_age_ns = 2'000'000'000;
     return sink.bind_output(std::move(binding));
 }
 }

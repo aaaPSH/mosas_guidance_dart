@@ -11,6 +11,8 @@ struct CommandOutputContext {
     bool request_valid = false, launched = false, target_found = false;
     GuidanceInvalidReason invalid_reason = GuidanceInvalidReason::algorithm_rejected;
     std::int64_t emit_time_ns = -1, maximum_attitude_age_ns = 0;
+    std::int64_t maximum_source_age_ns = 0; ///< 正常 PNG 的曝光到发送总年龄上限。
+    double overload_step_g = 0.0; ///< 0 保留连续值，正有限值表示量化步长；串口为 0.01 g。
     ClockDomain clock_domain = ClockDomain::unknown;
     bool expired = false, output_enabled = false;
     std::optional<FlightStateSnapshot> latest_state;

@@ -1,5 +1,6 @@
 #include <mosas/guidance/command_output_mapper.hpp>
 #include "body_vector_test_support.hpp"
+#include "command_output_test_support.hpp"
 #include "test_support.hpp"
 #include <cmath>
 #include <limits>
@@ -18,6 +19,7 @@ mosas::domain::CommandOutputContext context(double roll = 0) {
     c.emit_time_ns = 1'000'200'000;
     c.clock_domain = domain::ClockDomain::monotonic;
     c.maximum_attitude_age_ns = 50'000'000;
+    c.maximum_source_age_ns = 2'000'000'000;
     domain::FlightStateSnapshot state;
     state.time = c.source_time;
     state.time.monotonic_ns = state.time.source_time_ns = 999'900'000;
@@ -28,6 +30,151 @@ mosas::domain::CommandOutputContext context(double roll = 0) {
     state.launch.generation = 3;
     c.latest_state = state;
     return c;
+}
+
+/** @return 正常 PNG 在两种时间轴上检查曝光总年龄，包含边界和无效零请求时返回 0。 */
+int exposure_age_boundaries() {
+    using namespace mosas;
+    guidance::CommandOutputMapper mapper;
+    for (const auto clock : {domain::ClockDomain::monotonic, domain::ClockDomain::simulation}) {
+        auto c = context();
+        c.clock_domain = clock;
+        c.maximum_source_age_ns = 5'000'000;
+        c.source_time = test::command_test_time(1'000'000'000, clock);
+        c.latest_state->launch.transition_time = c.source_time;
+        c.emit_time_ns = c.source_time.monotonic_ns + c.maximum_source_age_ns;
+        c.latest_state->time = test::command_test_time(c.emit_time_ns - 1, clock);
+        c.latest_state->attitude.time = c.latest_state->time;
+        CHECK(mapper.map({0, 0.2, 0}, c).command.valid);
+        ++c.emit_time_ns;
+        const auto stale = mapper.map({0, 0.2, 0}, c).command;
+        CHECK(!stale.valid && stale.launched && !stale.target_found);
+        CHECK(stale.invalid_reason == domain::GuidanceInvalidReason::stale_input);
+        CHECK(stale.overload_g.y == 0 && stale.overload_g.z == 0);
+        c.request_valid = false;
+        c.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
+        CHECK(!mapper.map({}, c).command.target_found); // 首帧无效速率不能保留陈旧识别位。
+        c.request_valid = true;
+        c.source_time = test::command_test_time(c.emit_time_ns + 1, clock);
+        CHECK(!mapper.map({0, 0.2, 0}, c).command.valid);
+        c.source_time = {};
+        CHECK(!mapper.map({0, 0.2, 0}, c).command.target_found);
+    }
+    // 固定模式只按原有触发契约工作，不引入视觉年龄或姿态有效性要求。
+    for (const auto mode : {guidance::GuidanceDebugMode::launch_delay,
+                            guidance::GuidanceDebugMode::target_detected}) {
+        guidance::CommandMappingConfig config;
+        config.debug.mode = mode;
+        config.debug.pitch_overload_g = 0.2;
+        auto c = context();
+        c.maximum_source_age_ns = 1;
+        c.emit_time_ns += 1'000'000'000;
+        c.latest_state->attitude.valid = false;
+        const auto command = guidance::CommandOutputMapper(config).map({}, c).command;
+        CHECK(command.valid && command.target_found);
+        CHECK_NEAR(command.overload_g.y, 0.2, 1e-12);
+    }
+    return 0;
+}
+
+/** @return 量化保持通道选择、坐标诊断及上限，连续输出不损失精度时返回 0。 */
+int quantization_boundaries() {
+    using namespace mosas;
+    guidance::CommandMappingConfig config;
+    config.maximum_command_overload = 0.3;
+    auto c = context();
+    guidance::CommandOutputMapper mapper(config);
+    CHECK_NEAR(mapper.map({0, 0.0049, 0}, c).command.overload_g.y, 0.0049, 1e-12);
+    c.overload_step_g = 0.01;
+    auto mapped = mapper.map({0, 0.0049, -0.0049}, c);
+    CHECK(mapped.command.overload_g.y == 0 && mapped.command.overload_g.z == 0);
+    CHECK(!std::signbit(mapped.command.overload_g.y) && !std::signbit(mapped.command.overload_g.z));
+    mapped = mapper.map({0, 0.005, -0.005}, c);
+    CHECK_NEAR(mapped.command.overload_g.y, 0.01, 1e-12);
+    CHECK_NEAR(mapped.command.overload_g.z, -0.01, 1e-12);
+    mapped = mapper.map({0, 0.075, -0.075}, c);
+    CHECK_NEAR(mapped.command.overload_g.y, 0.08, 1e-12);
+    CHECK_NEAR(mapped.command.overload_g.z, -0.08, 1e-12);
+    mapped = mapper.map({0, 0.299, 0.024}, c);
+    CHECK(mapped.command.valid && mapped.trace.overload_limited);
+    CHECK_NEAR(mapped.command.overload_g.y, 0.29, 1e-12);
+    CHECK_NEAR(mapped.command.overload_g.z, 0.02, 1e-12);
+    CHECK_NEAR(mapped.trace.command_phase.value, std::atan2(0.02, 0.29), 1e-12);
+
+    config.maximum_command_acceleration = 0.21 * config.gravity;
+    config.control_channel = guidance::ControlChannel::pitch;
+    auto rolled = context(std::acos(-1.0) / 4);
+    rolled.overload_step_g = 0.01;
+    mapped = guidance::CommandOutputMapper(config).map({0, 1, 0}, rolled);
+    CHECK(mapped.command.valid && mapped.command.overload_g.z == 0);
+    CHECK_NEAR(mapped.command.overload_g.y, 0.21, 1e-12);
+    CHECK_NEAR(mapped.trace.body_acceleration.y, 0.21 * config.gravity, 1e-12);
+    CHECK_NEAR(mapped.trace.ballistic_acceleration.y, 0.21 * config.gravity / std::sqrt(2.0), 1e-12);
+    CHECK_NEAR(mapped.trace.ballistic_acceleration.z, 0.21 * config.gravity / std::sqrt(2.0), 1e-12);
+    CHECK_NEAR(mapped.trace.command_phase.value, std::acos(-1.0) / 4, 1e-12);
+    for (const double step : {-0.01, std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+        c.overload_step_g = step;
+        CHECK(!mapper.map({0, 0.2, 0}, c).command.valid);
+    }
+    return 0;
+}
+
+/** @return 正常模式独立发布 IMU 发射状态，且只有发射后视觉请求可启用识别和过载时返回 0。 */
+int normal_ascent_without_visual_request() {
+    using namespace mosas;
+    guidance::CommandOutputMapper mapper;
+    auto c = context();
+    c.launched = c.request_valid = c.target_found = false;
+    c.expired = true;
+    c.source_time = {};
+    c.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+    auto result = mapper.map({}, c);
+    CHECK(!result.command.launched && !result.command.target_found && !result.command.valid);
+
+    c.latest_state->launch.phase = domain::LaunchPhase::launched;
+    result = mapper.map({}, c);
+    CHECK(result.command.launched && !result.command.target_found && !result.command.valid);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+    for (int invalid = 0; invalid < 4; ++invalid) {
+        auto rejected = c;
+        if (invalid == 0) rejected.latest_state.reset();
+        if (invalid == 1) rejected.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+        if (invalid == 2) ++rejected.latest_state->launch.generation;
+        if (invalid == 3) ++rejected.generation;
+        const auto command = mapper.map({}, rejected).command;
+        CHECK(!command.launched && !command.target_found && !command.valid);
+        CHECK(command.overload_g.y == 0 && command.overload_g.z == 0);
+    }
+
+    // 发射前的历史识别不能借最新 IMU 状态启用识别位或非零控制。
+    c.request_valid = c.target_found = true;
+    c.expired = false;
+    c.source_time = c.latest_state->time;
+    result = mapper.map({0, 0.25, -0.5}, c);
+    CHECK(result.command.launched && !result.command.target_found && !result.command.valid);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+
+    c.launched = true;
+    c.request_valid = false;
+    c.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
+    result = mapper.map({}, c);
+    CHECK(result.command.launched && result.command.target_found && !result.command.valid);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+    c.request_valid = true;
+    result = mapper.map({0, 0.25, -0.5}, c);
+    CHECK(result.command.launched && result.command.target_found && result.command.valid);
+    CHECK_NEAR(result.command.overload_g.y, 0.25, 1e-12);
+    CHECK_NEAR(result.command.overload_g.z, -0.5, 1e-12);
+
+    c.expired = true;
+    result = mapper.map({0, 0.25, -0.5}, c);
+    CHECK(result.command.launched && !result.command.target_found && !result.command.valid);
+    CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
+    c.latest_state->launch.phase = domain::LaunchPhase::pre_launch;
+    result = mapper.map({0, 0.25, -0.5}, c);
+    CHECK(!result.command.launched && !result.command.target_found && !result.command.valid);
+    return 0;
 }
 
 /** @return 发射前等待不消耗延迟、视觉不提前接管且空邮箱仍能触发时返回 0。 */
@@ -170,6 +317,9 @@ int target_trigger_state_boundaries() {
 
 int main() {
     using namespace mosas;
+    CHECK(exposure_age_boundaries() == 0);
+    CHECK(quantization_boundaries() == 0);
+    CHECK(normal_ascent_without_visual_request() == 0);
     guidance::CommandMappingConfig config;
     config.maximum_command_overload = 10;
     config.maximum_command_acceleration = std::numeric_limits<double>::infinity();

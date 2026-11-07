@@ -34,6 +34,7 @@ mosas::domain::CommandOutputContext output_context() {
     c.request_valid=c.launched=c.target_found=c.output_enabled=true;
     c.latest_state=test::command_test_state(2'000'000);
     c.emit_time_ns=2'000'001;c.maximum_attitude_age_ns=50'000'000;c.clock_domain=domain::ClockDomain::monotonic;
+    c.maximum_source_age_ns=2'000'000'000;
     return c;
 }
 }
@@ -58,7 +59,7 @@ int main() {
     CHECK_NEAR(config.algorithms.los_filter.estimated_target_distance,15.0,1e-12);
     CHECK_NEAR(config.algorithms.command_mapping.maximum_command_overload,0.3,1e-12);
     CHECK_NEAR(config.algorithms.command_mapping.maximum_command_acceleration,9.80665,1e-12);
-    CHECK(config.camera.fps==120 && config.command.send_rate_hz==100 && config.command.command_timeout_ms==100);
+    CHECK(config.camera.fps==120 && config.command.send_rate_hz==100 && config.command.command_timeout_ms==10);
     CHECK(config.algorithms.vision_config.initial_roi.width==640);
     CHECK_NEAR(config.guidance.camera_intrinsics.fx,486.244430986463,1e-9);
     app::AppConfig calibration;

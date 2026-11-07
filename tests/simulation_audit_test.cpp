@@ -49,6 +49,7 @@ int main() {
         context.source_frame_id=1; context.generation=context.active_generation=5;
         context.source_time=input.time; context.request_valid=context.launched=context.target_found=context.output_enabled=true;
         context.clock_domain=domain::ClockDomain::simulation; context.maximum_attitude_age_ns=1000;
+        context.maximum_source_age_ns=1000;
         context.emit_time_ns=200; context.latest_state=test::command_test_state(190,5,0.3,domain::ClockDomain::simulation);
         guidance::CommandMappingConfig config; config.maximum_command_overload=0;
         config.maximum_command_acceleration=meta.maximum_command_acceleration;

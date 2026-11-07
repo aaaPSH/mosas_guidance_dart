@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 
 #include <mosas/runtime/output_ports.hpp>
+#include <mosas/runtime/command_output.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +28,7 @@ struct SinkProbe {
     mutable std::mutex mutex;
     std::condition_variable condition;
     std::vector<std::uint64_t> frame_ids;
+    std::vector<mosas::runtime::ProcessedFrame> frames;
     std::string error;
 
     bool consume(const mosas::runtime::ProcessedFrame& frame) {
@@ -37,6 +39,7 @@ struct SinkProbe {
             condition.wait(lock, [this] { return released || cancelled; });
         }
         frame_ids.push_back(frame.frame.source_frame_id);
+        frames.push_back(frame);
         if (fail) {
             error = "injected sink failure";
         }
@@ -58,6 +61,11 @@ struct SinkProbe {
     std::vector<std::uint64_t> snapshot() const {
         std::lock_guard<std::mutex> lock(mutex);
         return frame_ids;
+    }
+
+    mosas::runtime::ProcessedFrame frame_at(std::size_t index) const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return frames.at(index);
     }
 
     void release() {
@@ -148,6 +156,118 @@ mosas::runtime::OutputDispatcherCallbacks make_callbacks() {
     return callbacks;
 }
 
+/** @brief 延后输出只阻塞观测 worker；各 sink 保留同帧首次真实输出，覆盖、超时和换代不借值。 */
+int test_delayed_emission() {
+    using namespace mosas;
+    runtime::CommandOutputProcessor processor;
+    auto video = std::make_shared<SinkProbe>();
+    auto telemetry = std::make_shared<SinkProbe>();
+    auto visualization = std::make_shared<SinkProbe>();
+    std::atomic<std::uint64_t> generation{0};
+    auto callbacks = make_callbacks();
+    callbacks.active_generation = [&] { return generation.load(); };
+    runtime::OutputDispatcher dispatcher(
+        std::make_unique<FakeVideoRecorder>(video),
+        std::make_unique<FakeTelemetryRecorder>(telemetry),
+        std::make_unique<FakeVisualizationSink>(visualization), nullptr, 8,
+        std::move(callbacks));
+    dispatcher.reset();
+    dispatcher.start();
+
+    auto frame = make_frame(10);
+    frame.frame.timestamp_ns = 100;
+    domain::GuidanceCommand request;
+    request.source_frame_id = 10;
+    request.source_time.monotonic_ns = 100;
+    frame.pending_command_emission = processor.track_emission(request, 1s);
+    CHECK(dispatcher.enqueue(frame));
+    // 在允许等待的区间内，帧不能以尚未发送的快照提前落盘。
+    std::this_thread::sleep_for(10ms);
+    CHECK(video->snapshot().empty());
+    CHECK(telemetry->snapshot().empty());
+    CHECK(visualization->snapshot().empty());
+
+    domain::CommandEmissionSnapshot emission;
+    emission.attempt_id = 17;
+    emission.mapping.command.source_frame_id = 10;
+    emission.mapping.command.source_time = request.source_time;
+    emission.mapping.command.valid = true;
+    emission.mapping.command.overload_g = {0, 0.25, -0.5};
+    emission.mapping.trace.attitude.valid = true;
+    emission.mapping.trace.attitude.roll_rad.value = 0.3;
+    emission.mapping.trace.attitude.pitch_rad.value = -0.2;
+    processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+    // 即使 latest 已被下一次重发覆盖，各 sink 仍应取得同一个首次输出。
+    emission.attempt_id = 18;
+    emission.mapping.command.overload_g.y = 9;
+    processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+    for (const auto& probe : {video, telemetry, visualization}) {
+        CHECK(probe->wait_for_count(1));
+        const auto recorded = probe->frame_at(0);
+        CHECK(recorded.command_emission);
+        CHECK(recorded.command_emission->attempt_id == 17);
+        CHECK(recorded.overlay.body_overload_valid);
+        CHECK_NEAR(recorded.overlay.body_overload.y, 0.25, 1e-12);
+        CHECK_NEAR(recorded.overlay.output_attitude_roll.value, 0.3, 1e-12);
+        CHECK_NEAR(recorded.overlay.output_attitude_pitch.value, -0.2, 1e-12);
+        CHECK(!recorded.pending_command_emission);
+    }
+
+    // 来源帧 11 被 mailbox 覆盖，12 实际发送；两帧都应完成观测，不错配。
+    auto skipped = make_frame(11);
+    skipped.frame.timestamp_ns = 100;
+    request.source_frame_id = 11;
+    skipped.pending_command_emission = processor.track_emission(request, 1s);
+    auto sent = make_frame(12);
+    sent.frame.timestamp_ns = 100;
+    request.source_frame_id = 12;
+    sent.pending_command_emission = processor.track_emission(request, 1s);
+    CHECK(dispatcher.enqueue(skipped));
+    CHECK(dispatcher.enqueue(sent));
+    emission.attempt_id = 19;
+    emission.mapping.command.source_frame_id = 12;
+    processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+    CHECK(telemetry->wait_for_count(3));
+    CHECK(!telemetry->frame_at(1).command_emission);
+    CHECK(!telemetry->frame_at(1).overlay.body_overload_valid);
+    CHECK(telemetry->frame_at(2).command_emission->attempt_id == 19);
+
+    auto expired = make_frame(13);
+    request.source_frame_id = 13;
+    expired.pending_command_emission = processor.track_emission(request, 5ms);
+    CHECK(dispatcher.enqueue(expired));
+    CHECK(telemetry->wait_for_count(4));
+    CHECK(!telemetry->frame_at(3).command_emission);
+
+    auto stale = make_frame(14);
+    request.source_frame_id = 14;
+    stale.pending_command_emission = processor.track_emission(request, 10s);
+    CHECK(dispatcher.enqueue(stale));
+    generation = 1;
+    processor.invalidate();
+    auto current = make_frame(15);
+    current.flight_state.launch.generation = 1;
+    CHECK(dispatcher.enqueue(current));
+    CHECK(telemetry->wait_for_count(5));
+    CHECK(telemetry->frame_at(4).frame.source_frame_id == 15);
+    CHECK(!telemetry->frame_at(4).command_emission);
+
+    // 取消必须打断长等待，不能等到凭据期限到达才退出。
+    auto waiting = make_frame(16);
+    waiting.flight_state.launch.generation = 1;
+    request.source_frame_id = 16;
+    request.generation = 1;
+    waiting.pending_command_emission = processor.track_emission(request, 10s);
+    CHECK(dispatcher.enqueue(waiting));
+    const auto cancelled_at = std::chrono::steady_clock::now();
+    dispatcher.cancel();
+    dispatcher.close_queue();
+    dispatcher.join();
+    CHECK(std::chrono::steady_clock::now() - cancelled_at < 500ms);
+    CHECK(dispatcher.stop_sink().empty());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -228,5 +348,6 @@ int main() {
     failing_dispatcher.close_queue();
     failing_dispatcher.join();
     CHECK(failing_dispatcher.stop_sink() == "injected sink failure");
+    CHECK(test_delayed_emission() == 0);
     return 0;
 }
