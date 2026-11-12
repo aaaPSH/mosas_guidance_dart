@@ -42,6 +42,7 @@ std::vector<std::string> csv_columns(const std::string& row) {
     std::vector<std::string> columns;
     std::string value;
     while (std::getline(input, value, ',')) columns.push_back(value);
+    if (row.back() == ',') columns.emplace_back();
     return columns;
 }
 
@@ -207,6 +208,9 @@ int quantized_output() {
         CHECK_NEAR(emitted->mapping.command.overload_g.z, z, 1e-12);
         CHECK_NEAR(emitted->mapping.trace.body_overload.y, y, 1e-12);
         CHECK_NEAR(emitted->mapping.trace.body_overload.z, z, 1e-12);
+        CHECK(emitted->mapping.trace.unlimited_body_overload);
+        CHECK_NEAR(emitted->mapping.trace.unlimited_body_overload->y, test.y, 1e-12);
+        CHECK_NEAR(emitted->mapping.trace.unlimited_body_overload->z, test.z, 1e-12);
         CHECK_NEAR(emitted->mapping.trace.command_overload.value, std::hypot(y, z), 1e-12);
         CHECK(std::hypot(y, z) <= test.maximum_g);
         CHECK(std::hypot(y, z) * mapping.gravity <= test.maximum_acceleration);
@@ -223,7 +227,10 @@ int quantized_output() {
     for (const auto& emitted : emissions) {
         CHECK(std::getline(csv, row));
         const auto columns = csv_columns(row);
-        CHECK(columns.size() == 35);
+        CHECK(columns.size() == 38);
+        CHECK(columns[35].empty());
+        CHECK_NEAR(std::stod(columns[36]), emitted.mapping.trace.unlimited_body_overload->y, 1e-6);
+        CHECK_NEAR(std::stod(columns[37]), emitted.mapping.trace.unlimited_body_overload->z, 1e-6);
         CHECK_NEAR(std::stod(columns[24]), emitted.mapping.command.overload_g.y, 1e-12);
         CHECK_NEAR(std::stod(columns[25]), emitted.mapping.command.overload_g.z, 1e-12);
         CHECK_NEAR(std::stod(columns[26]), emitted.mapping.trace.command_overload.value, 1e-6);

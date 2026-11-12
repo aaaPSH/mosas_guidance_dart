@@ -24,6 +24,10 @@ domain::GuidanceOutput BallisticPngGuidance::calculate(const domain::GuidanceInp
     result.command.source_frame_id = input.source_frame_id;
     result.command.source_time = input.time;
     result.command.overload_g = result.diagnostics.requested_overload = trace.requested_overload;
+    if (trace.valid) {
+        result.diagnostics.compensated_pitch_rate =
+            domain::Quantity<domain::RadiansPerSecond>{trace.compensated_elevation_rate_rad_s};
+    }
     if (observer_) observer_(input, trace);
     return result;
 }

@@ -4,6 +4,7 @@
 #include <mosas/domain/contracts.hpp>
 
 #include <cstdint>
+#include <optional>
 
 namespace mosas::domain {
 
@@ -89,9 +90,11 @@ struct GuidanceInput {
     VectorLosEstimate vector_los{};
 };
 
-/** @brief 计算阶段只记录原始弹道请求；最终输出诊断由发送端提供。 */
+/** @brief 计算阶段的原始弹道请求及可选速率诊断；最终输出诊断由发送端提供。 */
 struct GuidanceDiagnostics {
     BallisticOverloadG requested_overload{};
+    /** @brief 同帧实际计算的抛物线基准补偿后俯仰 LOS 速率；未计算时为空，单位 rad/s。 */
+    std::optional<Quantity<RadiansPerSecond>> compensated_pitch_rate;
 };
 
 struct GuidanceOutput {

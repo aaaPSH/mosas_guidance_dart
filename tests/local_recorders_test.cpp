@@ -171,11 +171,14 @@ int main() {
         CHECK(lines[0].find("frame_index,frame_timestamp_ns,") == 0);
         CHECK(lines[0].find("command_phase_rad,source_frame_id,output_present") !=
               std::string::npos);
-        CHECK(lines[0].substr(lines[0].rfind(',') + 1) == "output_mapping_timestamp_ns");
+        CHECK(lines[0].substr(lines[0].rfind(',') + 1) == "body_overload_z_unlimited_g");
         const auto cols1 = split_csv(lines[1]);
         const auto cols2 = split_csv(lines[2]);
-        CHECK(cols1.size() == 35);
-        CHECK(cols2.size() == 35);
+        CHECK(cols1.size() == 38);
+        CHECK(cols2.size() == 38);
+        CHECK(cols1[35].empty() && cols2[35].empty());
+        CHECK(cols1[36].empty() && cols1[37].empty());
+        CHECK(cols2[36].empty() && cols2[37].empty());
         CHECK(cols1[28] == "101");
         CHECK(cols2[28] == "102");
         CHECK(cols1[29] == "0");
@@ -228,8 +231,8 @@ int main() {
         CHECK(lines.size() == 3);
         const auto cols1 = split_csv(lines[1]);
         const auto cols2 = split_csv(lines[2]);
-        CHECK(cols1.size() == 35);
-        CHECK(cols2.size() == 35);
+        CHECK(cols1.size() == 38);
+        CHECK(cols2.size() == 38);
         CHECK(cols1[28] == "201");
         CHECK(cols2[28] == "202");
     }
@@ -340,6 +343,7 @@ int main() {
         emission.mapping.command.source_frame_id = 501;
         emission.mapping.trace.valid = true;
         emission.mapping.trace.body_overload = {0.0, 0.25, -0.35};
+        emission.mapping.trace.unlimited_body_overload = domain::DartOverloadG{0, 1.2500000000000002, -1.75};
         emission.mapping.trace.command_overload.value = 0.43;
         emission.mapping.trace.command_phase.value = -0.95;
         emission.mapping.trace.attitude.time.monotonic_ns = 5'000'000;
@@ -347,16 +351,25 @@ int main() {
         frame.command_emission = emission;
 
         CHECK(telemetry.record(frame));
+        auto zero_frame = frame;
+        zero_frame.command_emission->mapping.trace.unlimited_body_overload = domain::DartOverloadG{};
+        zero_frame.command_emission->mapping.trace.body_overload = {};
+        zero_frame.command_emission->mapping.trace.command_overload = {};
+        zero_frame.command_emission->mapping.trace.command_phase = {};
+        CHECK(telemetry.record(zero_frame));
         telemetry.stop();
         CHECK(telemetry.last_error().empty());
 
         const auto csv_files = find_extension(temporary_directory.path(), ".csv");
         CHECK(csv_files.size() == 1);
         const auto lines = read_lines(csv_files[0]);
-        CHECK(lines.size() == 2);
+        CHECK(lines.size() == 3);
         const auto header = split_csv(lines[0]);
         const auto cols = split_csv(lines[1]);
-        CHECK(cols.size() == 35);
+        CHECK(cols.size() == 38);
+        CHECK(header[35] == "png_compensated_pitch_rate_rad_s");
+        CHECK(header[36] == "body_overload_y_unlimited_g");
+        CHECK(header[37] == "body_overload_z_unlimited_g");
         CHECK(header.size() == cols.size());
         for (const auto* removed : {"imu_timestamp_ns", "imu_acceleration_",
                                     "imu_angular_velocity_", "servo_control_"}) {
@@ -389,6 +402,44 @@ int main() {
         CHECK(cols[32] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
         CHECK(cols[33] == "5000000");
         CHECK(cols[34] == "5000200");
+        CHECK(std::stod(cols[36]) == emission.mapping.trace.unlimited_body_overload->y);
+        CHECK(cols[37] == "-1.75");
+        const auto zero_columns = split_csv(lines[2]);
+        CHECK(zero_columns[36] == "0" && zero_columns[37] == "0");
+    }
+
+    // 计算诊断不依赖是否下发；未计算、无效与有效零速率必须区分。
+    {
+        TemporaryDirectory temporary_directory;
+        auto session = std::make_shared<output::LocalRecordingSession>(
+            make_config(temporary_directory.path() / "pitch_rate.avi",
+                        output::LocalRecordingMode::continuous));
+        output::TelemetryCsvRecorder telemetry(session);
+        CHECK(telemetry.start());
+        auto frame = make_frame(601, 6'000'000);
+        frame.guidance.valid = true;
+        frame.guidance.diagnostics.compensated_pitch_rate =
+            domain::Quantity<domain::RadiansPerSecond>{-0.125};
+        CHECK(telemetry.record(frame));
+        frame.guidance.valid = false;
+        CHECK(telemetry.record(frame));
+        frame.guidance.valid = true;
+        frame.guidance.diagnostics.compensated_pitch_rate->value = 0.0;
+        CHECK(telemetry.record(frame));
+        telemetry.stop();
+        CHECK(telemetry.last_error().empty());
+        const auto files = find_extension(temporary_directory.path(), ".csv");
+        CHECK(files.size() == 1);
+        const auto lines = read_lines(files.front());
+        CHECK(lines.size() == 4);
+        const auto valid = split_csv(lines[1]);
+        const auto invalid = split_csv(lines[2]);
+        const auto zero = split_csv(lines[3]);
+        CHECK(valid.size() == 38 && invalid.size() == 38 && zero.size() == 38);
+        CHECK(valid[29] == "0");
+        CHECK(valid[35] == "-0.125");
+        CHECK(invalid[35].empty());
+        CHECK(zero[35] == "0");
     }
 
     // 覆盖真实 CSV 链路：先入队后异步完成发送，重发不得覆盖首次输出。
@@ -435,7 +486,9 @@ int main() {
         emission.mapping.command.source_frame_id = request.source_frame_id;
         emission.mapping.command.source_time = request.source_time;
         emission.mapping.command.valid = true;
+        emission.mapping.trace.valid = true;
         emission.mapping.trace.body_overload = {0, 0.25, -0.5};
+        emission.mapping.trace.unlimited_body_overload = domain::DartOverloadG{0, 3, -4};
         emission.mapping.trace.command_overload.value = 0.56;
         emission.mapping.trace.command_phase.value = -1.1;
         emission.mapping.trace.attitude.time.monotonic_ns = 6'000'100;
@@ -443,6 +496,7 @@ int main() {
         processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
         emission.attempt_id = 18;
         emission.mapping.trace.body_overload.y = 9;
+        emission.mapping.trace.unlimited_body_overload->y = 9;
         processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
 
         // 无发送不能借用上一帧结果；实际发送的无效零指令则应记录为零。
@@ -472,7 +526,7 @@ int main() {
         const auto sent = split_csv(lines[1]);
         const auto missing = split_csv(lines[2]);
         const auto zero = split_csv(lines[3]);
-        CHECK(sent.size() == 35 && missing.size() == 35 && zero.size() == 35);
+        CHECK(sent.size() == 38 && missing.size() == 38 && zero.size() == 38);
         CHECK(sent[22] == "1");
         CHECK(sent[23] == "0" && sent[24] == "0.25" && sent[25] == "-0.5");
         CHECK(sent[26] == "0.56" && sent[27] == "-1.1");
@@ -480,8 +534,9 @@ int main() {
         CHECK(sent[31] == "17");
         CHECK(sent[32] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
         CHECK(sent[33] == "6000100" && sent[34] == "6000200");
+        CHECK(sent[36] == "3" && sent[37] == "-4");
         CHECK(missing[28] == "602" && missing[29] == "0");
-        for (const auto index : {23, 24, 25, 26, 27, 30, 31, 32, 33, 34}) {
+        for (const auto index : {23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 36, 37}) {
             CHECK(missing[index].empty());
         }
         CHECK(zero[28] == "603" && zero[29] == "1" && zero[30] == "0");
@@ -490,6 +545,7 @@ int main() {
         }
         CHECK(zero[31] == "19");
         CHECK(zero[33] == "6200100" && zero[34] == "6200200");
+        CHECK(zero[36].empty() && zero[37].empty());
     }
 
     return 0;

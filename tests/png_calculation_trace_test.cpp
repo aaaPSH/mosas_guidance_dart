@@ -8,7 +8,11 @@ int main() {
     domain::GuidanceInput input;
     input.vector_los={true,{0.8,0.6,0},{-0.12,0.16,0.08}};
     input.speed_mps.value=50;
-    CHECK(law.calculate(input).valid);
+    const auto result = law.calculate(input);
+    CHECK(result.valid);
+    CHECK(result.diagnostics.compensated_pitch_rate.has_value());
+    CHECK_NEAR(result.diagnostics.compensated_pitch_rate->value,
+               trace.compensated_elevation_rate_rad_s, 1e-12);
     CHECK_NEAR(trace.inertial_los_elevation_rad,std::asin(0.6),1e-12);
     CHECK_NEAR(trace.measured_elevation_rate_rad_s,0.2,1e-12);
     CHECK_NEAR(trace.measured_lateral_rate_rad_s,0.08,1e-12);
@@ -16,7 +20,9 @@ int main() {
     CHECK_NEAR(trace.compensated_elevation_rate_rad_s,0.2+9.80665*0.8/100,1e-12);
     CHECK_NEAR(trace.requested_overload.y,3*50/9.80665*(0.2+9.80665*0.8/100),1e-12);
     input.vector_los.valid=false;
-    CHECK(!law.calculate(input).valid);
+    const auto invalid = law.calculate(input);
+    CHECK(!invalid.valid);
+    CHECK(!invalid.diagnostics.compensated_pitch_rate.has_value());
     CHECK(!trace.valid && trace.requested_overload.y==0 && trace.requested_overload.z==0);
     return 0;
 }

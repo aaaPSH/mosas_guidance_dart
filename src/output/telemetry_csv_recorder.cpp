@@ -3,6 +3,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <locale>
 #include <sstream>
 #include <system_error>
@@ -21,7 +23,8 @@ constexpr char kFlightDataHeader[] =
     "los_inertial_rate_q_y_rad_s,los_inertial_rate_q_z_rad_s,guidance_valid,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
     "command_overload_g,command_phase_rad,source_frame_id,"
-    "output_present,output_valid,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns\n";
+    "output_present,output_valid,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns,"
+    "png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g\n";
 
 }  // namespace
 
@@ -175,6 +178,18 @@ std::string TelemetryCsvRecorder::make_csv_row(
         << static_cast<int>(emitted->disposition) << ',' << emitted->mapping.trace.attitude.time.monotonic_ns << ','
         << emitted->mapping.trace.emit_time_ns;
     else row << ",,,,";
+    row << ',';
+    if (guidance.valid && guidance.diagnostics.compensated_pitch_rate) {
+        row << guidance.diagnostics.compensated_pitch_rate->value;
+    }
+    row << ',';
+    if (emitted && emitted->mapping.trace.unlimited_body_overload) {
+        const auto& unlimited = *emitted->mapping.trace.unlimited_body_overload;
+        row << std::setprecision(std::numeric_limits<double>::max_digits10)
+            << unlimited.y << ',' << unlimited.z;
+    } else {
+        row << ',';
+    }
     row << '\n';
     return row.str();
 }

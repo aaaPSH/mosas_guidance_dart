@@ -31,6 +31,8 @@ struct CommandMappingTrace {
     AttitudeState attitude{};
     std::int64_t emit_time_ns = -1;
     BallisticOverloadG raw_navigation_overload{}, after_overload_limit{};
+    /** @brief 同次映射完成坐标转换和通道选择后、两级限幅及量化前的机体系过载；无有效映射时为空。 */
+    std::optional<DartOverloadG> unlimited_body_overload;
     AccelerationBallisticMps2 ballistic_acceleration{};
     DartOverloadG body_overload{};
     AccelerationDartMps2 body_acceleration{};

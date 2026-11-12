@@ -495,7 +495,7 @@ n_z = N_z * V_actual * q_dot_z_effective / g0
 
 `V_actual` 使用曝光时刻同步的动态速度。姿态转换和杆臂补偿已在滤波之前完成，不再重复施加机体转动补偿。若测量速率恰好等于自然抛物线速率且横向速率为零，原始弹道请求为零，输出端不叠加保持高度的比力。
 
-`PngCalculationTrace` 记录惯性仰角、测量速率、抛物线基准和补偿后速率；CSV 与 overlay 不扣除该基准。发送端使用最新姿态将原始弹道请求映射到镖体系，再按 `control_channel` 选轴及限幅。速度、视线或最新姿态无效时拒绝输出，不用旧公式回退。
+`PngCalculationTrace` 记录惯性仰角、测量速率、抛物线基准和补偿后速率。CSV 的 `los_inertial_rate_*` 与 overlay 不扣除该基准；逐帧 CSV 追加 `png_compensated_pitch_rate_rad_s`，直接记录同帧有效计算结果中的补偿后俯仰速率（rad/s），不重新计算。未计算、计算无效或算法未提供该诊断时留空；有效零速率记录为 0。此计算诊断独立于 `output_present`，没有输出快照不抹去有效的计算结果。发送端使用最新姿态将原始弹道请求映射到镖体系，再按 `control_channel` 选轴及限幅。速度、视线或最新姿态无效时拒绝输出，不用旧公式回退。
 
 ### 6.3 补偿后的惯性系双通道视线角滤波
 
@@ -537,7 +537,11 @@ q_z = atan2(z_N.z, z_N.x)
 
 处理顺序为：原制导律及抛物线补偿 → 镖体系指令 → 清零关闭通道 → 过载/加速度限幅。PNG 必须在 roll 转换之后选择镖体系通道，不能直接清零弹道系分量。单通道模式只限制启用轴的绝对指令，关闭轴不消耗额度；上限数值仍沿用所选制导律的现有配置，不增加增益或提高上限。通道选择不是从串口发送前简单裁剪已经合成限幅的双通道结果。
 
-姿态、LOS/滤波和输入有效性检查仍共用完整三维状态；单通道不意味着改成二维几何，也不忽略关闭方向上的非法输入。命令、body 诊断、叠加显示和遥测反映选择后的实际指令；弹道系诊断是同一指令的坐标转换，可能仍有两个非零分量。PNG trace 的 raw 字段保留选择前的原始弹道系结果，`after_overload_limit` 表示选择和过载限幅后、加速度限幅前的弹道系表达，最终 body/navigation 字段与命令一致。串口字节布局、发射/识别标志和失效清零策略不变；仿真复用同一原配置和算法工厂。
+姿态、LOS/滤波和输入有效性检查仍共用完整三维状态；单通道不意味着改成二维几何，也不忽略关闭方向上的非法输入。命令、body 诊断、叠加显示和遥测反映选择后的实际指令；弹道系诊断是同一指令的坐标转换，可能仍有两个非零分量。PNG trace 的 raw 字段保留选择前的原始弹道系结果，`after_overload_limit` 表示选择和过载限幅后、加速度限幅前的弹道系表达，最终 body/navigation 字段与命令一致。
+
+`CommandMappingTrace::unlimited_body_overload` 保存同次发送映射完成机体系转换和 `control_channel` 选择后、两级物理限幅及协议量化前的 P/Y 请求，正常 PNG 与固定指令模式均提供。它只用于诊断，不参与编码；无有效映射时为空，有效零请求与缺失记录明确区分。逐帧 CSV 追加 `body_overload_y_unlimited_g,body_overload_z_unlimited_g` 两列，直接采用该快照，保留 double 往返精度；无快照或诊断未提供时两列同时留空。它们与已有的最终 `body_overload_y_g,body_overload_z_g` 共用 `output_mapping_timestamp_ns`，读取方不得混入弹道系量或从限幅后值反推。
+
+串口字节布局、发射/识别标志和失效清零策略不变；仿真复用同一原配置和算法工厂。
 
 ## 7. 控制和观测输出接口
 
@@ -604,7 +608,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，速率有效位为 0；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
 
-逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。逐帧 CSV 共 35 列，删除与全流程 IMU CSV 重复的 `imu_acceleration_x_mps2,imu_acceleration_y_mps2,imu_acceleration_z_mps2,servo_control_p_normalized,servo_control_y_normalized`，同时删除与曝光帧时间恒等的 `imu_timestamp_ns`，统一通过 `frame_timestamp_ns` 关联 IMU 时间轴。保留曝光姿态三轴角、姿态有效位和发射状态，这些是处理状态而非原始 IMU 记录。本次 CSV 字段结构不保留旧别名，读取方须按表头取列。
+逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。逐帧 CSV 共 38 列（末三列为 `png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g`），删除与全流程 IMU CSV 重复的 `imu_acceleration_x_mps2,imu_acceleration_y_mps2,imu_acceleration_z_mps2,servo_control_p_normalized,servo_control_y_normalized`，同时删除与曝光帧时间恒等的 `imu_timestamp_ns`，统一通过 `frame_timestamp_ns` 关联 IMU 时间轴。保留曝光姿态三轴角、姿态有效位和发射状态，这些是处理状态而非原始 IMU 记录。本次 CSV 字段结构不保留旧别名，读取方须按表头取列。
 
 全量原始 IMU CSV 不变，保留三轴加速度、三轴角速度及舵机 P/Y 参数，以及 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。
 
@@ -626,7 +630,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 - **接口与队列**：`output_contracts_test` 检查窄端口与 disabled-neutral 诊断；`multi_output_dispatcher_test` 验证阻塞 sink 不影响其他帧 worker、队列丢弃和错误按 sink 隔离。
 - **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
-- **观测坐标与时间**：`runtime_supervisor_test` 验证建基准帧的导航系角度及有效滤波帧的同源 LOS 角度/速率；`output_mapping_test` 验证曝光矩阵的三轴姿态提取、时间插值和俯仰极点约定；`local_recorders_test` 验证 35 列 CSV 表头不含原始 IMU 重复项、无效姿态留空及 CSV 与显示数据一致，并通过真实遥测 worker 和 CSV writer 验证异步发送回执、首次输出不被重发覆盖、未发送留空与已发送零指令的区别。
+- **观测坐标与时间**：`runtime_supervisor_test` 验证建基准帧的导航系角度及有效滤波帧的同源 LOS 角度/速率；`output_mapping_test` 验证曝光矩阵的三轴姿态提取、时间插值和俯仰极点约定；`local_recorders_test` 验证 38 列 CSV 表头不含原始 IMU 重复项、无效姿态留空、独立于输出快照的补偿速率、限幅前 P/Y 精度与有效零值，以及 CSV 与显示数据一致，并通过真实遥测 worker 和 CSV writer 验证异步发送回执、首次输出不被重发覆盖、未发送留空与已发送零指令的区别。
 - **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
 - **发射触发**：`launch_detection_test`、`attitude_adapter_test` 验证默认加速触发、可选两阶段确认、误触发拒绝、超时边界、断流/异常样本及复位重校准；`body_vector_runtime_test` 在两种模式及两种 PN 下验证触发前不建立飞行滤波状态、跨触发边界不下发、使用触发后的动态速度；默认算法和仿真测试覆盖参数解析、缺省/非法模式、确认时刻元数据及两种模式下真实 Socket 录制链路。

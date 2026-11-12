@@ -77,6 +77,61 @@ int exposure_age_boundaries() {
     return 0;
 }
 
+/** @return 限幅前诊断使用同次映射的机体系选轴结果，不受两级限幅、量化或后续映射影响时返回 0。 */
+int unlimited_body_diagnostics() {
+    using namespace mosas;
+    guidance::CommandMappingConfig config;
+    config.maximum_command_overload = 0.3;
+    config.maximum_command_acceleration = 0.2 * config.gravity;
+    auto c = context(std::acos(-1.0) / 2);
+    c.overload_step_g = 0.01;
+    for (const auto channel : {guidance::ControlChannel::both,
+                              guidance::ControlChannel::pitch,
+                              guidance::ControlChannel::yaw}) {
+        config.control_channel = channel;
+        const auto mapped = guidance::CommandOutputMapper(config).map({0, 3, -4}, c);
+        CHECK(mapped.command.valid && mapped.trace.unlimited_body_overload);
+        const auto& raw = *mapped.trace.unlimited_body_overload;
+        CHECK(raw.x == 0);
+        CHECK_NEAR(raw.y, channel == guidance::ControlChannel::yaw ? 0 : -4, 1e-12);
+        CHECK_NEAR(raw.z, channel == guidance::ControlChannel::pitch ? 0 : -3, 1e-12);
+        CHECK(std::hypot(mapped.command.overload_g.y, mapped.command.overload_g.z) <= 0.2);
+    }
+    config.control_channel = guidance::ControlChannel::both;
+    guidance::CommandOutputMapper mapper(config);
+    c = context();
+    c.overload_step_g = 0.01;
+    const auto rounded = mapper.map({0, 0.0049, -0.0049}, c);
+    CHECK(rounded.trace.unlimited_body_overload);
+    CHECK_NEAR(rounded.trace.unlimited_body_overload->y, 0.0049, 1e-12);
+    CHECK_NEAR(rounded.trace.unlimited_body_overload->z, -0.0049, 1e-12);
+    CHECK(rounded.command.overload_g.y == 0 && rounded.command.overload_g.z == 0);
+    const auto zero = mapper.map({}, c);
+    CHECK(zero.command.valid && zero.trace.unlimited_body_overload);
+    CHECK(zero.trace.unlimited_body_overload->y == 0 && zero.trace.unlimited_body_overload->z == 0);
+    c.overload_step_g = -0.01; // 已完成旋转但量化失败，也不能留下有效的限幅前诊断。
+    const auto rejected = mapper.map({0, 3, -4}, c);
+    CHECK(!rejected.command.valid && !rejected.trace.unlimited_body_overload);
+    c = context();
+    c.request_valid = false;
+    CHECK(!mapper.map({0, 3, -4}, c).trace.unlimited_body_overload);
+
+    for (const auto mode : {guidance::GuidanceDebugMode::launch_delay,
+                            guidance::GuidanceDebugMode::target_detected}) {
+        config.debug.mode = mode;
+        config.debug.trigger_delay_ms = 0;
+        config.debug.pitch_overload_g = 3;
+        config.debug.yaw_overload_g = -4;
+        config.control_channel = guidance::ControlChannel::pitch;
+        const auto mapped = guidance::CommandOutputMapper(config).map({0, 9, 8}, context());
+        CHECK(mapped.command.valid && mapped.trace.unlimited_body_overload);
+        CHECK(mapped.trace.unlimited_body_overload->y == 3);
+        CHECK(mapped.trace.unlimited_body_overload->z == 0);
+        CHECK_NEAR(mapped.command.overload_g.y, 0.2, 1e-12);
+    }
+    return 0;
+}
+
 /** @return 量化保持通道选择、坐标诊断及上限，连续输出不损失精度时返回 0。 */
 int quantization_boundaries() {
     using namespace mosas;
@@ -318,6 +373,7 @@ int target_trigger_state_boundaries() {
 int main() {
     using namespace mosas;
     CHECK(exposure_age_boundaries() == 0);
+    CHECK(unlimited_body_diagnostics() == 0);
     CHECK(quantization_boundaries() == 0);
     CHECK(normal_ascent_without_visual_request() == 0);
     guidance::CommandMappingConfig config;

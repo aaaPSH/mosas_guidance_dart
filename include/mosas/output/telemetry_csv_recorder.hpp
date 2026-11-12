@@ -46,10 +46,10 @@ private:
     bool record_continuous(const runtime::ProcessedFrame& frame);
     bool record_launch_window(const runtime::ProcessedFrame& frame);
     /**
-     * @brief 序列化当前帧的导航惯性系 LOS、曝光三轴姿态和匹配的输出尝试。
+     * @brief 序列化同帧惯性系 LOS、补偿速率、曝光姿态和匹配的输出尝试。
      * @param frame_index 本录制文件内的递增帧序号。
      * @param frame 不可变的处理快照；姿态须已插值到相机曝光时刻。
-     * @return 与 CSV 表头匹配的 35 列及换行符；无效姿态及缺失输出对应列留空。
+     * @return 与 CSV 表头匹配的 38 列及换行符；无效姿态、缺失输出及未计算的诊断留空。
      * @note 原始加速度和舵机反馈仅由全流程 IMU CSV 记录；曝光时刻取 frame_timestamp_ns。
      */
     std::string make_csv_row(std::uint64_t frame_index,

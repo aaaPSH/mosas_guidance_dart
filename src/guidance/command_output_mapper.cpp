@@ -115,6 +115,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
         command.invalid_reason = reason;
         command.overload_g = {};
         trace.valid = false;
+        trace.unlimited_body_overload.reset();
         trace.body_overload = {};
         trace.body_acceleration = {};
         trace.ballistic_acceleration = {};
@@ -198,6 +199,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
         double y = config_.debug.pitch_overload_g;
         double z = config_.debug.yaw_overload_g;
         select_control_channel(config_.control_channel, y, z);
+        trace.unlimited_body_overload = domain::DartOverloadG{0, y, z};
 
         const auto limit = [&](double maximum) {
             const double magnitude = std::hypot(y, z);
@@ -252,6 +254,7 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
     double z = -sine * request.y + cosine * request.z;
     select_control_channel(config_.control_channel, y, z);
     if (!std::isfinite(std::hypot(y, z))) return reject(Reason::algorithm_rejected);
+    trace.unlimited_body_overload = domain::DartOverloadG{0, y, z};
     const auto limit = [&](double maximum) {
         const double magnitude = std::hypot(y, z);
         if (magnitude <= maximum) return false;
