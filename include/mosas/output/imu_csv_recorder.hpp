@@ -37,6 +37,8 @@ public:
      * @brief 非阻塞提交原始 IMU 样本及上行元数据到后台 CSV 队列。
      * @param sample 外环 Y/P 单位为 rad/s，按三位小数落盘；缺少设备 imu_index 时该列留空。
      * @return 记录器正在接收且队列未满时为 true；否则丢弃并计入诊断。
+     * @note received_timestamp_ns 记录串口 source_time_ns，即扣除 measurement_latency_ns 后的接收时间估计；
+     *       缺少该时间或模拟源时留空，timestamp_ns 仍为原采样时间。
      * @note trigger_flag 仅记录，不触发相机或控制输出。
      */
     bool try_record(

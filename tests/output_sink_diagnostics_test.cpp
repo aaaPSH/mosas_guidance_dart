@@ -165,7 +165,11 @@ int main() {
         CHECK(diagnostics.queue_depth == 0);
         CHECK(diagnostics.queue_capacity > 0);
         CHECK(diagnostics.last_error.empty());
-        CHECK(recorder.try_record(make_imu_sample(100)));
+        auto serial_sample = make_imu_sample(100);
+        serial_sample.time = {100, 125, -1, domain::ClockDomain::monotonic,
+                              domain::TimestampSource::sequence_fixed_period,
+                              domain::TimestampQuality::estimated};
+        CHECK(recorder.try_record(serial_sample));
         CHECK(recorder.diagnostics().accepted_count == 1);
         recorder.stop();
         diagnostics = recorder.diagnostics();
@@ -183,8 +187,9 @@ int main() {
         CHECK(header.find("sample_index,timestamp_ns,") == 0);
         CHECK(row.find("0,100,") == 0);
         CHECK(header.find(
-            "outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag") != std::string::npos);
-        CHECK(row.find(",0.25,-0.25,-1.234,2.345,4294967295,1") != std::string::npos);
+            "outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag,received_timestamp_ns") != std::string::npos);
+        CHECK(row.find(",0.25,-0.25,-1.234,2.345,4294967295,1,125") != std::string::npos);
+        CHECK(std::count(row.begin(), row.end(), ',') == 14);
 
         CHECK(recorder.start());
         diagnostics = recorder.diagnostics();
@@ -193,11 +198,13 @@ int main() {
         CHECK(diagnostics.dropped_count == 0);
         CHECK(diagnostics.failure_count == 0);
         auto simulated = make_imu_sample(200);
+        simulated.time = domain::make_simulation_time(200);
         simulated.imu_index.reset();
         simulated.trigger_flag = 0;
         CHECK(recorder.try_record(simulated));
+        CHECK(recorder.try_record(make_imu_sample(300)));
         recorder.stop();
-        CHECK(recorder.diagnostics().accepted_count == 1);
+        CHECK(recorder.diagnostics().accepted_count == 2);
         CHECK(recorder.diagnostics().healthy);
         const auto restarted_files = find_csv_files(temporary_directory.path());
         CHECK(restarted_files.size() == 2);
@@ -206,7 +213,13 @@ int main() {
         std::ifstream restarted_csv(restarted_path);
         CHECK(std::getline(restarted_csv, header));
         CHECK(std::getline(restarted_csv, row));
-        CHECK(row.find(",-1.234,2.345,,0") != std::string::npos);
+        CHECK(row.find(",-1.234,2.345,,0,") != std::string::npos);
+        CHECK(row.back() == ',');
+        CHECK(std::count(row.begin(), row.end(), ',') == 14);
+        CHECK(std::getline(restarted_csv, row));
+        CHECK(row.find("1,300,") == 0);
+        CHECK(row.back() == ',');
+        CHECK(std::count(row.begin(), row.end(), ',') == 14);
     }
 
     {

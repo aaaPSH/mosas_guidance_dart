@@ -610,7 +610,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。逐帧 CSV 共 38 列（末三列为 `png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g`），删除与全流程 IMU CSV 重复的 `imu_acceleration_x_mps2,imu_acceleration_y_mps2,imu_acceleration_z_mps2,servo_control_p_normalized,servo_control_y_normalized`，同时删除与曝光帧时间恒等的 `imu_timestamp_ns`，统一通过 `frame_timestamp_ns` 关联 IMU 时间轴。保留曝光姿态三轴角、姿态有效位和发射状态，这些是处理状态而非原始 IMU 记录。本次 CSV 字段结构不保留旧别名，读取方须按表头取列。
 
-全量原始 IMU CSV 不变，保留三轴加速度、三轴角速度及舵机 P/Y 参数，以及 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。
+全量原始 IMU CSV 保留三轴加速度、三轴角速度及舵机 P/Y 参数，以及 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。末尾追加 `received_timestamp_ns`，采用串口样本的 `SensorTime::source_time_ns`，单位为主机单调时钟纳秒：它是串口首字节接收时间估计扣除 `measurement_latency_ns` 后的值，不进行固定周期重建，也不是 CSV 写入时间。模拟源或缺少接收时间时该列留空，不用 `timestamp_ns` 代替。
 
 录像与 RTSP 在左上角共用 `Lever-arm distance: 12.34 m` 距离展示，位于两行 LOS 数据之后，保留两位小数。距离直接来自滤波器 `sample()` 的本帧实际补偿距离，经 `GuidanceOverlay` 和显示映射传递，不在可视化端重新积分，也不依赖角速率有效位：首帧建基准后即可显示配置初值，后续显示积分后的距离，下限为 `1.00 m`；关闭杆臂补偿、尚未初始化、丢失目标或输入异常导致角状态无效时显示 `N/A`，不沿用上一帧显示值；内部距离仍保留，恢复角度基准帧即可显示跨缺失区间积分后的距离，不回到初值。读取诊断快照不推进时间、不改变补偿或滤波行为。
 
