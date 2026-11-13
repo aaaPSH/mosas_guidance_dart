@@ -319,35 +319,55 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
         if (key == "frequency_observation_window_ms") return parse_timestamp_ms(value, &timing.frequency_window_ns) || invalid();
     }
     if (section == "camera") {
+        // 普通相机键保留原错误文本；矩阵元素仍使用包含原值的 invalid()。
+        const auto invalid_camera_key_or_value = [&] {
+            return fail(path, line, "未知配置键或值无效: " + qualified_key, error);
+        };
         if (key == "device") {
             config->camera.device = value;
-        } else if (key == "device_id" &&
-                   parse_uint32(value, &config->camera.device_id)) {
-        } else if (key == "width" && parse_int(value, &integer)) {
-            config->camera.width = integer;
-        } else if (key == "height" && parse_int(value, &integer)) {
-            config->camera.height = integer;
-        } else if (key == "fps" && parse_int(value, &integer)) {
-            config->camera.fps = integer;
-        } else if (key == "pixel_format") {
+            return true;
+        }
+        if (key == "device_id") {
+            return parse_uint32(value, &config->camera.device_id) || invalid_camera_key_or_value();
+        }
+        if (key == "width") {
+            return parse_int(value, &config->camera.width) || invalid_camera_key_or_value();
+        }
+        if (key == "height") {
+            return parse_int(value, &config->camera.height) || invalid_camera_key_or_value();
+        }
+        if (key == "fps") {
+            return parse_int(value, &config->camera.fps) || invalid_camera_key_or_value();
+        }
+        if (key == "pixel_format") {
             config->camera.pixel_format = value;
-        } else if (key == "auto_exposure" &&
-                   parse_bool(value, &config->camera.auto_exposure)) {
-        } else if (key == "exposure_us" &&
-                   parse_double(value, &decimal)) {
-            config->camera.exposure_us = decimal;
-        } else if (key == "gain" && parse_double(value, &decimal)) {
-            config->camera.gain = decimal;
-        } else if (key == "callback_queue_capacity" &&
-                   parse_size(value, &config->camera.callback_queue_capacity)) {
-        } else if (key == "frame_timestamp_domain" &&
-                   parse_camera_timestamp_domain(
-                       value, &config->camera.frame_timestamp_domain)) {
-        } else if (key == "camera_timestamp_bias_ns" &&
-                   parse_timestamp_ns(value,
-                                      &config->camera.camera_timestamp_bias_ns)) {
-        } else if (key == "mode" && parse_mode(value, &config->camera.capture_mode)) {
-        } else if (key.rfind("matrix_m", 0) == 0 && key.size() == 10) {
+            return true;
+        }
+        if (key == "auto_exposure") {
+            return parse_bool(value, &config->camera.auto_exposure) || invalid_camera_key_or_value();
+        }
+        if (key == "exposure_us") {
+            return parse_double(value, &config->camera.exposure_us) || invalid_camera_key_or_value();
+        }
+        if (key == "gain") {
+            return parse_double(value, &config->camera.gain) || invalid_camera_key_or_value();
+        }
+        if (key == "callback_queue_capacity") {
+            return parse_size(value, &config->camera.callback_queue_capacity) ||
+                   invalid_camera_key_or_value();
+        }
+        if (key == "frame_timestamp_domain") {
+            return parse_camera_timestamp_domain(value, &config->camera.frame_timestamp_domain) ||
+                   invalid_camera_key_or_value();
+        }
+        if (key == "camera_timestamp_bias_ns") {
+            return parse_timestamp_ns(value, &config->camera.camera_timestamp_bias_ns) ||
+                   invalid_camera_key_or_value();
+        }
+        if (key == "mode") {
+            return parse_mode(value, &config->camera.capture_mode) || invalid_camera_key_or_value();
+        }
+        if (key.rfind("matrix_m", 0) == 0 && key.size() == 10) {
             const int row = key[8] - '0';
             const int column = key[9] - '0';
             if (row >= 0 && row < 3 && column >= 0 && column < 3 &&
@@ -365,16 +385,11 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
                 };
                 *matrix[row * 3 + column] = decimal;
                 config->camera.camera_matrix_configured = true;
-            } else {
-                return invalid();
+                return true;
             }
-        } else {
-            return key == "device" ? invalid()
-                                    : fail(path, line, "未知配置键或值无效: " +
-                                                  qualified_key,
-                                           error);
+            return invalid();
         }
-        return true;
+        return invalid_camera_key_or_value();
     }
 
     if (section == "imu") {
@@ -419,58 +434,69 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     if (section == "serial") {
         if (key == "device") {
             config->serial.device = value;
-        } else if (key == "baud_rate" &&
-                   parse_uint32(value, &config->serial.baud_rate)) {
-        } else if (key == "data_bits" &&
-                   parse_uint8(value, &config->serial.data_bits)) {
-        } else if (key == "stop_bits" &&
-                   parse_stop_bits(value, &config->serial.stop_bits)) {
-        } else if (key == "parity" &&
-                   parse_parity(value, &config->serial.parity)) {
-        } else if (key == "flow_control" &&
-                   parse_flow_control(value, &config->serial.flow_control)) {
-        } else if (key == "read_timeout_ms" &&
-                   parse_int(value, &config->serial.read_timeout_ms)) {
-        } else if (key == "write_timeout_ms" &&
-                   parse_int(value, &config->serial.write_timeout_ms)) {
-        } else if (key == "enable_interval_statistics") {
-            return parse_bool(value, &config->enable_serial_interval_statistics) ||
-                   invalid();
-        } else {
-            return invalid();
+            return true;
         }
-        return true;
+        if (key == "baud_rate") {
+            return parse_uint32(value, &config->serial.baud_rate) || invalid();
+        }
+        if (key == "data_bits") {
+            return parse_uint8(value, &config->serial.data_bits) || invalid();
+        }
+        if (key == "stop_bits") {
+            return parse_stop_bits(value, &config->serial.stop_bits) || invalid();
+        }
+        if (key == "parity") {
+            return parse_parity(value, &config->serial.parity) || invalid();
+        }
+        if (key == "flow_control") {
+            return parse_flow_control(value, &config->serial.flow_control) || invalid();
+        }
+        if (key == "read_timeout_ms") {
+            return parse_int(value, &config->serial.read_timeout_ms) || invalid();
+        }
+        if (key == "write_timeout_ms") {
+            return parse_int(value, &config->serial.write_timeout_ms) || invalid();
+        }
+        if (key == "enable_interval_statistics") {
+            return parse_bool(value, &config->enable_serial_interval_statistics) || invalid();
+        }
+        return invalid();
     }
 
     if (section == "guidance") {
-        auto set_int = [&](int* destination) {
-            if (!parse_int(value, &integer)) return false;
-            *destination = integer;
-            return true;
-        };
-        auto set_size = [&](std::size_t* destination) {
-            if (!parse_size(value, destination)) return false;
-            return true;
-        };
-        auto set_double = [&](double* destination) {
-            if (!parse_double(value, &decimal)) return false;
-            *destination = decimal;
-            return true;
-        };
-        if (key == "launch_speed_mps") return set_double(&config->algorithms.attitude.launch_speed_mps) || invalid();
-        if (key == "history_capacity") return set_size(&config->guidance.history_capacity) || invalid();
-        if (key == "max_imu_age_ms") return parse_timestamp_ms(value, &config->guidance.max_imu_age_ns) || invalid();
-        if (key == "max_camera_future_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_future_ns) || invalid();
-        if (key == "max_camera_age_ms") return parse_timestamp_ms(value, &config->guidance.max_camera_age_ns) || invalid();
-        if (key == "capture_queue_capacity") return set_size(&config->guidance.capture_queue_capacity) || invalid();
-        if (key == "output_queue_capacity") return set_size(&config->guidance.output_queue_capacity) || invalid();
         auto& algorithms = config->algorithms;
+        if (key == "launch_speed_mps") {
+            return parse_double(value, &algorithms.attitude.launch_speed_mps) || invalid();
+        }
+        if (key == "history_capacity") {
+            return parse_size(value, &config->guidance.history_capacity) || invalid();
+        }
+        if (key == "max_imu_age_ms") {
+            return parse_timestamp_ms(value, &config->guidance.max_imu_age_ns) || invalid();
+        }
+        if (key == "max_camera_future_ms") {
+            return parse_timestamp_ms(value, &config->guidance.max_camera_future_ns) || invalid();
+        }
+        if (key == "max_camera_age_ms") {
+            return parse_timestamp_ms(value, &config->guidance.max_camera_age_ns) || invalid();
+        }
+        if (key == "capture_queue_capacity") {
+            return parse_size(value, &config->guidance.capture_queue_capacity) || invalid();
+        }
+        if (key == "output_queue_capacity") {
+            return parse_size(value, &config->guidance.output_queue_capacity) || invalid();
+        }
         if (key == "control_channel") {
             guidance::ControlChannel channel;
-            if (value == "both") channel = guidance::ControlChannel::both;
-            else if (value == "pitch") channel = guidance::ControlChannel::pitch;
-            else if (value == "yaw") channel = guidance::ControlChannel::yaw;
-            else return invalid();
+            if (value == "both") {
+                channel = guidance::ControlChannel::both;
+            } else if (value == "pitch") {
+                channel = guidance::ControlChannel::pitch;
+            } else if (value == "yaw") {
+                channel = guidance::ControlChannel::yaw;
+            } else {
+                return invalid();
+            }
             algorithms.command_mapping.control_channel = channel;
             return true;
         }
@@ -489,24 +515,32 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             }
             return invalid();
         }
-        if (key == "debug_trigger_delay_ms") return set_int(&algorithms.command_mapping.debug.trigger_delay_ms) || invalid();
-        if (key == "debug_yaw_g") return set_double(&algorithms.command_mapping.debug.yaw_overload_g) || invalid();
-        if (key == "debug_pitch_g") return set_double(&algorithms.command_mapping.debug.pitch_overload_g) || invalid();
-        if (key == "debug_duration_ms") return set_int(&algorithms.command_mapping.debug.duration_ms) || invalid();
+        if (key == "debug_trigger_delay_ms") {
+            return parse_int(value, &algorithms.command_mapping.debug.trigger_delay_ms) || invalid();
+        }
+        if (key == "debug_yaw_g") {
+            return parse_double(value, &algorithms.command_mapping.debug.yaw_overload_g) || invalid();
+        }
+        if (key == "debug_pitch_g") {
+            return parse_double(value, &algorithms.command_mapping.debug.pitch_overload_g) || invalid();
+        }
+        if (key == "debug_duration_ms") {
+            return parse_int(value, &algorithms.command_mapping.debug.duration_ms) || invalid();
+        }
         if (key == "los_kalman_sigma_a") {
-            return set_double(&algorithms.los_filter.sigma_a) || invalid();
+            return parse_double(value, &algorithms.los_filter.sigma_a) || invalid();
         }
         if (key == "los_kalman_sigma_a_pitch") {
-            return set_double(&algorithms.los_filter.sigma_a_pitch) || invalid();
+            return parse_double(value, &algorithms.los_filter.sigma_a_pitch) || invalid();
         }
         if (key == "los_kalman_sigma_a_yaw") {
-            return set_double(&algorithms.los_filter.sigma_a_yaw) || invalid();
+            return parse_double(value, &algorithms.los_filter.sigma_a_yaw) || invalid();
         }
         if (key == "los_kalman_sigma_q") {
-            return set_double(&algorithms.los_filter.sigma_q) || invalid();
+            return parse_double(value, &algorithms.los_filter.sigma_q) || invalid();
         }
         if (key == "los_initial_covariance") {
-            return set_double(&algorithms.los_filter.initial_covariance) || invalid();
+            return parse_double(value, &algorithms.los_filter.initial_covariance) || invalid();
         }
         if (key == "los_enable_filter") {
             return parse_bool(value, &algorithms.los_filter.enable_filter) || invalid();
@@ -520,35 +554,84 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             return parse_bool(value, &algorithms.los_filter.enable_lever_arm_compensation) || invalid();
         }
         if (key == "los_camera_lever_arm_x") {
-            return set_double(&algorithms.los_filter.camera_lever_arm_x) || invalid();
+            return parse_double(value, &algorithms.los_filter.camera_lever_arm_x) || invalid();
         }
         if (key == "los_estimated_target_distance") {
-            return set_double(&algorithms.los_filter.estimated_target_distance) || invalid();
+            return parse_double(value, &algorithms.los_filter.estimated_target_distance) || invalid();
         }
-        if (key == "initial_roi_x") return set_int(&algorithms.vision_config.initial_roi.x) || invalid();
-        if (key == "initial_roi_y") return set_int(&algorithms.vision_config.initial_roi.y) || invalid();
-        if (key == "initial_roi_width") return set_int(&algorithms.vision_config.initial_roi.width) || invalid();
-        if (key == "initial_roi_height") return set_int(&algorithms.vision_config.initial_roi.height) || invalid();
-        if (key == "h_min") return parse_uint8(value, &algorithms.vision_config.threshold.h_min) || invalid();
-        if (key == "h_max") return parse_uint8(value, &algorithms.vision_config.threshold.h_max) || invalid();
-        if (key == "s_min") return parse_uint8(value, &algorithms.vision_config.threshold.s_min) || invalid();
-        if (key == "s_max") return parse_uint8(value, &algorithms.vision_config.threshold.s_max) || invalid();
-        if (key == "v_min") return parse_uint8(value, &algorithms.vision_config.threshold.v_min) || invalid();
-        if (key == "v_max") return parse_uint8(value, &algorithms.vision_config.threshold.v_max) || invalid();
-        if (key == "found_range_x") return set_int(&algorithms.vision_config.found_range_x) || invalid();
-        if (key == "found_range_y") return set_int(&algorithms.vision_config.found_range_y) || invalid();
-        if (key == "min_blob_area") return set_int(&algorithms.vision_config.min_blob_area) || invalid();
-        if (key == "min_aspect_ratio") return set_double(&algorithms.vision_config.min_aspect_ratio) || invalid();
-        if (key == "min_fill_ratio") return set_double(&algorithms.vision_config.min_fill_ratio) || invalid();
-        if (key == "camera_fx") return set_double(&config->guidance.camera_intrinsics.fx) || invalid();
-        if (key == "camera_fy") return set_double(&config->guidance.camera_intrinsics.fy) || invalid();
-        if (key == "camera_cx") return set_double(&config->guidance.camera_intrinsics.cx) || invalid();
-        if (key == "camera_cy") return set_double(&config->guidance.camera_intrinsics.cy) || invalid();
-        if (key == "attitude_stationary_acceleration_tolerance_mps2") return set_double(&algorithms.attitude.stationary_acceleration_tolerance_mps2) || invalid();
-        if (key == "attitude_gyro_stationary_threshold_rad_s") return set_double(&algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
-        if (key == "attitude_gyro_bias_filter_alpha") return set_double(&algorithms.attitude.gyro_bias_filter_alpha) || invalid();
-        if (key == "attitude_accel_filter_alpha") return set_double(&algorithms.attitude.accel_filter_alpha) || invalid();
-        if (key == "attitude_stationary_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.stationary_confirm_ns) || invalid();
+        if (key == "initial_roi_x") {
+            return parse_int(value, &algorithms.vision_config.initial_roi.x) || invalid();
+        }
+        if (key == "initial_roi_y") {
+            return parse_int(value, &algorithms.vision_config.initial_roi.y) || invalid();
+        }
+        if (key == "initial_roi_width") {
+            return parse_int(value, &algorithms.vision_config.initial_roi.width) || invalid();
+        }
+        if (key == "initial_roi_height") {
+            return parse_int(value, &algorithms.vision_config.initial_roi.height) || invalid();
+        }
+        if (key == "h_min") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.h_min) || invalid();
+        }
+        if (key == "h_max") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.h_max) || invalid();
+        }
+        if (key == "s_min") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.s_min) || invalid();
+        }
+        if (key == "s_max") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.s_max) || invalid();
+        }
+        if (key == "v_min") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.v_min) || invalid();
+        }
+        if (key == "v_max") {
+            return parse_uint8(value, &algorithms.vision_config.threshold.v_max) || invalid();
+        }
+        if (key == "found_range_x") {
+            return parse_int(value, &algorithms.vision_config.found_range_x) || invalid();
+        }
+        if (key == "found_range_y") {
+            return parse_int(value, &algorithms.vision_config.found_range_y) || invalid();
+        }
+        if (key == "min_blob_area") {
+            return parse_int(value, &algorithms.vision_config.min_blob_area) || invalid();
+        }
+        if (key == "min_aspect_ratio") {
+            return parse_double(value, &algorithms.vision_config.min_aspect_ratio) || invalid();
+        }
+        if (key == "min_fill_ratio") {
+            return parse_double(value, &algorithms.vision_config.min_fill_ratio) || invalid();
+        }
+        if (key == "camera_fx") {
+            return parse_double(value, &config->guidance.camera_intrinsics.fx) || invalid();
+        }
+        if (key == "camera_fy") {
+            return parse_double(value, &config->guidance.camera_intrinsics.fy) || invalid();
+        }
+        if (key == "camera_cx") {
+            return parse_double(value, &config->guidance.camera_intrinsics.cx) || invalid();
+        }
+        if (key == "camera_cy") {
+            return parse_double(value, &config->guidance.camera_intrinsics.cy) || invalid();
+        }
+        if (key == "attitude_stationary_acceleration_tolerance_mps2") {
+            return parse_double(value, &algorithms.attitude.stationary_acceleration_tolerance_mps2) ||
+                   invalid();
+        }
+        if (key == "attitude_gyro_stationary_threshold_rad_s") {
+            return parse_double(value, &algorithms.attitude.gyro_stationary_threshold_rad_s) || invalid();
+        }
+        if (key == "attitude_gyro_bias_filter_alpha") {
+            return parse_double(value, &algorithms.attitude.gyro_bias_filter_alpha) || invalid();
+        }
+        if (key == "attitude_accel_filter_alpha") {
+            return parse_double(value, &algorithms.attitude.accel_filter_alpha) || invalid();
+        }
+        if (key == "attitude_stationary_confirm_ms") {
+            return parse_timestamp_ms(value, &algorithms.attitude.stationary_confirm_ns) || invalid();
+        }
         if (key == "launch_detection_mode") {
             if (value == "acceleration") {
                 algorithms.attitude.launch_detection_mode = runtime::LaunchDetectionMode::acceleration;
@@ -560,23 +643,46 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
             }
             return invalid();
         }
-        if (key == "launch_ax_threshold_mps2") return set_double(&algorithms.attitude.launch_ax_threshold_mps2) || invalid();
-        if (key == "launch_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_confirm_ns) || invalid();
-        if (key == "launch_release_acceleration_max_mps2") return set_double(&algorithms.attitude.launch_release_acceleration_max_mps2) || invalid();
-        if (key == "launch_release_confirm_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_release_confirm_ns) || invalid();
-        if (key == "launch_release_timeout_ms") return parse_timestamp_ms(value, &algorithms.attitude.launch_release_timeout_ns) || invalid();
-        if (key == "attitude_maximum_gap_ms") return parse_timestamp_ms(value, &algorithms.attitude.maximum_sample_gap_ns) || invalid();
-        if (key == "accelerometer_specific_force") return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
-        if (key == "png_navigation_constant_y") return set_double(&algorithms.ballistic_png.navigation_constant_y) || invalid();
-        if (key == "png_navigation_constant_z") return set_double(&algorithms.ballistic_png.navigation_constant_z) || invalid();
-        if (key == "png_gravity") return set_double(&algorithms.attitude.gravity_mps2) || invalid();
-        if (key == "png_maximum_command_overload") return set_double(&algorithms.command_mapping.maximum_command_overload) || invalid();
+        if (key == "launch_ax_threshold_mps2") {
+            return parse_double(value, &algorithms.attitude.launch_ax_threshold_mps2) || invalid();
+        }
+        if (key == "launch_confirm_ms") {
+            return parse_timestamp_ms(value, &algorithms.attitude.launch_confirm_ns) || invalid();
+        }
+        if (key == "launch_release_acceleration_max_mps2") {
+            return parse_double(value, &algorithms.attitude.launch_release_acceleration_max_mps2) ||
+                   invalid();
+        }
+        if (key == "launch_release_confirm_ms") {
+            return parse_timestamp_ms(value, &algorithms.attitude.launch_release_confirm_ns) || invalid();
+        }
+        if (key == "launch_release_timeout_ms") {
+            return parse_timestamp_ms(value, &algorithms.attitude.launch_release_timeout_ns) || invalid();
+        }
+        if (key == "attitude_maximum_gap_ms") {
+            return parse_timestamp_ms(value, &algorithms.attitude.maximum_sample_gap_ns) || invalid();
+        }
+        if (key == "accelerometer_specific_force") {
+            return parse_bool(value, &algorithms.attitude.accelerometer_specific_force) || invalid();
+        }
+        if (key == "png_navigation_constant_y") {
+            return parse_double(value, &algorithms.ballistic_png.navigation_constant_y) || invalid();
+        }
+        if (key == "png_navigation_constant_z") {
+            return parse_double(value, &algorithms.ballistic_png.navigation_constant_z) || invalid();
+        }
+        if (key == "png_gravity") {
+            return parse_double(value, &algorithms.attitude.gravity_mps2) || invalid();
+        }
+        if (key == "png_maximum_command_overload") {
+            return parse_double(value, &algorithms.command_mapping.maximum_command_overload) || invalid();
+        }
         if (key == "png_maximum_command_acceleration") {
             if (value == "inf") {
                 algorithms.command_mapping.maximum_command_acceleration = std::numeric_limits<double>::infinity();
                 return true;
             }
-            return set_double(&algorithms.command_mapping.maximum_command_acceleration) || invalid();
+            return parse_double(value, &algorithms.command_mapping.maximum_command_acceleration) || invalid();
         }
         if (key.rfind("camera_to_body_m", 0) == 0 && key.size() == 18) {
             const int row = key[16] - '0';
@@ -595,33 +701,46 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
     }
 
     if (section == "output") {
-        if (key == "mode" && parse_output_mode(value, &config->output.mode)) {
-        } else if (key == "recording_path") {
-            config->output.recording_path = value;
-        } else if (key == "draw_visualization") {
-            return parse_bool(value, &config->output.draw_visualization) ||
-                   invalid();
-        } else if (key == "match_window_duration_ms" &&
-                   parse_int(value, &config->output.match_window_duration_ms)) {
-        } else {
-            return invalid();
+        if (key == "mode") {
+            return parse_output_mode(value, &config->output.mode) || invalid();
         }
-        return true;
+        if (key == "recording_path") {
+            config->output.recording_path = value;
+            return true;
+        }
+        if (key == "draw_visualization") {
+            return parse_bool(value, &config->output.draw_visualization) || invalid();
+        }
+        if (key == "match_window_duration_ms") {
+            return parse_int(value, &config->output.match_window_duration_ms) || invalid();
+        }
+        return invalid();
     }
 
     if (section == "wireless") {
-        auto set_int = [&](int* destination) {
-            if (!parse_int(value, &integer)) return false;
-            *destination = integer;
+        if (key == "rtsp_url") {
+            config->wireless.rtsp_url = value;
             return true;
-        };
-        if (key == "rtsp_url") { config->wireless.rtsp_url = value; return true; }
-        if (key == "rtsp_transport") { config->wireless.rtsp_transport = value; return true; }
-        if (key == "width") return set_int(&config->wireless.width) || invalid();
-        if (key == "height") return set_int(&config->wireless.height) || invalid();
-        if (key == "fps") return set_int(&config->wireless.fps) || invalid();
-        if (key == "bitrate") return set_int(&config->wireless.bitrate) || invalid();
-        if (key == "gop_size") return set_int(&config->wireless.gop_size) || invalid();
+        }
+        if (key == "rtsp_transport") {
+            config->wireless.rtsp_transport = value;
+            return true;
+        }
+        if (key == "width") {
+            return parse_int(value, &config->wireless.width) || invalid();
+        }
+        if (key == "height") {
+            return parse_int(value, &config->wireless.height) || invalid();
+        }
+        if (key == "fps") {
+            return parse_int(value, &config->wireless.fps) || invalid();
+        }
+        if (key == "bitrate") {
+            return parse_int(value, &config->wireless.bitrate) || invalid();
+        }
+        if (key == "gop_size") {
+            return parse_int(value, &config->wireless.gop_size) || invalid();
+        }
         if (key == "rtsp_timeout_ms") {
             int timeout_ms = 0;
             if (!parse_int(value, &timeout_ms) || timeout_ms <= 0) return invalid();
@@ -629,7 +748,10 @@ bool parse_key(const std::filesystem::path& path, std::size_t line,
                 static_cast<std::int64_t>(timeout_ms) * 1'000;
             return true;
         }
-        if (key == "encoder_name") { config->wireless.encoder_name = value; return true; }
+        if (key == "encoder_name") {
+            config->wireless.encoder_name = value;
+            return true;
+        }
         return invalid();
     }
 

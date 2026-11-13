@@ -67,9 +67,9 @@ inline const char* source_status_name(SourceStatus status) noexcept {
 class ImuSource {
 public:
     virtual ~ImuSource() = default;
-    /** @return Whether this source participates in host sequence-clock synchronization. */
+    /** @return 此数据源是否参与主机序列时钟同步。 */
     virtual bool uses_sequence_time() const noexcept { return false; }
-    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    /** @param sync 共享硬件同步屏障；仿真数据源无需绑定。 */
     virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
     /**
@@ -121,9 +121,9 @@ struct CameraCaptureConfig {
 class CameraSource {
 public:
     virtual ~CameraSource() = default;
-    /** @return Whether this source participates in host sequence-clock synchronization. */
+    /** @return 此数据源是否参与主机序列时钟同步。 */
     virtual bool uses_sequence_time() const noexcept { return false; }
-    /** @param sync Shared hardware synchronization barrier; simulation sources need no binding. */
+    /** @param sync 共享硬件同步屏障；仿真数据源无需绑定。 */
     virtual void bind_acquisition_sync(std::shared_ptr<domain::AcquisitionSync>) {}
 
     /**

@@ -50,6 +50,7 @@ void SequenceTime::reset_segment(std::int64_t now_ns, std::uint64_t epoch) noexc
     start_ns_ = now_ns;
     stable_start_ns_ = -1;
     stable_receive_ns_ = -1;
+    stable_baseline_ns_ = -1;
     have_sequence_ = false;
     stats_.synchronized = false;
     window_receive_ns_ = -1;
@@ -127,24 +128,30 @@ std::optional<SequenceTimestamp> SequenceTime::observe(
         ++stats_.warmup_discarded;
         if (!fresh || candidate < 0 || now < start_ns_ || now - start_ns_ < config_.warmup_ns) {
             stable_start_ns_ = -1;
+            stable_baseline_ns_ = -1;
             return std::nullopt;
         }
         if (stable_start_ns_ < 0) {
             stable_start_ns_ = now;
             stable_receive_ns_ = receive;
             stable_sequence_ = sequence;
+            stable_baseline_ns_ = candidate;
         }
         const auto predicted = offset(sequence - stable_sequence_);
-        if (!predicted || std::abs(static_cast<long double>(receive) - stable_receive_ns_ - *predicted) > config_.tolerance_ns) {
+        if (!predicted || candidate < *predicted ||
+            std::abs(static_cast<long double>(receive) - stable_receive_ns_ - *predicted) > config_.tolerance_ns) {
             stable_start_ns_ = now;
             stable_receive_ns_ = receive;
             stable_sequence_ = sequence;
+            stable_baseline_ns_ = candidate;
             return std::nullopt;
         }
+        // 所有候选归一化到窗口首序号；最小值降低接收延迟影响，不证明绝对采样时间准确。
+        stable_baseline_ns_ = std::min(stable_baseline_ns_, candidate - *predicted);
         if (now - stable_start_ns_ < config_.stable_window_ns ||
             receive - stable_receive_ns_ < config_.stable_window_ns) return std::nullopt;
-        stats_.baseline_ns = candidate;
-        origin_sequence_ = sequence;
+        stats_.baseline_ns = stable_baseline_ns_;
+        origin_sequence_ = stable_sequence_;
         stats_.synchronized = true;
         ++stats_.baselines;
         --stats_.warmup_discarded;

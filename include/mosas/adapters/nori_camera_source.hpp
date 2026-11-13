@@ -72,7 +72,7 @@ public:
      * @brief 从回调队列取帧、解码为拥有型 BGR8 图像并返回时间戳。
      * @param frame 非空输出指针；成功时图像所有权由返回帧持有。
      * @return 捕获状态；队列等待期间可能阻塞，取消通过 SourceStatus::cancelled 返回。
-     * @note 采样时间由首帧基线及采集序号推算；sensor_time.source_time_ns 保留未加 bias 的 SDK 单调转换值。
+     * @note 采样时间由稳定窗口基线及固定采集序号原点推算；sensor_time.source_time_ns 保留未加 bias 的 SDK 单调转换值。
      *       received_timestamp_ns 保留原始主机回调时间，不随序号时钟内部的补偿观察一起平移。
      */
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;

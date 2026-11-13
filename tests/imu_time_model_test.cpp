@@ -32,6 +32,43 @@ void feed(app::ImuStreamDecoder& decoder, const std::vector<std::uint8_t>& bytes
     decoder.consume(chunk, time);
 }
 
+/** @brief 验证窗口末帧接收延迟增大后回落不会推晚基线，发射后仍保持固定周期。 @return 通过时为 0。 */
+int check_stable_window_delay() {
+    auto sync = std::make_shared<domain::AcquisitionSync>(2);
+    app::ImuStreamDecoder decoder(0, 2'000'000, 2,
+        {200, 0, 10'000'000, 50'000'000, 1'000'000'000});
+    decoder.bind_sync(sync);
+    decoder.reset(100'000'000);
+    runtime::ImuAngularVelocitySample sample;
+    feed(decoder, frame(100), 0, 100'000'000);
+    CHECK(!decoder.try_pop(&sample));
+    feed(decoder, frame(101), 1, 105'500'000);
+    CHECK(!decoder.try_pop(&sample));
+    feed(decoder, frame(102), 2, 114'000'000);
+    CHECK(decoder.try_pop(&sample));
+    CHECK(sample.timestamp_ns == 108'000'000 && sample.sample_sequence == 2);
+    CHECK(decoder.time_diagnostics().baseline_ns == 98'000'000);
+    CHECK(decoder.time_diagnostics().warmup_discarded == 2);
+    CHECK(sync->latch_launch(0));
+
+    // 末帧额外延迟 4 ms，下一帧仅延迟 1 ms；旧基线会生成晚于主机接收的 117 ms。
+    feed(decoder, frame(103), 3, 116'000'000);
+    CHECK(decoder.try_pop(&sample));
+    CHECK(sample.timestamp_ns <= 116'000'000);
+    CHECK(sample.timestamp_ns == 113'000'000 && sample.acquisition_epoch == 0);
+    CHECK(sample.sensor_time->source_time_ns == 114'000'000);
+    feed(decoder, frame(104), 4, 260'000'000);
+    CHECK(decoder.try_pop(&sample));
+    CHECK(sample.timestamp_ns == 118'000'000);
+    feed(decoder, frame(107), 5, 270'000'000);
+    CHECK(decoder.try_pop(&sample));
+    CHECK(sample.timestamp_ns == 133'000'000 && sample.sample_sequence == 7);
+    CHECK(decoder.time_diagnostics().known_missing == 2);
+    CHECK(decoder.time_diagnostics().baselines == 1);
+    CHECK(decoder.time_diagnostics().post_launch_anomalies > 0);
+    return 0;
+}
+
 /** @brief 验证设备序号驱动丢帧、固定周期和异常拒绝，不信任坏帧计数器。 @return 通过时为 0。 */
 int check_device_timeline() {
     auto sync = std::make_shared<domain::AcquisitionSync>(2);
@@ -150,6 +187,7 @@ int main() {
     const auto estimate = mosas::domain::estimate_imu_sample_time(100'000'000, 2'000'000);
     CHECK(estimate.monotonic_ns == 98'000'000);
     CHECK(!mosas::domain::estimate_imu_sample_time(1, 2).is_valid());
+    CHECK(check_stable_window_delay() == 0);
     CHECK(check_device_timeline() == 0);
     CHECK(check_chunk_recovery() == 0);
     CHECK(check_wrap_and_frequency() == 0);

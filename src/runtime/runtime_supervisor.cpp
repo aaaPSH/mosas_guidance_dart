@@ -22,6 +22,7 @@
 namespace mosas::runtime {
 
 struct RuntimeSupervisor::Impl {
+    /** @brief 生命周期锁串行化启动和停机；原子状态允许取消请求在启动期间介入。 */
     enum class LifecycleState {
         idle,
         starting,
@@ -113,6 +114,7 @@ RuntimeSupervisor::Impl::Impl(std::unique_ptr<ImuSource> imu_source,
       config_(config),
       logger_(std::move(output_ports.logger)) {
     generation_coordinator_ = std::make_unique<LaunchGenerationCoordinator>();
+    // 仅将使用序列时钟的数据源纳入屏障，避免等待不参与硬件同步的仿真源。
     const unsigned acquisition_mask = (camera_source && camera_source->uses_sequence_time() ? 1u : 0u) |
                                       (imu_source && imu_source->uses_sequence_time() ? 2u : 0u);
     acquisition_sync_ = std::make_shared<domain::AcquisitionSync>(acquisition_mask);
@@ -204,6 +206,11 @@ bool RuntimeSupervisor::Impl::validate_dependencies() const {
            command_sink_ != nullptr && monotonic_clock_ != nullptr && output_bound_;
 }
 
+/**
+ * @brief 按依赖顺序启动组件；任一阶段失败或被取消时统一回收已启动资源。
+ * @return 工作线程已启动且生命周期成功切换到运行态时为 true。
+ * @note 持有生命周期锁，可能等待设备初始化或失败回滚完成。
+ */
 bool RuntimeSupervisor::Impl::start() {
     std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
     const LifecycleState current = lifecycle_state_.load();
@@ -241,7 +248,7 @@ bool RuntimeSupervisor::Impl::start() {
         return false;
     }
 
-    // Camera configure can start SDK callbacks and publish readiness before it returns.
+    // 相机配置期间就可能启动 SDK 回调并发布就绪状态，因此必须先重置同步屏障。
     acquisition_sync_->restart();
     const SourceResult configure_result = frame_pipeline_->configure_source();
     if (configure_result.status != SourceStatus::ok) {
@@ -301,6 +308,7 @@ bool RuntimeSupervisor::Impl::start() {
         return false;
     }
 
+    // 启动期间的取消会改变状态；不能以无条件写入运行态覆盖已经生效的取消。
     LifecycleState expected = LifecycleState::starting;
     if (!lifecycle_state_.compare_exchange_strong(expected,
                                                   LifecycleState::running)) {
@@ -313,6 +321,7 @@ bool RuntimeSupervisor::Impl::start() {
 void RuntimeSupervisor::Impl::cancel() noexcept { request_cancellation(true); }
 
 void RuntimeSupervisor::Impl::stop() noexcept {
+    // 先发出取消再等待生命周期锁，使正在持锁启动的线程能够发现取消并回滚。
     request_cancellation(false);
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     stop_locked();
@@ -322,6 +331,10 @@ bool RuntimeSupervisor::Impl::startup_cancelled() const noexcept {
     return lifecycle_state_.load() != LifecycleState::starting;
 }
 
+/**
+ * @brief 取消各组件，按数据流依赖等待线程退出，再释放设备和输出资源。
+ * @note 调用方必须持有生命周期锁；同时用于启动失败后的回滚。
+ */
 void RuntimeSupervisor::Impl::stop_locked() noexcept {
     if (lifecycle_state_.load() == LifecycleState::stopped) {
         return;
@@ -330,6 +343,7 @@ void RuntimeSupervisor::Impl::stop_locked() noexcept {
     cancel_requested_.store(true);
     stop_requested_.store(true);
     cancel_components();
+    // 等待已进入的取消调用离开组件访问区间，避免与后续资源回收并发。
     while (active_cancel_calls_.load() != 0) {
         std::this_thread::yield();
     }
@@ -341,6 +355,7 @@ void RuntimeSupervisor::Impl::stop_locked() noexcept {
     frame_pipeline_->stop_source();
     imu_pipeline_->join_worker();
     imu_pipeline_->stop_source();
+    // IMU 工作线程退出后不再提交记录，才能安全停止记录器和其余输出资源。
     output_dispatcher_->cancel_imu_recorder();
     output_dispatcher_->close_queue();
     output_dispatcher_->join();
@@ -359,6 +374,11 @@ void RuntimeSupervisor::Impl::stop_locked() noexcept {
     lifecycle_state_.store(LifecycleState::stopped);
 }
 
+/**
+ * @brief 不获取生命周期锁地请求取消；启动中的组件由启动线程负责回滚。
+ * @param cancel_command_sink 是否同时取消运行中的命令输出；普通停机和故障保留其收尾机会。
+ * @note 仅发出取消通知，不等待工作线程退出。
+ */
 void RuntimeSupervisor::Impl::request_cancellation(
     bool cancel_command_sink) noexcept {
     active_cancel_calls_.fetch_add(1);
@@ -386,6 +406,7 @@ void RuntimeSupervisor::Impl::request_cancellation(
     if (active_session) {
         const bool first_request = !cancel_requested_.exchange(true);
         stop_requested_.store(true);
+        // 启动态可能正在初始化设备，不能并发取消组件；运行态仅首次请求负责唤醒。
         if (first_request && components_are_running) {
             cancel_components();
         }
@@ -482,8 +503,8 @@ void RuntimeSupervisor::Impl::record_timing(
 }
 
 void RuntimeSupervisor::Impl::log(const std::string& message) {
-    // Disabled, stopped, or failed logging must never introduce synchronous I/O.
-    // Startup errors remain available through last_error() to the App layer.
+    // 日志未启用或未运行时也不回退到同步 I/O，避免阻塞运行时线程。
+    // 启动错误仍可由应用层通过 last_error() 获取。
     if (logger_ == nullptr ||
         !logger_running_.load(std::memory_order_acquire)) {
         return;
@@ -511,12 +532,18 @@ void RuntimeSupervisor::Impl::set_error(const std::string& message) {
     log("错误: " + message);
 }
 
+/**
+ * @brief 首次故障时记录原因并尽力提交清零命令，随后请求取消并关闭帧队列。
+ * @param message 故障说明；后续故障不覆盖首次故障原因。
+ * @note 不等待线程退出，允许工作线程通过故障回调调用。
+ */
 void RuntimeSupervisor::Impl::set_fault(const std::string& message) {
     if (!faulted_.exchange(true)) {
         set_error(message);
         const auto state = latest_state();
         if (command_sink_ != nullptr && state.has_value() &&
             state->launch.phase == domain::LaunchPhase::launched) {
+            // 将代际核验与提交置于同一屏障内，防止旧状态的清零命令影响新的起飞代际。
             generation_coordinator_->with_generation(
                 [&](std::uint64_t active_generation) {
                     if (active_generation == state->launch.generation) {

@@ -20,6 +20,27 @@ bool matching_time(const domain::SensorTime& time, domain::ClockDomain domain) n
 }
 
 /**
+ * @brief 按合成过载上限同比缩放两轴，不改变指令方向。
+ * @param y 镖体系 Y 过载，必要时原地限幅，单位 g。
+ * @param z 镖体系 Z 过载，必要时原地限幅，单位 g。
+ * @param maximum 已校验的非负合成上限，允许 +inf，单位 g。
+ * @return 指令因超过上限而被修改时为 true。
+ */
+bool limit_overload_magnitude(double& y, double& z, double maximum) noexcept {
+    const double magnitude = std::hypot(y, z);
+    if (magnitude <= maximum) return false;
+    if (maximum == 0) {
+        y = 0;
+        z = 0;
+        return true;
+    }
+    const double scale = maximum / magnitude;
+    y *= scale;
+    z *= scale;
+    return true;
+}
+
+/**
  * @brief 在离散过载网格上选择满足物理上限、最接近连续指令的向内量化结果。
  * @param y 镖体系 Y 指令，成功时写回量化值。
  * @param z 镖体系 Z 指令，成功时写回量化值。
@@ -76,11 +97,14 @@ bool quantize_overload(double& y, double& z, double step,
 }
 }
 
-bool CommandOutputMapper::valid_config(const CommandMappingConfig& c) noexcept {
-    return valid_control_channel(c.control_channel) && std::isfinite(c.gravity) && c.gravity > 0 &&
-           std::isfinite(c.maximum_command_overload) && c.maximum_command_overload >= 0 &&
-           !std::isnan(c.maximum_command_acceleration) && c.maximum_command_acceleration >= 0 &&
-           valid_debug_config(c.debug);
+bool CommandOutputMapper::valid_config(const CommandMappingConfig& config) noexcept {
+    return valid_control_channel(config.control_channel) &&
+           std::isfinite(config.gravity) && config.gravity > 0 &&
+           std::isfinite(config.maximum_command_overload) &&
+           config.maximum_command_overload >= 0 &&
+           !std::isnan(config.maximum_command_acceleration) &&
+           config.maximum_command_acceleration >= 0 &&
+           valid_debug_config(config.debug);
 }
 
 void CommandOutputMapper::reset_debug_state_locked() const noexcept {
@@ -93,24 +117,30 @@ void CommandOutputMapper::reset() noexcept {
     reset_debug_state_locked();
 }
 
-domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOverloadG& request,
-    const domain::CommandOutputContext& c) const noexcept {
+domain::CommandMappingResult CommandOutputMapper::map(
+    const domain::BallisticOverloadG& request,
+    const domain::CommandOutputContext& context) const noexcept {
     using Reason = domain::GuidanceInvalidReason;
     domain::CommandMappingResult result;
     auto& command = result.command;
     auto& trace = result.trace;
-    command.source_frame_id = c.source_frame_id;
-    command.generation = c.generation;
+    command.source_frame_id = context.source_frame_id;
+    command.generation = context.generation;
     const bool debug = config_.debug.mode != GuidanceDebugMode::disabled;
     const bool launch_delay = config_.debug.mode == GuidanceDebugMode::launch_delay;
-    command.source_time = launch_delay && c.latest_state ? c.latest_state->time : c.source_time;
-    // 发射位独立于视觉邮箱；正常模式的识别和过载仍须来自发射后图像。
-    command.launched = c.latest_state &&
-        c.latest_state->launch.phase == domain::LaunchPhase::launched &&
-        c.generation == c.active_generation;
-    command.target_found = !debug && c.launched && c.target_found && !c.expired;
-    trace.emit_time_ns = c.emit_time_ns;
-    const auto reject = [&](Reason reason) {
+    const bool request_launched = context.launched;
+    const bool latest_imu_launched = context.latest_state &&
+        context.latest_state->launch.phase == domain::LaunchPhase::launched;
+    command.source_time = launch_delay && context.latest_state
+                              ? context.latest_state->time
+                              : context.source_time;
+    // 最新 IMU 决定周期发射位；来源图像的发射状态单独约束识别和正常制导请求。
+    command.launched = latest_imu_launched && context.generation == context.active_generation;
+    command.target_found = !debug && request_launched && context.target_found && !context.expired;
+    trace.emit_time_ns = context.emit_time_ns;
+
+    // 零过载不代表未发射或未识别；协议标志由各调用路径独立决定。
+    const auto zero_output_preserving_flags = [&](Reason reason) {
         command.valid = false;
         command.invalid_reason = reason;
         command.overload_g = {};
@@ -123,44 +153,49 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
         trace.command_phase = {};
         return result;
     };
-    if (c.generation != c.active_generation) {
-        command.launched = command.target_found = false;
-        return reject(Reason::stale_input);
+    if (context.generation != context.active_generation) {
+        command.launched = false;
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::stale_input);
     }
-    if (c.latest_state && (c.latest_state->launch.generation != c.active_generation ||
-        c.latest_state->launch.phase != domain::LaunchPhase::launched)) {
-        command.launched = command.target_found = false;
-        return reject(Reason::launch_not_confirmed);
+    if (context.latest_state &&
+        (context.latest_state->launch.generation != context.active_generation || !latest_imu_launched)) {
+        command.launched = false;
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::launch_not_confirmed);
     }
     if (!command.launched) {
-        command.launched = command.target_found = false;
-        return reject(Reason::launch_not_confirmed);
+        command.launched = false;
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::launch_not_confirmed);
     }
-    if (!c.output_enabled) return reject(Reason::stale_input);
-    if (!valid()) return reject(Reason::algorithm_rejected);
+    if (!context.output_enabled) return zero_output_preserving_flags(Reason::stale_input);
+    if (!valid()) return zero_output_preserving_flags(Reason::algorithm_rejected);
+    const auto& latest_state = *context.latest_state;
 
-    // ==========================================
-    // 调试模式分支（发射后延时或识别后发送固定指令）
-    // ==========================================
+    // 固定模式不依赖 PNG 请求有效性，触发条件分别取发射时间或视觉识别。
     if (debug) {
-        if (c.emit_time_ns < 0) return reject(Reason::stale_input);
+        if (context.emit_time_ns < 0) return zero_output_preserving_flags(Reason::stale_input);
         std::lock_guard<std::mutex> lock(debug_mutex_);
-        if (last_generation_ != c.generation) {
+        if (last_generation_ != context.generation) {
             reset_debug_state_locked();
-            last_generation_ = c.generation;
+            last_generation_ = context.generation;
         }
 
         bool triggered = false;
         if (launch_delay) {
-            const auto& launch_time = c.latest_state->launch.transition_time;
-            if (!matching_time(launch_time, c.clock_domain) || c.emit_time_ns < launch_time.monotonic_ns) {
-                return reject(Reason::stale_input);
+            const auto& launch_time = latest_state.launch.transition_time;
+            if (!matching_time(launch_time, context.clock_domain) ||
+                context.emit_time_ns < launch_time.monotonic_ns) {
+                return zero_output_preserving_flags(Reason::stale_input);
             }
-            const int64_t delay_ns = static_cast<int64_t>(config_.debug.trigger_delay_ms) * 1'000'000LL;
-            const int64_t elapsed_ns = c.emit_time_ns - launch_time.monotonic_ns;
+            const int64_t delay_ns =
+                static_cast<int64_t>(config_.debug.trigger_delay_ms) * 1'000'000LL;
+            const int64_t elapsed_ns = context.emit_time_ns - launch_time.monotonic_ns;
             if (elapsed_ns >= delay_ns) {
                 if (config_.debug.duration_ms > 0) {
-                    const int64_t duration_ns = static_cast<int64_t>(config_.debug.duration_ms) * 1'000'000LL;
+                    const int64_t duration_ns =
+                        static_cast<int64_t>(config_.debug.duration_ms) * 1'000'000LL;
                     triggered = (elapsed_ns < delay_ns + duration_ns);
                 } else {
                     triggered = true;
@@ -168,14 +203,18 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
             }
         } else if (config_.debug.mode == GuidanceDebugMode::target_detected) {
             // 识别须来自未过期的发射后图像；首帧速率无效不影响识别触发。
-            if (c.launched && c.target_found && !c.expired && !first_target_detected_time_ns_) {
-                first_target_detected_time_ns_ = c.emit_time_ns;
+            if (request_launched && context.target_found && !context.expired &&
+                !first_target_detected_time_ns_) {
+                first_target_detected_time_ns_ = context.emit_time_ns;
             }
             if (first_target_detected_time_ns_) {
-                if (c.emit_time_ns < *first_target_detected_time_ns_) return reject(Reason::stale_input);
-                const int64_t elapsed_ns = c.emit_time_ns - *first_target_detected_time_ns_;
+                if (context.emit_time_ns < *first_target_detected_time_ns_) {
+                    return zero_output_preserving_flags(Reason::stale_input);
+                }
+                const int64_t elapsed_ns = context.emit_time_ns - *first_target_detected_time_ns_;
                 if (config_.debug.duration_ms > 0) {
-                    const int64_t duration_ns = static_cast<int64_t>(config_.debug.duration_ms) * 1'000'000LL;
+                    const int64_t duration_ns =
+                        static_cast<int64_t>(config_.debug.duration_ms) * 1'000'000LL;
                     triggered = (elapsed_ns < duration_ns);
                 } else {
                     triggered = true;
@@ -183,100 +222,100 @@ domain::CommandMappingResult CommandOutputMapper::map(const domain::BallisticOve
             }
         }
 
-        if (c.latest_state && c.latest_state->attitude.valid) {
-            trace.attitude = c.latest_state->attitude;
+        if (latest_state.attitude.valid) {
+            trace.attitude = latest_state.attitude;
         }
 
         if (!triggered) {
-            // 延迟等待不受视觉影响；识别模式触发后保留原有识别锁存语义。
+            // 等待或窗口结束不是算法故障；识别模式在窗口结束后仍保留锁存位。
             command.target_found = first_target_detected_time_ns_.has_value();
-            return reject(Reason::none);
+            return zero_output_preserving_flags(Reason::none);
         }
 
-        // 定时触发或识别触发时，识别标志位置 1，确保下位机正确执行指令
+        // 固定模式复用识别标志通知下位机执行，不要求当前图像仍检出目标。
         command.target_found = true;
 
         double y = config_.debug.pitch_overload_g;
         double z = config_.debug.yaw_overload_g;
         select_control_channel(config_.control_channel, y, z);
         trace.unlimited_body_overload = domain::DartOverloadG{0, y, z};
-
-        const auto limit = [&](double maximum) {
-            const double magnitude = std::hypot(y, z);
-            if (magnitude <= maximum) return false;
-            if (maximum == 0) y = z = 0;
-            else { const double scale = maximum / magnitude; y *= scale; z *= scale; }
-            return true;
-        };
-
-        trace.overload_limited = limit(config_.maximum_command_overload);
-        trace.acceleration_limited = limit(config_.maximum_command_acceleration / config_.gravity);
-        if (!quantize_overload(y, z, c.overload_step_g, config_, trace)) return reject(Reason::algorithm_rejected);
+        trace.overload_limited =
+            limit_overload_magnitude(y, z, config_.maximum_command_overload);
+        trace.acceleration_limited = limit_overload_magnitude(
+            y, z, config_.maximum_command_acceleration / config_.gravity);
+        if (!quantize_overload(y, z, context.overload_step_g, config_, trace)) {
+            return zero_output_preserving_flags(Reason::algorithm_rejected);
+        }
         trace.body_overload = {0, y, z};
         trace.body_acceleration = {0, y * config_.gravity, z * config_.gravity};
         trace.command_overload.value = std::hypot(y, z);
         trace.command_phase.value = trace.command_overload.value == 0 ? 0 : std::atan2(z, y);
-        trace.valid = command.valid = true;
+        trace.valid = true;
+        command.valid = true;
         command.invalid_reason = Reason::none;
         command.overload_g = trace.body_overload;
         return result;
     }
 
-    // ==========================================
-    // 正常 PNG 制导分支
-    // ==========================================
-    if (!c.launched) return reject(Reason::launch_not_confirmed);
-    if (c.expired) return reject(Reason::stale_input);
+    if (!request_launched) return zero_output_preserving_flags(Reason::launch_not_confirmed);
+    if (context.expired) return zero_output_preserving_flags(Reason::stale_input);
     // 提交时间只检测生产断流，不能为曝光后排队或识别耗时重新授予有效期。
-    if (!matching_time(c.source_time, c.clock_domain) || c.emit_time_ns < c.source_time.monotonic_ns ||
-        c.maximum_source_age_ns <= 0 || c.emit_time_ns - c.source_time.monotonic_ns > c.maximum_source_age_ns) {
+    if (!matching_time(context.source_time, context.clock_domain) ||
+        context.emit_time_ns < context.source_time.monotonic_ns ||
+        context.maximum_source_age_ns <= 0 ||
+        context.emit_time_ns - context.source_time.monotonic_ns > context.maximum_source_age_ns) {
         command.target_found = false;
-        return reject(Reason::stale_input);
+        return zero_output_preserving_flags(Reason::stale_input);
     }
-    if (!c.request_valid) return reject(c.invalid_reason == Reason::none ? Reason::algorithm_rejected : c.invalid_reason);
-    if (request.x != 0 || !std::isfinite(request.y) || !std::isfinite(request.z))
-        return reject(Reason::algorithm_rejected);
+    if (!context.request_valid) {
+        return zero_output_preserving_flags(
+            context.invalid_reason == Reason::none ? Reason::algorithm_rejected : context.invalid_reason);
+    }
+    if (request.x != 0 || !std::isfinite(request.y) || !std::isfinite(request.z)) {
+        return zero_output_preserving_flags(Reason::algorithm_rejected);
+    }
     trace.raw_navigation_overload = request;
-    if (!c.latest_state || !c.latest_state->attitude.valid) return reject(Reason::invalid_attitude);
-    trace.attitude = c.latest_state->attitude;
-    const auto& time = trace.attitude.time;
-    if (!matching_time(time, c.clock_domain) ||
-        !matching_time(c.latest_state->time, c.clock_domain) ||
-        c.latest_state->time.monotonic_ns != time.monotonic_ns || c.emit_time_ns < time.monotonic_ns ||
-        c.maximum_attitude_age_ns <= 0 || c.emit_time_ns - time.monotonic_ns > c.maximum_attitude_age_ns)
-        return reject(Reason::stale_input);
+    if (!latest_state.attitude.valid) return zero_output_preserving_flags(Reason::invalid_attitude);
+    trace.attitude = latest_state.attitude;
+    const auto& attitude_time = trace.attitude.time;
+    if (!matching_time(attitude_time, context.clock_domain) ||
+        !matching_time(latest_state.time, context.clock_domain) ||
+        latest_state.time.monotonic_ns != attitude_time.monotonic_ns ||
+        context.emit_time_ns < attitude_time.monotonic_ns ||
+        context.maximum_attitude_age_ns <= 0 ||
+        context.emit_time_ns - attitude_time.monotonic_ns > context.maximum_attitude_age_ns) {
+        return zero_output_preserving_flags(Reason::stale_input);
+    }
     const auto& m = trace.attitude.navigation_from_dart.matrix();
-    if (!detail::valid_rotation(m)) return reject(Reason::invalid_attitude);
+    if (!detail::valid_rotation(m)) return zero_output_preserving_flags(Reason::invalid_attitude);
     const double horizontal = std::hypot(m[4], m[5]);
     const double cosine = horizontal > 1e-6 ? m[4] / horizontal : 1.0;
     const double sine = horizontal > 1e-6 ? -m[5] / horizontal : 0.0;
     double y = cosine * request.y + sine * request.z;
     double z = -sine * request.y + cosine * request.z;
     select_control_channel(config_.control_channel, y, z);
-    if (!std::isfinite(std::hypot(y, z))) return reject(Reason::algorithm_rejected);
+    if (!std::isfinite(std::hypot(y, z))) return zero_output_preserving_flags(Reason::algorithm_rejected);
     trace.unlimited_body_overload = domain::DartOverloadG{0, y, z};
-    const auto limit = [&](double maximum) {
-        const double magnitude = std::hypot(y, z);
-        if (magnitude <= maximum) return false;
-        if (maximum == 0) y = z = 0;
-        else { const double scale = maximum / magnitude; y *= scale; z *= scale; }
-        return true;
-    };
-    trace.overload_limited = limit(config_.maximum_command_overload);
+    trace.overload_limited = limit_overload_magnitude(y, z, config_.maximum_command_overload);
     trace.after_overload_limit = {0, cosine * y - sine * z, sine * y + cosine * z};
-    trace.acceleration_limited = limit(config_.maximum_command_acceleration / config_.gravity);
-    if (!quantize_overload(y, z, c.overload_step_g, config_, trace)) return reject(Reason::algorithm_rejected);
+    trace.acceleration_limited = limit_overload_magnitude(
+        y, z, config_.maximum_command_acceleration / config_.gravity);
+    if (!quantize_overload(y, z, context.overload_step_g, config_, trace)) {
+        return zero_output_preserving_flags(Reason::algorithm_rejected);
+    }
     trace.body_overload = {0, y, z};
     trace.body_acceleration = {0, y * config_.gravity, z * config_.gravity};
     const double by = cosine * y - sine * z;
     const double bz = sine * y + cosine * z;
     trace.ballistic_acceleration = {0, by * config_.gravity, bz * config_.gravity};
     if (!std::isfinite(trace.body_acceleration.y) || !std::isfinite(trace.body_acceleration.z) ||
-        !std::isfinite(trace.ballistic_acceleration.y) || !std::isfinite(trace.ballistic_acceleration.z))
-        return reject(Reason::algorithm_rejected);
+        !std::isfinite(trace.ballistic_acceleration.y) || !std::isfinite(trace.ballistic_acceleration.z)) {
+        return zero_output_preserving_flags(Reason::algorithm_rejected);
+    }
     trace.command_overload.value = std::hypot(y, z);
     trace.command_phase.value = trace.command_overload.value == 0 ? 0 : std::atan2(bz, by);
-    trace.valid = command.valid = true;
+    trace.valid = true;
+    command.valid = true;
     command.invalid_reason = Reason::none;
     command.overload_g = trace.body_overload;
     return result;
