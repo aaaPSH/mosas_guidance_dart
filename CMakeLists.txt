@@ -38,9 +38,6 @@ find_package(Threads REQUIRED)
 
 if(MOSAS_BUILD_APPLICATION OR MOSAS_BUILD_OPENCV_ADAPTERS)
     set(MOSAS_OPENCV_COMPONENTS core imgproc videoio)
-    if(MOSAS_BUILD_APPLICATION)
-        list(APPEND MOSAS_OPENCV_COMPONENTS imgcodecs)
-    endif()
     find_package(OpenCV REQUIRED COMPONENTS ${MOSAS_OPENCV_COMPONENTS})
 
     add_library(mosas_vision STATIC
@@ -159,6 +156,7 @@ if(MOSAS_BUILD_SIMULATION_APPLICATION)
 endif()
 
 if(MOSAS_BUILD_APPLICATION)
+find_package(JPEG REQUIRED)
 # 根据目标处理器选择 SDK 的库目录，并在配置阶段拒绝不完整的 SDK。
 set(MOSAS_CAMERA_SDK_ROOT "${PROJECT_SOURCE_DIR}/camera_SDk" CACHE PATH
     "Nori 相机 SDK 根目录")
@@ -249,6 +247,8 @@ target_link_libraries(mosas_app
         mosas_camera_sdk
         atomic
         ${OpenCV_LIBS}
+    PRIVATE
+        JPEG::JPEG
 )
 if(MOSAS_BUILD_WIRELESS)
     target_link_libraries(mosas_app PUBLIC mosas_wireless)

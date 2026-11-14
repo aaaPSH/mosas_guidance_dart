@@ -2,15 +2,18 @@
 #include <mosas/vision/opencv_image_frame.hpp>
 
 #include <cmath>
+#include <csetjmp>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
+#include <jpeglib.h>
 #include <linux/v4l2-controls.h>
-#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace mosas::app {
@@ -60,6 +63,76 @@ runtime::CameraTimestampSource timestamp_source(
 
 }  // 匿名命名空间结束
 
+/** @brief 由采集线程复用的 libjpeg-turbo 状态；不持有已交付帧的像素。 */
+struct NoriSdkCameraSource::JpegDecoder {
+    struct Error {
+        jpeg_error_mgr manager;
+        std::jmp_buf jump;
+        char message[JMSG_LENGTH_MAX];
+    } error{};
+    jpeg_decompress_struct context{};
+    std::vector<JSAMPROW> scanlines;
+
+    JpegDecoder() {
+        context.err = jpeg_std_error(&error.manager);
+        error.manager.error_exit = [](j_common_ptr info) {
+            auto* failure = reinterpret_cast<Error*>(info->err);
+            info->err->format_message(info, failure->message);
+            std::longjmp(failure->jump, 1);
+        };
+        if (setjmp(error.jump)) {
+            jpeg_destroy_decompress(&context);
+            throw std::runtime_error(error.message);
+        }
+        jpeg_create_decompress(&context);
+    }
+
+    ~JpegDecoder() { jpeg_destroy_decompress(&context); }
+
+    /**
+     * @brief 按原尺寸直接解码为 BGR8，关闭色度平滑但保留默认精确 IDCT。
+     * @param pending SDK 帧及其拥有型压缩数据，尺寸已由 capture 校验。
+     * @param output 调用方持有的独立像素存储，不能与待消费帧共用。
+     * @param failure 失败时写入 JPEG 错误或尺寸不匹配原因。
+     * @return 解码成功为 true；失败时中止当前图像并保留可复用解码器。
+     */
+    bool decode(const PendingFrame& pending, cv::Mat& output,
+                std::string& failure) {
+        // 拥有型 C++ 对象留在调用方或成员中，避免 longjmp 跳过其析构。
+        if (setjmp(error.jump)) {
+            jpeg_abort_decompress(&context);
+            failure = error.message;
+            return false;
+        }
+        jpeg_mem_src(&context, pending.bytes.data(),
+                     static_cast<unsigned long>(pending.bytes.size()));
+        jpeg_read_header(&context, TRUE);
+        if (context.image_width != pending.width ||
+            context.image_height != pending.height) {
+            jpeg_abort_decompress(&context);
+            failure = "JPEG 尺寸与 SDK 帧描述不匹配";
+            return false;
+        }
+        context.out_color_space = JCS_EXT_BGR;
+        context.do_fancy_upsampling = FALSE;
+        output.create(static_cast<int>(pending.height),
+                      static_cast<int>(pending.width), CV_8UC3);
+        scanlines.resize(pending.height);
+        for (std::size_t row = 0; row < scanlines.size(); ++row) {
+            scanlines[row] = output.ptr<JSAMPLE>(static_cast<int>(row));
+        }
+        jpeg_start_decompress(&context);
+        // 提供全部剩余行，让解码器批量输出，避免逐行调用触发额外行缓存拷贝。
+        while (context.output_scanline < context.output_height) {
+            jpeg_read_scanlines(&context,
+                                scanlines.data() + context.output_scanline,
+                                context.output_height - context.output_scanline);
+        }
+        jpeg_finish_decompress(&context);
+        return true;
+    }
+};
+
 NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config)
     : NoriSdkCameraSource(std::move(config), make_nori_sdk_api()) {}
 
@@ -69,6 +142,7 @@ NoriSdkCameraSource::NoriSdkCameraSource(CameraAppConfig config,
       timeline_(config_.timing),
       sdk_(std::move(sdk)),
       session_(sdk_),
+      jpeg_decoder_(std::make_unique<JpegDecoder>()),
       callback_context_(create_callback_context()) {
     std::lock_guard<std::mutex> lock(callback_context_->mutex);
     callback_context_->owner = this;
@@ -473,22 +547,12 @@ runtime::SourceResult NoriSdkCameraSource::capture(runtime::CameraFrame* frame) 
     cv::Mat decoded_image;
     try {
         if (pending.media_type == VIDEO_MEDIA_TYPE_MJPG) {
-            if (pending.bytes.size() >
-                static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                set_error("capture 收到过大的 MJPG 帧，设备 " + config_.device);
+            std::string decode_error;
+            if (!jpeg_decoder_->decode(pending, decoded_image, decode_error)) {
+                set_error("capture 解码 MJPG 帧失败：" + decode_error +
+                          "，设备 " + config_.device);
                 return fatal_result();
             }
-            const cv::Mat encoded(1, static_cast<int>(pending.bytes.size()),
-                                  CV_8UC1, pending.bytes.data());
-            cv::Mat decoded = cv::imdecode(encoded, cv::IMREAD_COLOR);
-            if (decoded.empty() || decoded.type() != CV_8UC3 ||
-                decoded.cols != static_cast<int>(pending.width) ||
-                decoded.rows != static_cast<int>(pending.height)) {
-                set_error("capture 解码 MJPG 帧失败或尺寸不匹配，设备 " +
-                          config_.device);
-                return fatal_result();
-            }
-            decoded_image = std::move(decoded);
         } else if (pending.media_type == VIDEO_MEDIA_TYPE_YUYV) {
             const uint64_t pixel_count = static_cast<uint64_t>(pending.width) *
                                           static_cast<uint64_t>(pending.height);

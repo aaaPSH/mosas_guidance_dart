@@ -74,6 +74,7 @@ public:
      * @return 捕获状态；队列等待期间可能阻塞，取消通过 SourceStatus::cancelled 返回。
      * @note 采样时间由稳定窗口基线及固定采集序号原点推算；sensor_time.source_time_ns 保留未加 bias 的 SDK 单调转换值。
      *       received_timestamp_ns 保留原始主机回调时间，不随序号时钟内部的补偿观察一起平移。
+     *       单一采集线程复用 MJPEG 解码器，关闭平滑色度上采样；每帧像素独立持有，彩色边缘可能有轻微差异。
      */
     runtime::SourceResult capture(runtime::CameraFrame* frame) override;
 
@@ -122,6 +123,8 @@ public:
     NoriCameraTiming camera_timing() const;
 
 private:
+    struct JpegDecoder;
+
     struct CallbackContext {
         mutable std::mutex mutex;
         std::condition_variable condition;
@@ -205,6 +208,7 @@ private:
     std::uint64_t previous_sequence_ = 0;
     std::shared_ptr<NoriSdkApi> sdk_;
     NoriSdkSession session_;
+    std::unique_ptr<JpegDecoder> jpeg_decoder_;
     uint32_t device_id_ = 0;
     VIDEO_INFO selected_video_{};
     CameraSdkConfiguration sdk_configuration_{};
