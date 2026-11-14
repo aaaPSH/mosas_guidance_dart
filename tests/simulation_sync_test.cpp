@@ -64,7 +64,7 @@ int main(){
         {std::unique_lock<std::mutex> lock(recording->mutex);CHECK(recording->cv.wait_for(lock,1s,[&]{return recording->frame.has_value();}));}
         supervisor.stop();next->clear_watermark();next->stop();
         CHECK(!recording->frame->guidance.valid); // watermark cannot invent the missing lower IMU bracket
-        CHECK(recording->frame->guidance.invalid_reason==domain::GuidanceInvalidReason::stale_input);
+        CHECK(recording->frame->guidance.invalid_reason==domain::GuidanceInvalidReason::imu_history_unavailable);
         for(auto& command:command_control->commands())CHECK(!command.valid);
     }
     return 0;

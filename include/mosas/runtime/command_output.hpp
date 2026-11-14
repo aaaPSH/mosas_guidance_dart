@@ -17,6 +17,11 @@ public:
     std::shared_future<std::optional<domain::CommandEmissionSnapshot>> result() const noexcept {
         return result_;
     }
+    /**
+     * @return 空回执的实际原因，区分被更新请求覆盖与会话/代际重置。
+     * @pre result() 已就绪且为空；future 的就绪同步保证原因在读取前已发布。
+     */
+    domain::GuidanceInvalidReason missing_reason() const noexcept { return missing_reason_; }
     /** @return 观测 worker 等待的单调时钟截止时刻，不影响控制请求有效期。 */
     std::chrono::steady_clock::time_point deadline() const noexcept { return deadline_; }
 private:
@@ -29,6 +34,7 @@ private:
     std::promise<std::optional<domain::CommandEmissionSnapshot>> completion_;
     std::shared_future<std::optional<domain::CommandEmissionSnapshot>> result_;
     std::chrono::steady_clock::time_point deadline_;
+    domain::GuidanceInvalidReason missing_reason_ = domain::GuidanceInvalidReason::output_not_submitted;
 };
 /** @brief 输出端必需依赖；仅在启动前绑定，状态源生命周期覆盖输出线程。 */
 struct CommandOutputBinding {

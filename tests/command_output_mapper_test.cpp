@@ -49,16 +49,18 @@ int exposure_age_boundaries() {
         ++c.emit_time_ns;
         const auto stale = mapper.map({0, 0.2, 0}, c).command;
         CHECK(!stale.valid && stale.launched && !stale.target_found);
-        CHECK(stale.invalid_reason == domain::GuidanceInvalidReason::stale_input);
+        CHECK(stale.invalid_reason == domain::GuidanceInvalidReason::source_too_old);
         CHECK(stale.overload_g.y == 0 && stale.overload_g.z == 0);
         c.request_valid = false;
         c.invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
         CHECK(!mapper.map({}, c).command.target_found); // 首帧无效速率不能保留陈旧识别位。
         c.request_valid = true;
         c.source_time = test::command_test_time(c.emit_time_ns + 1, clock);
-        CHECK(!mapper.map({0, 0.2, 0}, c).command.valid);
+        const auto future = mapper.map({0, 0.2, 0}, c).command;
+        CHECK(!future.valid && future.invalid_reason == domain::GuidanceInvalidReason::future_source_time);
         c.source_time = {};
-        CHECK(!mapper.map({0, 0.2, 0}, c).command.target_found);
+        const auto missing = mapper.map({0, 0.2, 0}, c).command;
+        CHECK(!missing.target_found && missing.invalid_reason == domain::GuidanceInvalidReason::invalid_source_time);
     }
     // 固定模式只按原有触发契约工作，不引入视觉年龄或姿态有效性要求。
     for (const auto mode : {guidance::GuidanceDebugMode::launch_delay,
@@ -389,8 +391,24 @@ int main() {
     CHECK(mapper.map({0, 1, 0}, c).command.valid);
     --c.latest_state->attitude.time.monotonic_ns;
     c.latest_state->time = c.latest_state->attitude.time;
-    CHECK(!mapper.map({0, 1, 0}, c).command.valid);
-    for (int bad = 0; bad < 9; ++bad) {
+    const auto stale_attitude = mapper.map({0, 1, 0}, c).command;
+    CHECK(!stale_attitude.valid);
+    CHECK(stale_attitude.invalid_reason == domain::GuidanceInvalidReason::attitude_too_old);
+    c = context();
+    c.latest_state->attitude.time.monotonic_ns = c.emit_time_ns + 1;
+    c.latest_state->time = c.latest_state->attitude.time;
+    CHECK(mapper.map({0, 1, 0}, c).command.valid);
+    const domain::GuidanceInvalidReason rejected_reasons[]{
+        domain::GuidanceInvalidReason::imu_initializing,
+        domain::GuidanceInvalidReason::invalid_attitude,
+        domain::GuidanceInvalidReason::generation_mismatch,
+        domain::GuidanceInvalidReason::generation_mismatch,
+        domain::GuidanceInvalidReason::launch_not_confirmed,
+        domain::GuidanceInvalidReason::output_disabled,
+        domain::GuidanceInvalidReason::invalid_source_time,
+        domain::GuidanceInvalidReason::invalid_attitude,
+    };
+    for (int bad = 0; bad < 8; ++bad) {
         c = context();
         if (bad == 0) c.latest_state.reset();
         if (bad == 1) c.latest_state->attitude.valid = false;
@@ -399,10 +417,10 @@ int main() {
         if (bad == 4) c.launched = false;
         if (bad == 5) c.output_enabled = false;
         if (bad == 6) c.clock_domain = domain::ClockDomain::simulation;
-        if (bad == 7) { c.latest_state->attitude.time.monotonic_ns = c.emit_time_ns + 1; c.latest_state->time = c.latest_state->attitude.time; }
-        if (bad == 8) c.latest_state->attitude.navigation_from_dart = domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>({-1,0,0,0,1,0,0,0,1});
+        if (bad == 7) c.latest_state->attitude.navigation_from_dart = domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>({-1,0,0,0,1,0,0,0,1});
         const auto result = mapper.map({0, 4, 2}, c);
         CHECK(!result.command.valid);
+        CHECK(result.command.invalid_reason == rejected_reasons[bad]);
         CHECK(result.command.overload_g.y == 0 && result.command.overload_g.z == 0);
     }
     c = context();
@@ -413,7 +431,9 @@ int main() {
     CHECK(mapped.command.invalid_reason == domain::GuidanceInvalidReason::invalid_rate);
     CHECK(mapped.command.overload_g.y == 0 && mapped.command.overload_g.z == 0);
     c.expired = true;
-    CHECK(!mapper.map({0, 9, 8}, c).command.target_found);
+    const auto expired = mapper.map({0, 9, 8}, c).command;
+    CHECK(!expired.target_found);
+    CHECK(expired.invalid_reason == domain::GuidanceInvalidReason::command_expired);
 
     const double pi = std::acos(-1.0);
     config.control_channel = guidance::ControlChannel::pitch;

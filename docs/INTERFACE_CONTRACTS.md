@@ -110,7 +110,7 @@ struct SyncDiagnostics {
 2. `CLOCK_REALTIME` 仅作为日志/会话时间；格式化事件可带 `wall_time_ns`，不得用于控制耗时。
 3. SDK `Frame_Time` 原值必须保留；时钟域映射由 `ITimeSyncProvider` 完成并报告质量。
 4. 相机与串口 IMU 在硬件源中采用固定序号时间轴（`sequence_fixed_period`），根据稳定窗口基线及标定采样频率计算 `T(n) = T0 + round((n - n0) * 1e9 / f)`。SDK Frame_Time 与串口接收时间保留作为原始诊断证据，不逐帧替换采样时间。
-5. 启动时通过稳定观察窗口建立基线与同步屏障。以窗口首个有效序号为 `n0`，将每个有效候选归一化为 `candidate_i - round((sequence_i - n0) * 1e9 / f)`，取窗口最小值为 `T0`；窗口重启或同步重置时清空候选。后续始终相对该原点计算总偏移，不移到最小候选所在序号再次舍入。窗口最小值仅降低接收延迟推晚基线的影响，不证明绝对采样时间准确，也不保证消除所有未来时间或频偏问题；实际频率和测量延迟仍须依据 `ACQUISITION_TIME` 与实机标定核对。发射前发生未知失步可重新同步并重置跨时间段状态；发射后时间轴基线与周期锁定，时间异常只记入诊断，不触发重锚或清零，既有未来姿态、陈旧输入与 I/O 保护仍由其自身机制判定。
+5. 启动时通过稳定观察窗口建立基线与同步屏障。以窗口首个有效序号为 `n0`，将每个有效候选归一化为 `candidate_i - round((sequence_i - n0) * 1e9 / f)`，取窗口最小值为 `T0`；窗口重启或同步重置时清空候选。后续始终相对该原点计算总偏移，不移到最小候选所在序号再次舍入。窗口最小值仅降低接收延迟推晚基线的影响，不证明绝对采样时间准确，也不保证消除所有未来时间或频偏问题；实际频率和测量延迟仍须依据 `ACQUISITION_TIME` 与实机标定核对。发射前发生未知失步可重新同步并重置跨时间段状态；发射后时间轴基线与周期锁定，时间异常只记入诊断，不触发重锚或清零，发送端不因姿态时间戳超前而拒绝输出，陈旧输入与 I/O 保护仍由其自身机制判定。
 6. 队列积压、串口未知失步、时钟域不明都会降低时间质量或使样本不可用；不根据接收时间猜测补号。
 7. 相机固定序号时钟的候选基线、接收观察、当前及启动时间均使用同一个 bias 平移，禁止仅补偿基线或仅补偿接收时间。`sensor_time.source_time_ns` 保留未补偿的 SDK 单调转换值，帧的 `received_timestamp_ns` 保留原始主机接收时间。固定补偿不进入失步残差、不改变预热时长；原有未来／过旧保护仍使用原始接收时间。负时间和有符号溢出必须拒绝，不做饱和修补。
 
@@ -604,11 +604,59 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 `RuntimeSupervisor` 持有输出端口并统一管理 start/cancel/close/join/stop 生命周期。`FramePipeline` 向每个帧输出 worker 独立提交同一 processed-frame snapshot；`ImuPipeline` 将 IMU 样本提交给独立 recorder。match 模式的视频与遥测 sink 共享路径及 generation/window 协调元数据，但保留独立队列、writer、错误状态；只有两者均成功完成窗口后才发出 rearm。各文件可能因独立队列丢帧而包含不同帧子集，使用遥测 CSV 的 `source_frame_id` 关联原始帧，不依赖行号或视频帧序号一致。
 
-录像、逐帧 CSV 和 RTSP 的输出过载、输出姿态只使用同一来源请求的首次实际输出尝试，不在图像处理结束时立即读取 `latest_emission()`。`FramePipeline` 在同一代际屏障内先登记 `CommandEmissionReceipt` 再提交请求；发送端 `complete()` 按来源帧、代际和来源时间填入一次性结果，后续重发不改写该结果。各观测 worker 独立有界等待：串口上限从登记时刻计算，为一个发送周期加两次串口写超时（可能存在的在途写入及本次写入），同步日志／仿真输出不额外等待；等待不改变命令有效期，不阻塞制导或串口线程。等待期间的取消、停止和换代会结束等待；`reset()/invalidate()` 将未完成凭据置为空。被 mailbox 覆盖、从未发送或等待到期仍无结果的帧保留缺失值（CSV `output_present=0`、输出列留空，画面 `N/A`），不借用其他帧或重新计算预览。处理器只保留凭据弱引用，丢弃的观测帧不会积压发送历史。
+录像、逐帧 CSV 和 RTSP 的输出过载、输出姿态只使用同一来源请求的首次实际输出尝试，不在图像处理结束时立即读取 `latest_emission()`。`FramePipeline` 在同一代际屏障内先登记 `CommandEmissionReceipt` 再提交请求；发送端 `complete()` 按来源帧、代际和来源时间填入一次性结果，后续重发不改写该结果。各观测 worker 独立有界等待：串口上限从登记时刻计算，为一个发送周期加两次串口写超时（可能存在的在途写入及本次写入），同步日志／仿真输出不额外等待；等待不改变命令有效期，不阻塞制导或串口线程。等待期间的取消、停止和换代会结束等待；`reset()/invalidate()` 将未完成凭据置为空。被 mailbox 覆盖、从未提交或等待到期仍无结果的帧保留缺失值（CSV `output_present=0`、过载和输出时间列留空、`output_status_code` 写明原因，画面 `N/A`），不借用其他帧或重新计算预览。处理器只保留凭据弱引用，丢弃的观测帧不会积压发送历史。
 
-逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，速率有效位为 0；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
+逐帧 CSV 与录像／RTSP 的 LOS 展示共用导航惯性系快照：`los_inertial_q_y_rad` 为仰角，`los_inertial_q_z_rad` 为方位角；有效滤波帧从同一份滤波方向与导数产生角度、角速度，包含杆臂修正，但不扣除制导律局部使用的抛物线基准。`los_inertial_rate_q_y_rad_s` 为仰角导数，`los_inertial_rate_q_z_rad_s` 保持横向有效角速率 `cos(q_y) * dq_z/dt` 的定义，不是直接的方位角导数。触发前、建基准帧及滤波速率不可用时，角度仅为用曝光姿态旋转到导航系的当前观测，内部速率有效位为 false，CSV 的 `los_inertial_rate_status_code` 为非零原因码；没有观测或处于仰角极点时不得将占位零值解释为有效角度。画面标注 `Inertial LOS` 和 `Inertial LOS rate`，单位分别为 ° 和 °/s。
 
-逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_valid=0`，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。逐帧 CSV 共 38 列（末三列为 `png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g`），删除与全流程 IMU CSV 重复的 `imu_acceleration_x_mps2,imu_acceleration_y_mps2,imu_acceleration_z_mps2,servo_control_p_normalized,servo_control_y_normalized`，同时删除与曝光帧时间恒等的 `imu_timestamp_ns`，统一通过 `frame_timestamp_ns` 关联 IMU 时间轴。保留曝光姿态三轴角、姿态有效位和发射状态，这些是处理状态而非原始 IMU 记录。本次 CSV 字段结构不保留旧别名，读取方须按表头取列。
+逐帧 CSV 用 `imu_roll_rad,imu_pitch_rad,imu_yaw_rad` 替换原三轴 IMU 角速度列，同时移除重复的旧 pitch/roll 列。三轴角与画面的 `Exposure attitude` 都从插值到 `frame_timestamp_ns` 的同一完整姿态矩阵提取，不使用发送时刻的最新姿态，也不直接积分日志中的角速度。欧拉角约定为 `R_N_from_D = R_Y(-yaw) R_Z(pitch) R_X(roll)`；俯仰极点选取 yaw=0 的等价姿态。CSV 单位 rad，画面单位 °；姿态无效时 CSV 三列留空且 `imu_attitude_status_code` 记录非零原因码，画面显示 N/A。yaw 是局部导航系相对航向，不是绝对航向。逐帧 CSV 共 38 列（末三列为 `png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g`），删除与全流程 IMU CSV 重复的 `imu_acceleration_x_mps2,imu_acceleration_y_mps2,imu_acceleration_z_mps2,servo_control_p_normalized,servo_control_y_normalized`，同时删除与曝光帧时间恒等的 `imu_timestamp_ns`，统一通过 `frame_timestamp_ns` 关联 IMU 时间轴。保留曝光姿态三轴角、姿态有效位和发射状态，这些是处理状态而非原始 IMU 记录。本次 CSV 字段结构不保留旧别名，读取方须按表头取列。
+
+**CSV 有效性原因码**：五个旧布尔列依次替换为 `imu_attitude_status_code,los_inertial_status_code,los_inertial_rate_status_code,guidance_status_code,output_status_code`，位置不变，总列数仍为 38，不保留旧列名。统一使用 `GuidanceInvalidReason` 的显式稳定数值；`0` 才表示有效，非零包括失败、等待和未执行。`vision_found,imu_launched,output_present` 是观测/状态/快照存在标志，仍使用 0/1。
+
+| 码 | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | none | 本阶段有效，包括有效零过载 |
+| 1 | launch_not_confirmed | 所需的发射状态尚未确认 |
+| 2 | stale_input | 观测被上游判定为陈旧 |
+| 3 | no_target | 本帧正常未检测到目标 |
+| 4 | invalid_los | LOS 方向无效、非有限或退化 |
+| 5 | invalid_rate | LOS 角速率或导数无效 |
+| 6 | invalid_attitude | 姿态无效或旋转矩阵不可用 |
+| 7 | algorithm_rejected | 制导计算、数值结果或输出量化被拒绝 |
+| 8 | not_evaluated | 本阶段未执行，查看上游阶段或 guidance 原因 |
+| 9 | imu_initializing | 尚无 IMU 状态或静止初始化未完成 |
+| 10 | imu_history_unavailable | 曝光时刻缺少 IMU 角速度插值区间 |
+| 11 | imu_history_too_old | IMU 插值区间年龄超限 |
+| 12 | attitude_history_unavailable | 曝光时刻缺少可用姿态历史 |
+| 13 | non_increasing_timestamp | 相机曝光或距离积分时间不递增 |
+| 14 | los_initializing | 首次观测、重捕获或新代际只建立 LOS 基准 |
+| 15 | los_gap | LOS 间隔超过上限，本帧重建基准 |
+| 16 | invalid_timestep | LOS 更新间隔非法，或连续段内间隔非正 |
+| 17 | output_not_submitted | 本帧没有提交输出请求 |
+| 18 | output_replaced | 较新请求已完成输出尝试，本帧请求被邮箱跳过 |
+| 19 | output_wait_timeout | 观测等待截止时尚无同帧发送回执，不断言永远未发送 |
+| 20 | output_invalidated | 会话重置或代际切换使未完成回执失效 |
+| 21 | output_cancelled | 等待回执时取消或停止 |
+| 22 | generation_mismatch | 请求、最新状态或观测不属于当前代际 |
+| 23 | output_receipt_mismatch | 回执与本帧的来源、代际或曝光时间不一致 |
+| 24 | io_rejected | 实际输出 I/O 失败，优先于映射结果记录 |
+| 25 | debug_inactive | 固定过载模式等待触发或输出窗口已结束 |
+| 26 | output_disabled | 当前输出门控未启用 |
+| 27 | command_expired | 请求自提交时刻起已超时 |
+| 28 | invalid_source_time | 来源时间无效或不属于当前运行时间轴 |
+| 29 | future_source_time | 来源时间或固定模式触发时间晚于发送时间 |
+| 30 | source_too_old | 曝光到发送总年龄超限 |
+| 31 | invalid_attitude_time | 姿态时间无效、时间轴不符或与完整状态时间不一致 |
+| 32 | attitude_too_old | 最新姿态到发送时刻的年龄超限 |
+| 33 | invalid_configuration | 输出映射配置或年龄上限非法，或映射依赖未绑定 |
+| 34 | state_source_failed | 获取输出状态、发送时钟或门控时发生异常 |
+| 35 | los_pole | LOS 仰角极点不能支持方位角/角速率状态 |
+| 36 | invalid_speed | 杆臂补偿速度非法或距离积分数值溢出 |
+| 37 | filter_rejected | 角度 Kalman 更新数值或协方差被拒绝 |
+| 38 | invalid_frame | 视觉检测器明确拒绝图像输入 |
+
+原因在实际处理/拒绝位置产生，经帧快照或回执传给 CSV，不根据最终零过载反推。上游提前返回时，下游未执行阶段保留码 8，`guidance_status_code` 保留中断制导链路的实际原因；初始化帧的 LOS 角度可以为码 0，而 LOS 速率、制导及同帧无效零输出为码 14。`output_status_code` 在没有输出快照时也始终写入，物理输出值不填零、不借用其他帧。`output_present=1` 仅表示存在同帧尝试，不保证 I/O 成功，须结合原因码和 `output_disposition`。
+
+本变更只改变诊断原因和 CSV 表达，不改变内部布尔有效性、门限、短路顺序、邮箱/超时/发送策略和串口字节；不记录逐项门限实测值，不追加逐次重发日志。CSV 仍只覆盖成功进入遥测 sink 的处理帧及其首次匹配输出；取消、换代或队列丢弃的帧可能不落盘，码 21/22 不保证各有一行。历史 CSV 未记录的原因不能事后补回。
 
 全量原始 IMU CSV 保留三轴加速度、三轴角速度及舵机 P/Y 参数，以及 `outer_loop_y_rad_s,outer_loop_p_rad_s,imu_index,trigger_flag`；外环两列单位 rad/s，固定三位小数。`imu_index` 保留原始 uint32 值（回绕后可归零），不提供设备帧号的模拟源该列留空；`sample_index` 仍仅为本文件行序号。`timestamp_ns` 来自序号差与固定周期，不压缩丢帧占用的时间。末尾追加 `received_timestamp_ns`，采用串口样本的 `SensorTime::source_time_ns`，单位为主机单调时钟纳秒：它是串口首字节接收时间估计扣除 `measurement_latency_ns` 后的值，不进行固定周期重建，也不是 CSV 写入时间。模拟源或缺少接收时间时该列留空，不用 `timestamp_ns` 代替。
 
@@ -630,7 +678,7 @@ App 是唯一 Composition Root。`make_runtime_output_ports` 按既有 `output.m
 
 - **接口与队列**：`output_contracts_test` 检查窄端口与 disabled-neutral 诊断；`multi_output_dispatcher_test` 验证阻塞 sink 不影响其他帧 worker、队列丢弃和错误按 sink 隔离。
 - **运行时集成**：`runtime_output_isolation_test` 在视频 worker 被同步屏障阻塞期间，逐帧释放相机输入并验证 command submit 与遥测 worker 仍继续；`runtime_supervisor_lifecycle_test` 覆盖故障取消、rearm、停止和重启。
-- **观测坐标与时间**：`runtime_supervisor_test` 验证建基准帧的导航系角度及有效滤波帧的同源 LOS 角度/速率；`output_mapping_test` 验证曝光矩阵的三轴姿态提取、时间插值和俯仰极点约定；`local_recorders_test` 验证 38 列 CSV 表头不含原始 IMU 重复项、无效姿态留空、独立于输出快照的补偿速率、限幅前 P/Y 精度与有效零值，以及 CSV 与显示数据一致，并通过真实遥测 worker 和 CSV writer 验证异步发送回执、首次输出不被重发覆盖、未发送留空与已发送零指令的区别。
+- **观测坐标与时间**：`runtime_supervisor_test` 验证建基准帧的导航系角度及有效滤波帧的同源 LOS 角度/速率；`output_mapping_test` 验证曝光矩阵的三轴姿态提取、时间插值和俯仰极点约定；`local_recorders_test` 验证 38 列 CSV 表头不含原始 IMU 重复项、无效姿态留空、独立于输出快照的补偿速率、限幅前 P/Y 精度与有效零值，以及 CSV 与显示数据一致，并通过真实遥测 worker 和 CSV writer 验证异步发送回执、首次输出不被重发覆盖、物理量缺失与已发送零指令的区别，并验证状态原因码及未提交、被覆盖、回执超时、重置、回执失配和 I/O 失败的 CSV 回查。
 - **记录器和故障语义**：`local_recorders_test` 检查视频/CSV、窗口、部分停止及 rearm；`output_sink_diagnostics_test` 和 `imu_pipeline_test` 检查 IMU 队列故障传播以及日志丢弃/写入/flush 故障不升级为 runtime fault。
 - **模式组合**：`mode_composition_test` 验证 debug/match/rtsp 组合、所有模式的 IMU recorder/logger、路径分配，以及 RTSP 适配器的懒启动/错误/重置；无线关闭时验证拒绝真实 RTSP 组装。
 - **发射触发**：`launch_detection_test`、`attitude_adapter_test` 验证默认加速触发、可选两阶段确认、误触发拒绝、超时边界、断流/异常样本及复位重校准；`body_vector_runtime_test` 在两种模式及两种 PN 下验证触发前不建立飞行滤波状态、跨触发边界不下发、使用触发后的动态速度；默认算法和仿真测试覆盖参数解析、缺省/非法模式、确认时刻元数据及两种模式下真实 Socket 录制链路。

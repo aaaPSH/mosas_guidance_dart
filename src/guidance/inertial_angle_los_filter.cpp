@@ -110,28 +110,46 @@ bool InertialAngleLosFilter::AngleState::update(
 }
 
 domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilterInput& input) {
-    if (!input.line_of_sight.valid || !input.attitude.valid ||
-        !std::isfinite(input.dt_seconds) || input.dt_seconds < 0.0 ||
-        (initialized_ && input.dt_seconds == 0.0) ||
-        (config_.enable_lever_arm_compensation &&
-         (!std::isfinite(input.speed_mps.value) || input.speed_mps.value < 0.0 ||
-          input.attitude.time.monotonic_ns < 0)) ||
-        !detail::valid_rotation(input.attitude.navigation_from_dart.matrix())) {
+    using Reason = domain::GuidanceInvalidReason;
+    if (!input.line_of_sight.valid) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::invalid_los};
+    }
+    if (!input.attitude.valid) {
+        reset_angles();
+        return {false, {}, {}, Reason::invalid_attitude};
+    }
+    if (!std::isfinite(input.dt_seconds) || input.dt_seconds < 0.0 ||
+        (initialized_ && input.dt_seconds == 0.0)) {
+        reset_angles();
+        return {false, {}, {}, Reason::invalid_timestep};
+    }
+    if (config_.enable_lever_arm_compensation &&
+        (!std::isfinite(input.speed_mps.value) || input.speed_mps.value < 0.0)) {
+        reset_angles();
+        return {false, {}, {}, Reason::invalid_speed};
+    }
+    if (config_.enable_lever_arm_compensation && input.attitude.time.monotonic_ns < 0) {
+        reset_angles();
+        return {false, {}, {}, Reason::invalid_attitude_time};
+    }
+    if (!detail::valid_rotation(input.attitude.navigation_from_dart.matrix())) {
+        reset_angles();
+        return {false, {}, {}, Reason::invalid_attitude};
     }
 
     const auto& direction = input.line_of_sight.direction;
     const double norm = std::hypot(std::hypot(direction.x, direction.y), direction.z);
     if (!std::isfinite(norm) || norm < kEpsilon) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::invalid_los};
     }
     const domain::DartLineOfSight normalized_los{
         true, {direction.x / norm, direction.y / norm, direction.z / norm}};
     const auto navigation_direction = input.attitude.navigation_from_dart.apply(normalized_los.direction);
-    const bool new_segment = !initialized_ || input.generation != generation_ ||
-                             input.dt_seconds > config_.maximum_gap_seconds;
+    const bool gap_exceeded = initialized_ && input.generation == generation_ &&
+                              input.dt_seconds > config_.maximum_gap_seconds;
+    const bool new_segment = !initialized_ || input.generation != generation_ || gap_exceeded;
     if (new_segment) {
         reset_angles();
     }
@@ -148,7 +166,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         } else {
             if (exposure_timestamp_ns <= previous_exposure_timestamp_ns_) {
                 reset_angles();
-                return {};
+                return {false, {}, {}, Reason::non_increasing_timestamp};
             }
             // 距离时间轴独立于 LOS 连续段，重捕获时仍计入缺失区间的飞行路程。
             const double distance_dt = static_cast<double>(exposure_timestamp_ns - previous_exposure_timestamp_ns_) * 1e-9;
@@ -156,7 +174,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
             const double travelled = average_speed * distance_dt;
             if (!std::isfinite(travelled)) {
                 reset_angles();
-                return {};
+                return {false, {}, {}, Reason::invalid_speed};
             }
             estimated_target_distance_ = std::max(kMinEstimatedDistance, estimated_target_distance_ - travelled);
         }
@@ -171,7 +189,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const double corrected_norm = std::hypot(std::hypot(x, y), z);
     if (!std::isfinite(corrected_norm) || corrected_norm < kEpsilon) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::invalid_los};
     }
     x /= corrected_norm;
     y /= corrected_norm;
@@ -179,7 +197,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const double horizontal = std::hypot(x, z);
     if (horizontal < kPoleThreshold) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::los_pole};
     }
     const double measured_pitch = std::atan2(y, horizontal);
     const double measured_yaw = std::atan2(z, x);
@@ -192,7 +210,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         previous_yaw_ = measured_yaw;
         generation_ = input.generation;
         initialized_ = true;
-        return {};
+        return {false, {}, {}, gap_exceeded ? Reason::los_gap : Reason::los_initializing};
     }
 
     const double raw_pitch_rate = (measured_pitch - previous_pitch_) / input.dt_seconds;
@@ -201,7 +219,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     previous_yaw_ = measured_yaw;
     if (!std::isfinite(raw_pitch_rate) || !std::isfinite(raw_yaw_rate)) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::invalid_rate};
     }
     sample_.raw_angular_velocity = {true, {raw_pitch_rate}, {horizontal * raw_yaw_rate}};
 
@@ -212,7 +230,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
         if (!pitch_.update(measured_pitch, input.dt_seconds, pitch_noise, variance, false) ||
             !yaw_.update(measured_yaw, input.dt_seconds, yaw_noise, variance, true)) {
             reset_angles();
-            return {};
+            return {false, {}, {}, Reason::filter_rejected};
         }
     } else {
         pitch_.angle = measured_pitch;
@@ -225,11 +243,12 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const double cz = std::cos(yaw_.angle), sz = std::sin(yaw_.angle);
     if (std::abs(pitch_.angle) >= kPi / 2.0 || cy < kPoleThreshold) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::los_pole};
     }
 
     domain::LosRateEstimate estimate;
     estimate.valid = true;
+    estimate.invalid_reason = Reason::none;
     // q_z 的公共诊断仍为横向有效速率，不能将方位角导数直接送入现有 PNG。
     estimate.angular_velocity = {true, {pitch_.rate}, {cy * yaw_.rate}};
     estimate.vector.valid = true;
@@ -242,7 +261,7 @@ domain::LosRateEstimate InertialAngleLosFilter::update(const domain::LosRateFilt
     const auto& rate = estimate.vector.inertial_direction_rate;
     if (!std::isfinite(rate.x) || !std::isfinite(rate.y) || !std::isfinite(rate.z)) {
         reset_angles();
-        return {};
+        return {false, {}, {}, Reason::invalid_rate};
     }
     sample_.filtered_angular_velocity = estimate.angular_velocity;
     return estimate;

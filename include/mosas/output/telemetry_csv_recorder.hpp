@@ -49,7 +49,7 @@ private:
      * @brief 序列化同帧惯性系 LOS、补偿速率、曝光姿态和匹配的输出尝试。
      * @param frame_index 本录制文件内的递增帧序号。
      * @param frame 不可变的处理快照；姿态须已插值到相机曝光时刻。
-     * @return 与 CSV 表头匹配的 38 列及换行符；无效姿态、缺失输出及未计算的诊断留空。
+     * @return 与 CSV 表头匹配的 38 列及换行符；状态列始终写原因码，无效姿态、缺失输出物理量及未计算诊断留空。
      * @note 原始加速度和舵机反馈仅由全流程 IMU CSV 记录；曝光时刻取 frame_timestamp_ns。
      */
     std::string make_csv_row(std::uint64_t frame_index,

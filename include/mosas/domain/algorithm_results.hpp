@@ -70,6 +70,8 @@ struct LosRateEstimate {
     bool valid = false;
     LineOfSightAngularVelocity angular_velocity{};
     VectorLosEstimate vector{};
+    /** @brief 无效结果的实际原因；有效结果为 none，首帧建基准为 los_initializing。 */
+    GuidanceInvalidReason invalid_reason = GuidanceInvalidReason::invalid_rate;
 };
 
 /** @brief 最近镖体系单位观测、补偿后惯性角速率及同帧杆臂补偿距离诊断。 */

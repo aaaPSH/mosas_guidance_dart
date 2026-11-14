@@ -71,24 +71,29 @@ format_imu_source_diagnostics(const ImuSourceDiagnostics& diagnostics) {
  * @brief 将导航系 LOS 方向投影成 CSV 与画面共用的仰角、方位角。
  * @param direction 曝光时刻的导航系观测或滤波方向，不能传入镖体系方向。
  * @param overlay 写入角度和有效位；无效方向或仰角极点不伪造方位角。
+ * @return 本次角度投影的有效性原因码。
  */
-void set_inertial_los_overlay(const domain::DirectionNavigationUnit& direction,
+domain::GuidanceInvalidReason set_inertial_los_overlay(const domain::DirectionNavigationUnit& direction,
                               domain::GuidanceOverlay& overlay) noexcept {
     overlay.line_of_sight_valid = false;
     overlay.line_of_sight_q_y = {};
     overlay.line_of_sight_q_z = {};
     if (!std::isfinite(direction.x) || !std::isfinite(direction.y) ||
         !std::isfinite(direction.z)) {
-        return;
+        return domain::GuidanceInvalidReason::invalid_los;
     }
     const double horizontal = std::hypot(direction.x, direction.z);
     const double norm = std::hypot(horizontal, direction.y);
-    if (!std::isfinite(norm) || norm < 1e-12 || horizontal < 1e-6 * norm) {
-        return;
+    if (!std::isfinite(norm) || norm < 1e-12) {
+        return domain::GuidanceInvalidReason::invalid_los;
+    }
+    if (horizontal < 1e-6 * norm) {
+        return domain::GuidanceInvalidReason::los_pole;
     }
     overlay.line_of_sight_valid = true;
     overlay.line_of_sight_q_y.value = std::atan2(direction.y, horizontal);
     overlay.line_of_sight_q_z.value = std::atan2(direction.z, direction.x);
+    return domain::GuidanceInvalidReason::none;
 }
 
 domain::Rotation3<domain::NavigationFrameTag, domain::DartFrameTag>
@@ -443,6 +448,9 @@ void FramePipeline::processing_worker() noexcept {
                             sent = command_sink_.try_submit(neutral);
                         }
                     });
+                if (!generation_is_current) {
+                    result.output_missing_reason = domain::GuidanceInvalidReason::generation_mismatch;
+                }
                 if (generation_is_current && !sent) {
                     report_fault("guidance command submit failed");
                     return false;
@@ -534,7 +542,7 @@ void FramePipeline::processing_worker() noexcept {
                     result.guidance.command.valid = false;
                     result.guidance.command.invalid_reason = reason;
                 };
-            mark_guidance_invalid(domain::GuidanceInvalidReason::stale_input);
+            mark_guidance_invalid(domain::GuidanceInvalidReason::not_evaluated);
             result.overlay = {};
 
             if ((has_frame_timestamp &&
@@ -544,6 +552,7 @@ void FramePipeline::processing_worker() noexcept {
                         << ", previous_camera_timestamp_ns="
                         << previous_frame_timestamp_ns;
                 log_output_diagnostic("相机帧时间戳不递增", details.str());
+                mark_guidance_invalid(domain::GuidanceInvalidReason::non_increasing_timestamp);
                 reset_rate_segment();
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
@@ -567,8 +576,8 @@ void FramePipeline::processing_worker() noexcept {
                     next_initialization_log = now + std::chrono::seconds(1);
                 }
                 reset_rate_segment();
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_attitude);
+                result.attitude_invalid_reason = domain::GuidanceInvalidReason::imu_initializing;
+                mark_guidance_invalid(result.attitude_invalid_reason);
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
                 }
@@ -648,8 +657,10 @@ void FramePipeline::processing_worker() noexcept {
                 }
                 imu_match_failure_active = true;
                 reset_rate_segment();
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::stale_input);
+                result.attitude_invalid_reason = lookup_is_too_old
+                    ? domain::GuidanceInvalidReason::imu_history_too_old
+                    : domain::GuidanceInvalidReason::imu_history_unavailable;
+                mark_guidance_invalid(result.attitude_invalid_reason);
                 if (!submit_neutral_command(timestamp_ns)) {
                     return;
                 }
@@ -681,8 +692,8 @@ void FramePipeline::processing_worker() noexcept {
                 imu_pipeline_.attitude_at(timestamp_ns);
             if (!attitude_lookup.has_value()) {
                 reset_rate_segment();
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_attitude);
+                result.attitude_invalid_reason = domain::GuidanceInvalidReason::attitude_history_unavailable;
+                mark_guidance_invalid(result.attitude_invalid_reason);
                 log_output_diagnostic("姿态历史无法匹配相机曝光时刻",
                                       "camera_timestamp_ns=" +
                                           std::to_string(timestamp_ns));
@@ -723,6 +734,7 @@ void FramePipeline::processing_worker() noexcept {
             result.flight_state.attitude.corrected_angular_velocity =
                 result.flight_state.imu_sample.angular_velocity;
             result.flight_state.attitude.valid = true;
+            result.attitude_invalid_reason = domain::GuidanceInvalidReason::invalid_attitude;
             result.flight_state.speed_mps.value = attitude_lookup->speed_mps;
             result.flight_state.launch.phase =
                 attitude_lookup->launched ? domain::LaunchPhase::launched
@@ -756,7 +768,9 @@ void FramePipeline::processing_worker() noexcept {
             if (!result.vision_detection.observation.valid) {
                 const bool missing = result.vision_detection.observation.reason == domain::ObservationReason::not_found;
                 mark_guidance_invalid(missing ? domain::GuidanceInvalidReason::no_target
-                                              : domain::GuidanceInvalidReason::stale_input);
+                    : result.vision_detection.observation.reason == domain::ObservationReason::invalid_frame
+                        ? domain::GuidanceInvalidReason::invalid_frame
+                        : domain::GuidanceInvalidReason::stale_input);
                 reset_rate_segment();
                 // 健康未检出不刷新邮箱；图像/观测异常仍必须覆盖旧控制量。
                 if (!missing && attitude_lookup->launched &&
@@ -776,8 +790,8 @@ void FramePipeline::processing_worker() noexcept {
                           std::chrono::steady_clock::now() -
                               line_of_sight_started);
             if (!line_of_sight.valid) {
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_los);
+                result.los_invalid_reason = domain::GuidanceInvalidReason::invalid_los;
+                mark_guidance_invalid(result.los_invalid_reason);
                 const std::string details =
                     "camera_timestamp_ns=" + std::to_string(timestamp_ns);
                 log_output_diagnostic("视线向量计算无效", details);
@@ -794,14 +808,14 @@ void FramePipeline::processing_worker() noexcept {
                 continue;
             }
             // 触发前及建基准帧直接旋转观测向量，仅在显示端提取导航系角度。
-            set_inertial_los_overlay(
+            result.los_invalid_reason = set_inertial_los_overlay(
                 result.flight_state.attitude.navigation_from_dart.apply(line_of_sight.direction),
                 result.overlay);
 
             if (!attitude_lookup->launched) {
                 // 触发前图像仍可识别目标，但不建立飞行滤波状态或计算制导。
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::launch_not_confirmed);
+                result.los_rate_invalid_reason = domain::GuidanceInvalidReason::launch_not_confirmed;
+                mark_guidance_invalid(result.los_rate_invalid_reason);
                 reset_rate_segment();
                 if (!enqueue_processed_frame()) {
                     return;
@@ -815,8 +829,9 @@ void FramePipeline::processing_worker() noexcept {
                 const auto initial_rate = los_rate_filter_->update(
                     {line_of_sight, result.flight_state.attitude, 1.0,
                      attitude_lookup->launch_generation, result.flight_state.speed_mps});
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_rate);
+                result.los_rate_invalid_reason = initial_rate.valid
+                    ? domain::GuidanceInvalidReason::los_initializing : initial_rate.invalid_reason;
+                mark_guidance_invalid(result.los_rate_invalid_reason);
                 if (!initial_rate.valid) {
                     std::ostringstream details;
                     details << "camera_timestamp_ns=" << timestamp_ns
@@ -843,8 +858,8 @@ void FramePipeline::processing_worker() noexcept {
                 static_cast<double>(timestamp_ns - previous_timestamp_ns) *
                 1e-9;
             if (!std::isfinite(dt_seconds) || dt_seconds <= 0.0) {
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_rate);
+                result.los_rate_invalid_reason = domain::GuidanceInvalidReason::invalid_timestep;
+                mark_guidance_invalid(result.los_rate_invalid_reason);
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", previous_camera_timestamp_ns="
@@ -868,8 +883,8 @@ void FramePipeline::processing_worker() noexcept {
                 {line_of_sight, result.flight_state.attitude, dt_seconds,
                  attitude_lookup->launch_generation, result.flight_state.speed_mps});
             if (!rate.valid) {
-                mark_guidance_invalid(
-                    domain::GuidanceInvalidReason::invalid_rate);
+                result.los_rate_invalid_reason = rate.invalid_reason;
+                mark_guidance_invalid(result.los_rate_invalid_reason);
                 std::ostringstream details;
                 details << "camera_timestamp_ns=" << timestamp_ns
                         << ", dt_seconds=" << dt_seconds;
@@ -885,10 +900,11 @@ void FramePipeline::processing_worker() noexcept {
                 continue;
             }
             // 有效滤波帧的角度与角速率来自同一状态，保留杆臂修正，不显示原始机体角。
-            set_inertial_los_overlay(
+            result.los_invalid_reason = set_inertial_los_overlay(
                 rate.vector.valid ? rate.vector.direction : domain::DirectionNavigationUnit{},
                 result.overlay);
             result.overlay.line_of_sight_rate_valid = rate.angular_velocity.valid;
+            result.los_rate_invalid_reason = domain::GuidanceInvalidReason::invalid_rate;
             result.overlay.line_of_sight_rate_q_y = rate.angular_velocity.q_y;
             result.overlay.line_of_sight_rate_q_z = rate.angular_velocity.q_z;
 
@@ -956,6 +972,9 @@ void FramePipeline::processing_worker() noexcept {
                 record_timing(TimingStage::command,
                               std::chrono::steady_clock::now() -
                                   command_started);
+                if (!generation_is_current) {
+                    result.output_missing_reason = domain::GuidanceInvalidReason::generation_mismatch;
+                }
                 if (generation_is_current && !sent) {
                     report_fault("guidance command submit failed");
                     return;

@@ -114,17 +114,20 @@ int main() {
     CHECK(next->result().wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
     processor.complete(processor.prepare(command, 0, false), domain::CommandEmissionDisposition::serial_written);
     CHECK(!overwritten->result().get()); // 被新请求跳过的来源帧不是零输出。
+    CHECK(overwritten->missing_reason() == domain::GuidanceInvalidReason::output_replaced);
     CHECK(next->result().get()->mapping.command.source_frame_id == command.source_frame_id);
 
     const auto reset_receipt = processor.track_emission(command, std::chrono::milliseconds(100));
     processor.invalidate();
     CHECK(!reset_receipt->result().get());
+    CHECK(reset_receipt->missing_reason() == domain::GuidanceInvalidReason::output_invalidated);
     ++command.generation;
     const auto new_generation = processor.track_emission(command, std::chrono::milliseconds(100));
     processor.complete(second, domain::CommandEmissionDisposition::serial_written);
     CHECK(new_generation->result().wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
     processor.reset();
     CHECK(!new_generation->result().get());
+    CHECK(new_generation->missing_reason() == domain::GuidanceInvalidReason::output_invalidated);
     CHECK(!processor.latest_emission());
     CHECK(debug_session_lifecycle() == 0);
     return 0;

@@ -202,15 +202,32 @@ private:
         if (!receipt) return;
         const auto result = receipt->result();
         while (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-            if (stopping() || !current_generation(frame)) return;
+            if (stopping()) {
+                frame.output_missing_reason = domain::GuidanceInvalidReason::output_cancelled;
+                return;
+            }
+            if (!current_generation(frame)) {
+                frame.output_missing_reason = domain::GuidanceInvalidReason::generation_mismatch;
+                return;
+            }
             const auto now = std::chrono::steady_clock::now();
-            if (now >= receipt->deadline()) return;
+            if (now >= receipt->deadline()) {
+                frame.output_missing_reason = domain::GuidanceInvalidReason::output_wait_timeout;
+                return;
+            }
             result.wait_until(std::min(receipt->deadline(), now + std::chrono::milliseconds(1)));
         }
         const auto& emitted = result.get();
-        if (!emitted || emitted->mapping.command.source_frame_id != frame.frame.source_frame_id ||
+        if (!emitted) {
+            frame.output_missing_reason = receipt->missing_reason();
+            return;
+        }
+        if (emitted->mapping.command.source_frame_id != frame.frame.source_frame_id ||
             emitted->mapping.command.generation != frame.flight_state.launch.generation ||
-            emitted->mapping.command.source_time.monotonic_ns != frame.frame.timestamp_ns) return;
+            emitted->mapping.command.source_time.monotonic_ns != frame.frame.timestamp_ns) {
+            frame.output_missing_reason = domain::GuidanceInvalidReason::output_receipt_mismatch;
+            return;
+        }
         frame.command_emission = emitted;
         frame.overlay.body_overload_valid = emitted->mapping.command.valid;
         frame.overlay.body_overload = emitted->mapping.command.overload_g;

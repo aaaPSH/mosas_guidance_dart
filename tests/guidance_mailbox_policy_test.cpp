@@ -94,7 +94,11 @@ int main() {
         if (!valid) CHECK(requests[i].overload_g.y == 0 && requests[i].overload_g.z == 0);
         else CHECK(requests[i].overload_g.y > 0);
     }
-    CHECK(requests[7].invalid_reason == domain::GuidanceInvalidReason::invalid_rate);
+    CHECK(requests[0].invalid_reason == domain::GuidanceInvalidReason::los_initializing);
+    CHECK(requests[2].invalid_reason == domain::GuidanceInvalidReason::los_initializing);
+    CHECK(requests[4].invalid_reason == domain::GuidanceInvalidReason::los_gap);
+    CHECK(requests[6].invalid_reason == domain::GuidanceInvalidReason::los_pole);
+    CHECK(requests[7].invalid_reason == domain::GuidanceInvalidReason::los_pole);
     CHECK(requests[8].invalid_reason == domain::GuidanceInvalidReason::invalid_los);
     return 0;
 }

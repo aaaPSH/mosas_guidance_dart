@@ -57,7 +57,8 @@ int verify_kalman_reference() {
         input.line_of_sight = test::test_dart_los_from_angles(0.2, -0.3);
         input.attitude.time.monotonic_ns = 0;
         input.dt_seconds = 1.0; // 首帧不传播这个超过 maximum_gap 的占位时间。
-        CHECK(!filter.update(input).valid);
+        const auto baseline = filter.update(input);
+        CHECK(!baseline.valid && baseline.invalid_reason == domain::GuidanceInvalidReason::los_initializing);
         CHECK(!filter.sample().raw_angular_velocity.valid);
         CHECK(!filter.sample().filtered_angular_velocity.valid);
         const double r = config.sigma_q * config.sigma_q;
@@ -76,6 +77,7 @@ int verify_kalman_reference() {
             yaw.update(measured_yaw, dt, fallback ? config.sigma_a : config.sigma_a_yaw, r);
             const auto estimate = filter.update(input);
             CHECK(estimate.valid && estimate.vector.valid && estimate.angular_velocity.valid);
+            CHECK(estimate.invalid_reason == domain::GuidanceInvalidReason::none);
             const double cy = std::cos(pitch.angle), sy = std::sin(pitch.angle);
             const double cz = std::cos(yaw.angle), sz = std::sin(yaw.angle);
             CHECK_NEAR(estimate.vector.direction.x, cy * cz, 1e-12);
@@ -356,7 +358,8 @@ int verify_distance_continuity() {
         input.attitude.time.monotonic_ns += 500'000'000;
         input.dt_seconds = 0.5;
         input.speed_mps.value = 2.0;
-        CHECK(!filter.update(input).valid);
+        const auto gap = filter.update(input);
+        CHECK(!gap.valid && gap.invalid_reason == domain::GuidanceInvalidReason::los_gap);
         CHECK_NEAR(filter.sample().lever_arm_distance_m, 12.32, 1e-12);
         input.attitude.time.monotonic_ns += 10'000'000;
         input.dt_seconds = 0.01;
@@ -418,7 +421,19 @@ int verify_distance_reset() {
                 input.attitude.time.monotonic_ns = std::numeric_limits<std::int64_t>::max();
                 input.speed_mps.value = std::numeric_limits<double>::max();
             }
-            CHECK(!filter.update(input).valid);
+            const domain::GuidanceInvalidReason expected[]{
+                domain::GuidanceInvalidReason::los_initializing,
+                domain::GuidanceInvalidReason::los_gap,
+                domain::GuidanceInvalidReason::invalid_speed,
+                domain::GuidanceInvalidReason::invalid_speed,
+                domain::GuidanceInvalidReason::invalid_speed,
+                domain::GuidanceInvalidReason::invalid_attitude_time,
+                domain::GuidanceInvalidReason::non_increasing_timestamp,
+                domain::GuidanceInvalidReason::non_increasing_timestamp,
+                domain::GuidanceInvalidReason::invalid_speed,
+            };
+            const auto rejected = filter.update(input);
+            CHECK(!rejected.valid && rejected.invalid_reason == expected[reason - 1]);
         }
         CHECK(filter.sample().lever_arm_distance_valid == (reason == 1 || reason == 2));
         input.dt_seconds = 0.01;

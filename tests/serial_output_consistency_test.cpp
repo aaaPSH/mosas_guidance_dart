@@ -66,7 +66,7 @@ int stale_exposure() {
     const auto emitted = receipt->result().get();
     CHECK(emitted);
     CHECK(!emitted->mapping.command.valid);
-    CHECK(emitted->mapping.command.invalid_reason == domain::GuidanceInvalidReason::stale_input);
+    CHECK(emitted->mapping.command.invalid_reason == domain::GuidanceInvalidReason::source_too_old);
     CHECK(emitted->mapping.command.launched && !emitted->mapping.command.target_found);
     CHECK(serial.wait_for(encoded(true, false)));
     sink.stop();
@@ -127,7 +127,7 @@ int runtime_exposure_age() {
         return value.mapping.command.source_time.monotonic_ns == 130'000'000;
     });
     CHECK(emitted && !emitted->mapping.command.valid);
-    CHECK(emitted->mapping.command.invalid_reason == domain::GuidanceInvalidReason::stale_input);
+    CHECK(emitted->mapping.command.invalid_reason == domain::GuidanceInvalidReason::source_too_old);
     CHECK(emitted->mapping.command.launched && !emitted->mapping.command.target_found);
     CHECK(emitted->mapping.command.overload_g.y == 0 && emitted->mapping.command.overload_g.z == 0);
     CHECK(emitted->disposition == domain::CommandEmissionDisposition::serial_written);
@@ -234,7 +234,7 @@ int quantized_output() {
         CHECK_NEAR(std::stod(columns[24]), emitted.mapping.command.overload_g.y, 1e-12);
         CHECK_NEAR(std::stod(columns[25]), emitted.mapping.command.overload_g.z, 1e-12);
         CHECK_NEAR(std::stod(columns[26]), emitted.mapping.trace.command_overload.value, 1e-6);
-        CHECK(columns[29] == "1" && columns[30] == "1");
+        CHECK(columns[29] == "1" && columns[30] == "0");
     }
     CHECK(!std::getline(csv, row));
     return 0;

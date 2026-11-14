@@ -18,12 +18,12 @@ constexpr char kFlightDataHeader[] =
     "vision_found,target_x,target_y,target_width,"
     "target_height,target_area,target_center_x,target_center_y,"
     "imu_roll_rad,imu_pitch_rad,imu_yaw_rad,"
-    "imu_attitude_valid,imu_launched,los_inertial_valid,"
-    "los_inertial_q_y_rad,los_inertial_q_z_rad,los_inertial_rate_valid,"
-    "los_inertial_rate_q_y_rad_s,los_inertial_rate_q_z_rad_s,guidance_valid,"
+    "imu_attitude_status_code,imu_launched,los_inertial_status_code,"
+    "los_inertial_q_y_rad,los_inertial_q_z_rad,los_inertial_rate_status_code,"
+    "los_inertial_rate_q_y_rad_s,los_inertial_rate_q_z_rad_s,guidance_status_code,"
     "body_overload_x_g,body_overload_y_g,body_overload_z_g,"
     "command_overload_g,command_phase_rad,source_frame_id,"
-    "output_present,output_valid,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns,"
+    "output_present,output_status_code,output_attempt_id,output_disposition,output_attitude_timestamp_ns,output_mapping_timestamp_ns,"
     "png_compensated_pitch_rate_rad_s,body_overload_y_unlimited_g,body_overload_z_unlimited_g\n";
 
 }  // namespace
@@ -159,25 +159,30 @@ std::string TelemetryCsvRecorder::make_csv_row(
     } else {
         row << ",,,";
     }
-    row << (attitude.valid ? 1 : 0) << ','
+    using Reason = domain::GuidanceInvalidReason;
+    row << static_cast<int>(attitude.valid ? Reason::none : frame.attitude_invalid_reason) << ','
         << (launch.phase == domain::LaunchPhase::launched ? 1 : 0) << ','
-        << (overlay.line_of_sight_valid ? 1 : 0) << ','
+        << static_cast<int>(overlay.line_of_sight_valid ? Reason::none : frame.los_invalid_reason) << ','
         << overlay.line_of_sight_q_y.value << ','
         << overlay.line_of_sight_q_z.value << ','
-        << (overlay.line_of_sight_rate_valid ? 1 : 0) << ','
+        << static_cast<int>(overlay.line_of_sight_rate_valid ? Reason::none : frame.los_rate_invalid_reason) << ','
         << overlay.line_of_sight_rate_q_y.value << ','
         << overlay.line_of_sight_rate_q_z.value << ','
-        << (guidance.valid ? 1 : 0) << ',';
+        << static_cast<int>(guidance.valid ? Reason::none : guidance.invalid_reason) << ',';
     if (emitted) {
         const auto& trace = emitted->mapping.trace;
         row << trace.body_overload.x << ',' << trace.body_overload.y << ',' << trace.body_overload.z << ','
             << trace.command_overload.value << ',' << trace.command_phase.value << ',';
     } else row << ",,,,,"; // 尚未输出不是零控制，必须保留为空。
     row << frame.frame.source_frame_id << ',' << (emitted ? 1 : 0) << ',';
-    if (emitted) row << (emitted->mapping.command.valid ? 1 : 0) << ',' << emitted->attempt_id << ','
-        << static_cast<int>(emitted->disposition) << ',' << emitted->mapping.trace.attitude.time.monotonic_ns << ','
-        << emitted->mapping.trace.emit_time_ns;
-    else row << ",,,,";
+    if (emitted) {
+        const auto status = emitted->disposition == domain::CommandEmissionDisposition::io_rejected
+            ? Reason::io_rejected : emitted->mapping.command.valid
+                ? Reason::none : emitted->mapping.command.invalid_reason;
+        row << static_cast<int>(status) << ',' << emitted->attempt_id << ','
+            << static_cast<int>(emitted->disposition) << ',' << emitted->mapping.trace.attitude.time.monotonic_ns << ','
+            << emitted->mapping.trace.emit_time_ns;
+    } else row << static_cast<int>(frame.output_missing_reason) << ",,,,";
     row << ',';
     if (guidance.valid && guidance.diagnostics.compensated_pitch_rate) {
         row << guidance.diagnostics.compensated_pitch_rate->value;

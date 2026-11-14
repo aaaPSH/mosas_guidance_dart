@@ -185,8 +185,9 @@ int main() {
         CHECK(cols2[29] == "0");
         // 无姿态或尚未输出时对应列留空，不能伪装成有效零值。
         CHECK(cols1[11].empty() && cols1[12].empty() && cols1[13].empty());
-        CHECK(cols1[14] == "0");
-        for (const auto index : {23, 24, 25, 26, 27, 30, 31, 32, 33, 34}) {
+        CHECK(cols1[14] == "8" && cols1[16] == "8" && cols1[19] == "8");
+        CHECK(cols1[30] == "17");
+        for (const auto index : {23, 24, 25, 26, 27, 31, 32, 33, 34}) {
             CHECK(cols1[index].empty());
         }
     }
@@ -378,12 +379,18 @@ int main() {
         CHECK(header[11] == "imu_roll_rad");
         CHECK(header[12] == "imu_pitch_rad");
         CHECK(header[13] == "imu_yaw_rad");
+        CHECK(header[14] == "imu_attitude_status_code");
+        CHECK(header[16] == "los_inertial_status_code");
+        CHECK(header[19] == "los_inertial_rate_status_code");
+        CHECK(header[22] == "guidance_status_code");
+        CHECK(header[30] == "output_status_code");
+        CHECK(lines[0].find("_valid") == std::string::npos);
         CHECK(header[17] == "los_inertial_q_y_rad");
         CHECK(header[18] == "los_inertial_q_z_rad");
         CHECK(header[20] == "los_inertial_rate_q_y_rad_s");
         CHECK(header[21] == "los_inertial_rate_q_z_rad_s");
         CHECK(cols[1] == "5000000");
-        CHECK(cols[14] == "1");
+        CHECK(cols[14] == "0" && cols[16] == "0" && cols[19] == "0");
         const auto displayed = output::detail::make_legacy_overlay(frame.overlay, frame.flight_state);
         CHECK_NEAR(std::stod(cols[11]), displayed.attitude_roll_rad, 1e-6);
         CHECK_NEAR(std::stod(cols[12]), displayed.attitude_pitch_rad, 1e-6);
@@ -397,7 +404,7 @@ int main() {
         CHECK(cols[25] == "-0.35");
         CHECK(cols[28] == "501");
         CHECK(cols[29] == "1");
-        CHECK(cols[30] == "1");
+        CHECK(cols[30] == "0");
         CHECK(cols[31] == "7");
         CHECK(cols[32] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
         CHECK(cols[33] == "5000000");
@@ -465,7 +472,7 @@ int main() {
         callbacks.record_published_frame = [&] { ++published_count; };
         runtime::OutputDispatcher dispatcher(
             nullptr, std::make_unique<output::TelemetryCsvRecorder>(session),
-            nullptr, nullptr, 4, std::move(callbacks));
+            nullptr, nullptr, 8, std::move(callbacks));
         dispatcher.reset();
         dispatcher.start();
 
@@ -509,43 +516,100 @@ int main() {
         CHECK(dispatcher.enqueue(neutral));
         emission = {};
         emission.attempt_id = 19;
+        emission.mapping.command.invalid_reason = domain::GuidanceInvalidReason::los_initializing;
         emission.mapping.command.source_frame_id = request.source_frame_id;
         emission.mapping.command.source_time = request.source_time;
         emission.mapping.trace.attitude.time.monotonic_ns = 6'200'100;
         emission.mapping.trace.emit_time_ns = 6'200'200;
         processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+
+        auto replaced = make_frame(604, 6'300'000);
+        request.source_frame_id = replaced.frame.source_frame_id;
+        request.source_time.monotonic_ns = replaced.frame.timestamp_ns;
+        replaced.pending_command_emission = processor.track_emission(request, std::chrono::seconds(1));
+        emission.mapping.command.source_frame_id = 605;
+        emission.mapping.command.source_time.monotonic_ns = 6'400'000;
+        processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+        CHECK(dispatcher.enqueue(replaced));
+
+        runtime::CommandOutputProcessor timeout_processor;
+        auto timed_out = make_frame(606, 6'500'000);
+        request.source_frame_id = timed_out.frame.source_frame_id;
+        request.source_time.monotonic_ns = timed_out.frame.timestamp_ns;
+        timed_out.pending_command_emission = timeout_processor.track_emission(request, std::chrono::seconds(0));
+        CHECK(dispatcher.enqueue(timed_out));
+
+        auto invalidated = make_frame(607, 6'600'000);
+        request.source_frame_id = invalidated.frame.source_frame_id;
+        request.source_time.monotonic_ns = invalidated.frame.timestamp_ns;
+        invalidated.pending_command_emission = processor.track_emission(request, std::chrono::seconds(1));
+        processor.invalidate();
+        CHECK(dispatcher.enqueue(invalidated));
+
+        auto mismatched = make_frame(608, 6'700'000);
+        request.source_frame_id = 609;
+        request.source_time.monotonic_ns = 6'800'000;
+        mismatched.pending_command_emission = processor.track_emission(request, std::chrono::seconds(1));
+        emission.mapping.command.source_frame_id = request.source_frame_id;
+        emission.mapping.command.source_time = request.source_time;
+        processor.complete(emission, domain::CommandEmissionDisposition::serial_written);
+        CHECK(dispatcher.enqueue(mismatched));
+
+        auto io_rejected = make_frame(610, 6'900'000);
+        request.source_frame_id = io_rejected.frame.source_frame_id;
+        request.source_time.monotonic_ns = io_rejected.frame.timestamp_ns;
+        io_rejected.pending_command_emission = processor.track_emission(request, std::chrono::seconds(1));
+        emission.mapping.command.source_frame_id = request.source_frame_id;
+        emission.mapping.command.source_time = request.source_time;
+        emission.mapping.command.valid = true;
+        processor.complete(emission, domain::CommandEmissionDisposition::io_rejected);
+        CHECK(dispatcher.enqueue(io_rejected));
+
         dispatcher.close_queue();
         dispatcher.join();
         CHECK(dispatcher.stop_sink().empty());
-        CHECK(published_count == 3);
+        CHECK(published_count == 8);
 
         const auto csv_files = find_extension(temporary_directory.path(), ".csv");
         CHECK(csv_files.size() == 1);
         const auto lines = read_lines(csv_files[0]);
-        CHECK(lines.size() == 4);
+        CHECK(lines.size() == 9);
         const auto sent = split_csv(lines[1]);
         const auto missing = split_csv(lines[2]);
         const auto zero = split_csv(lines[3]);
         CHECK(sent.size() == 38 && missing.size() == 38 && zero.size() == 38);
-        CHECK(sent[22] == "1");
+        CHECK(sent[22] == "0");
         CHECK(sent[23] == "0" && sent[24] == "0.25" && sent[25] == "-0.5");
         CHECK(sent[26] == "0.56" && sent[27] == "-1.1");
-        CHECK(sent[28] == "601" && sent[29] == "1" && sent[30] == "1");
+        CHECK(sent[28] == "601" && sent[29] == "1" && sent[30] == "0");
         CHECK(sent[31] == "17");
         CHECK(sent[32] == std::to_string(static_cast<int>(domain::CommandEmissionDisposition::serial_written)));
         CHECK(sent[33] == "6000100" && sent[34] == "6000200");
         CHECK(sent[36] == "3" && sent[37] == "-4");
-        CHECK(missing[28] == "602" && missing[29] == "0");
-        for (const auto index : {23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 36, 37}) {
+        CHECK(missing[28] == "602" && missing[29] == "0" && missing[30] == "17");
+        for (const auto index : {23, 24, 25, 26, 27, 31, 32, 33, 34, 36, 37}) {
             CHECK(missing[index].empty());
         }
-        CHECK(zero[28] == "603" && zero[29] == "1" && zero[30] == "0");
+        CHECK(zero[28] == "603" && zero[29] == "1" && zero[30] == "14");
         for (std::size_t index = 23; index <= 27; ++index) {
             CHECK(zero[index] == "0");
         }
         CHECK(zero[31] == "19");
         CHECK(zero[33] == "6200100" && zero[34] == "6200200");
         CHECK(zero[36].empty() && zero[37].empty());
+        const std::vector<std::string> missing_codes{"18", "19", "20", "23"};
+        for (std::size_t i = 0; i < missing_codes.size(); ++i) {
+            const auto columns = split_csv(lines[i + 4]);
+            CHECK(columns.size() == 38);
+            CHECK(columns[29] == "0" && columns[30] == missing_codes[i]);
+            for (const auto index : {23, 24, 25, 26, 27, 31, 32, 33, 34, 36, 37}) {
+                CHECK(columns[index].empty());
+            }
+        }
+        const auto rejected = split_csv(lines[8]);
+        CHECK(rejected.size() == 38);
+        CHECK(rejected[29] == "1" && rejected[30] == "24");
+        CHECK(rejected[32] == "5");
     }
 
     return 0;

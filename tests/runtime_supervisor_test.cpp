@@ -115,6 +115,7 @@ public:
         mosas::domain::FlightStateSnapshot state;
         mosas::domain::GuidanceOutput guidance;
         mosas::domain::GuidanceOverlay overlay;
+        mosas::domain::GuidanceInvalidReason attitude_invalid_reason;
     };
 
     bool start() override { return true; }
@@ -126,7 +127,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         frames_.push_back({processed.frame, processed.vision_detection,
                            processed.flight_state, processed.guidance,
-                           processed.overlay});
+                           processed.overlay, processed.attitude_invalid_reason});
         return true;
     }
     void cancel() noexcept override {}
@@ -207,7 +208,9 @@ int verify_initialization_logging() {
     CHECK(message_count("等待 IMU 静止初始化") == 1);
     CHECK(message_count("无法匹配") == 0);
     CHECK(video_control->frames()[0].guidance.invalid_reason ==
-          domain::GuidanceInvalidReason::invalid_attitude);
+          domain::GuidanceInvalidReason::imu_initializing);
+    CHECK(video_control->frames()[0].attitude_invalid_reason ==
+          domain::GuidanceInvalidReason::imu_initializing);
 
     // 原始 IMU 历史已经覆盖曝光时刻，但连续静止尚不足 200 ms。
     for (int ms = 0; ms <= 190; ms += 10) {
@@ -238,9 +241,13 @@ int verify_initialization_logging() {
     camera_control->push(make_frame(kStartNs + 150 * kMs, 0));
     CHECK(wait_for_frames(5));
     CHECK(message_count("姿态历史无法匹配相机曝光时刻") == 1);
+    CHECK(video_control->frames()[4].attitude_invalid_reason ==
+          domain::GuidanceInvalidReason::attitude_history_unavailable);
     camera_control->push(make_frame(kStartNs + 500 * kMs, 0));
     CHECK(wait_for_frames(6));
     CHECK(message_count("相机帧无法匹配可用 IMU 状态") == 1);
+    CHECK(video_control->frames()[5].attitude_invalid_reason ==
+          domain::GuidanceInvalidReason::imu_history_unavailable);
     CHECK(message_count("IMU 静止初始化完成") == 1);
     CHECK(command_control->commands().empty());
     supervisor.stop();
@@ -401,7 +408,7 @@ int main() {
                 CHECK_NEAR(command.overload_g.y, 0.0, 1e-12);
                 CHECK_NEAR(command.overload_g.z, 0.0, 1e-12);
             } else if (command.invalid_reason ==
-                       domain::GuidanceInvalidReason::invalid_rate) {
+                       domain::GuidanceInvalidReason::los_initializing) {
                 invalid_zero_command_seen = true;
                 CHECK(command.generation == 0);
                 CHECK(command.source_time.monotonic_ns == kFrameFirstNs);

@@ -156,26 +156,29 @@ domain::CommandMappingResult CommandOutputMapper::map(
     if (context.generation != context.active_generation) {
         command.launched = false;
         command.target_found = false;
-        return zero_output_preserving_flags(Reason::stale_input);
+        return zero_output_preserving_flags(Reason::generation_mismatch);
     }
     if (context.latest_state &&
         (context.latest_state->launch.generation != context.active_generation || !latest_imu_launched)) {
         command.launched = false;
         command.target_found = false;
-        return zero_output_preserving_flags(Reason::launch_not_confirmed);
+        return zero_output_preserving_flags(
+            context.latest_state->launch.generation != context.active_generation
+                ? Reason::generation_mismatch : Reason::launch_not_confirmed);
     }
     if (!command.launched) {
         command.launched = false;
         command.target_found = false;
-        return zero_output_preserving_flags(Reason::launch_not_confirmed);
+        return zero_output_preserving_flags(
+            context.latest_state ? Reason::launch_not_confirmed : Reason::imu_initializing);
     }
-    if (!context.output_enabled) return zero_output_preserving_flags(Reason::stale_input);
-    if (!valid()) return zero_output_preserving_flags(Reason::algorithm_rejected);
+    if (!context.output_enabled) return zero_output_preserving_flags(Reason::output_disabled);
+    if (!valid()) return zero_output_preserving_flags(Reason::invalid_configuration);
     const auto& latest_state = *context.latest_state;
 
     // 固定模式不依赖 PNG 请求有效性，触发条件分别取发射时间或视觉识别。
     if (debug) {
-        if (context.emit_time_ns < 0) return zero_output_preserving_flags(Reason::stale_input);
+        if (context.emit_time_ns < 0) return zero_output_preserving_flags(Reason::invalid_source_time);
         std::lock_guard<std::mutex> lock(debug_mutex_);
         if (last_generation_ != context.generation) {
             reset_debug_state_locked();
@@ -185,9 +188,11 @@ domain::CommandMappingResult CommandOutputMapper::map(
         bool triggered = false;
         if (launch_delay) {
             const auto& launch_time = latest_state.launch.transition_time;
-            if (!matching_time(launch_time, context.clock_domain) ||
-                context.emit_time_ns < launch_time.monotonic_ns) {
-                return zero_output_preserving_flags(Reason::stale_input);
+            if (!matching_time(launch_time, context.clock_domain)) {
+                return zero_output_preserving_flags(Reason::invalid_source_time);
+            }
+            if (context.emit_time_ns < launch_time.monotonic_ns) {
+                return zero_output_preserving_flags(Reason::future_source_time);
             }
             const int64_t delay_ns =
                 static_cast<int64_t>(config_.debug.trigger_delay_ms) * 1'000'000LL;
@@ -209,7 +214,7 @@ domain::CommandMappingResult CommandOutputMapper::map(
             }
             if (first_target_detected_time_ns_) {
                 if (context.emit_time_ns < *first_target_detected_time_ns_) {
-                    return zero_output_preserving_flags(Reason::stale_input);
+                    return zero_output_preserving_flags(Reason::future_source_time);
                 }
                 const int64_t elapsed_ns = context.emit_time_ns - *first_target_detected_time_ns_;
                 if (config_.debug.duration_ms > 0) {
@@ -229,7 +234,7 @@ domain::CommandMappingResult CommandOutputMapper::map(
         if (!triggered) {
             // 等待或窗口结束不是算法故障；识别模式在窗口结束后仍保留锁存位。
             command.target_found = first_target_detected_time_ns_.has_value();
-            return zero_output_preserving_flags(Reason::none);
+            return zero_output_preserving_flags(Reason::debug_inactive);
         }
 
         // 固定模式复用识别标志通知下位机执行，不要求当前图像仍检出目标。
@@ -258,14 +263,23 @@ domain::CommandMappingResult CommandOutputMapper::map(
     }
 
     if (!request_launched) return zero_output_preserving_flags(Reason::launch_not_confirmed);
-    if (context.expired) return zero_output_preserving_flags(Reason::stale_input);
+    if (context.expired) return zero_output_preserving_flags(Reason::command_expired);
     // 提交时间只检测生产断流，不能为曝光后排队或识别耗时重新授予有效期。
-    if (!matching_time(context.source_time, context.clock_domain) ||
-        context.emit_time_ns < context.source_time.monotonic_ns ||
-        context.maximum_source_age_ns <= 0 ||
-        context.emit_time_ns - context.source_time.monotonic_ns > context.maximum_source_age_ns) {
+    if (!matching_time(context.source_time, context.clock_domain)) {
         command.target_found = false;
-        return zero_output_preserving_flags(Reason::stale_input);
+        return zero_output_preserving_flags(Reason::invalid_source_time);
+    }
+    if (context.emit_time_ns < context.source_time.monotonic_ns) {
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::future_source_time);
+    }
+    if (context.maximum_source_age_ns <= 0) {
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::invalid_configuration);
+    }
+    if (context.emit_time_ns - context.source_time.monotonic_ns > context.maximum_source_age_ns) {
+        command.target_found = false;
+        return zero_output_preserving_flags(Reason::source_too_old);
     }
     if (!context.request_valid) {
         return zero_output_preserving_flags(
@@ -280,11 +294,14 @@ domain::CommandMappingResult CommandOutputMapper::map(
     const auto& attitude_time = trace.attitude.time;
     if (!matching_time(attitude_time, context.clock_domain) ||
         !matching_time(latest_state.time, context.clock_domain) ||
-        latest_state.time.monotonic_ns != attitude_time.monotonic_ns ||
-        context.emit_time_ns < attitude_time.monotonic_ns ||
-        context.maximum_attitude_age_ns <= 0 ||
-        context.emit_time_ns - attitude_time.monotonic_ns > context.maximum_attitude_age_ns) {
-        return zero_output_preserving_flags(Reason::stale_input);
+        latest_state.time.monotonic_ns != attitude_time.monotonic_ns) {
+        return zero_output_preserving_flags(Reason::invalid_attitude_time);
+    }
+    if (context.maximum_attitude_age_ns <= 0) {
+        return zero_output_preserving_flags(Reason::invalid_configuration);
+    }
+    if (context.emit_time_ns - attitude_time.monotonic_ns > context.maximum_attitude_age_ns) {
+        return zero_output_preserving_flags(Reason::attitude_too_old);
     }
     const auto& m = trace.attitude.navigation_from_dart.matrix();
     if (!detail::valid_rotation(m)) return zero_output_preserving_flags(Reason::invalid_attitude);

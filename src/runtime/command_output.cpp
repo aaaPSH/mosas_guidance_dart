@@ -20,7 +20,10 @@ void CommandOutputProcessor::invalidate() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_.reset();
     for (const auto& pending : pending_emissions_) {
-        if (const auto receipt = pending.lock()) receipt->completion_.set_value(std::nullopt);
+        if (const auto receipt = pending.lock()) {
+            receipt->missing_reason_ = domain::GuidanceInvalidReason::output_invalidated;
+            receipt->completion_.set_value(std::nullopt);
+        }
     }
     pending_emissions_.clear();
 }
@@ -52,7 +55,8 @@ domain::CommandEmissionSnapshot CommandOutputProcessor::prepare(const domain::Gu
     command.generation = request.generation;
     command.launched = request.launched && request.generation == active_generation;
     command.target_found = request.target_found && !expired;
-    command.invalid_reason = domain::GuidanceInvalidReason::invalid_attitude;
+    command.invalid_reason = configured() ? domain::GuidanceInvalidReason::state_source_failed
+                                          : domain::GuidanceInvalidReason::invalid_configuration;
     return result;
 }
 std::shared_ptr<CommandEmissionReceipt> CommandOutputProcessor::track_emission(
@@ -85,6 +89,7 @@ void CommandOutputProcessor::complete(domain::CommandEmissionSnapshot snapshot,
             // 来源帧按提交顺序递增；发送更新请求意味着旧请求已被邮箱覆盖。
             if (request.source_frame_id < command.source_frame_id &&
                 request.source_time.monotonic_ns <= command.source_time.monotonic_ns) {
+                receipt->missing_reason_ = domain::GuidanceInvalidReason::output_replaced;
                 receipt->completion_.set_value(std::nullopt);
                 return true;
             }
